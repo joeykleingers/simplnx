@@ -322,6 +322,21 @@ set(PLUGIN_EXTRA_SOURCES
     "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/SurfaceNets/MMSurfaceNet.cpp"
     "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/SurfaceNets/MMSurfaceNet.h"
 
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/SYS_Math.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/SYS_Types.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_Array.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_Array.cpp"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_ArrayImpl.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_BVH.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_BVHImpl.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_FixedVector.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_ParallelUtil.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_SmallArray.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_SolidAngle.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/UT_SolidAngle.cpp"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/VM_SIMD.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/VM_SIMDFunc.h"
+    "${${PLUGIN_NAME}_SOURCE_DIR}/src/${PLUGIN_NAME}/WindingNumber/VM_SSEFunc.h"
 )
 
 target_sources(${PLUGIN_NAME}

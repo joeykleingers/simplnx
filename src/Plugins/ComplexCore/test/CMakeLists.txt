@@ -123,6 +123,8 @@ set(${PLUGIN_NAME}UnitTest_SRCS
   TriangleNormalFilterTest.cpp
   UncertainRegularGridSampleSurfaceMeshTest.cpp
   VtkRectilinearGridWriterTest.cpp
+  WindingNumberTest.cpp
+  WindingNumberTestPerFeature.cpp
   WriteASCIIDataTest.cpp
   WriteBinaryDataTest.cpp
   WriteStlFileTest.cpp

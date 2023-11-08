@@ -6,6 +6,7 @@
 #include "complex/Utilities/Math/GeometryMath.hpp"
 #include "complex/Utilities/ParallelAlgorithmUtilities.hpp"
 #include "complex/Utilities/ParallelDataAlgorithm.hpp"
+#include "complex/Utilities/SamplingUtils.hpp"
 #include "complex/Utilities/StringUtilities.hpp"
 
 #include <chrono>
@@ -178,83 +179,7 @@ Result<> SampleSurfaceMesh::execute(SampleSurfaceMeshInputValues& inputValues)
   auto& triangleGeom = m_DataStructure.getDataRefAs<TriangleGeom>(inputValues.TriangleGeometryPath);
   auto& faceLabelsSM = m_DataStructure.getDataRefAs<Int32Array>(inputValues.SurfaceMeshFaceLabelsArrayPath);
 
-  // pull down faces
-  usize numFaces = faceLabelsSM.getNumberOfTuples();
-
-  updateProgress("Counting number of Features...");
-
-  // walk through faces to see how many features there are
-  int32 g1 = 0, g2 = 0;
-  int32 maxFeatureId = 0;
-  for(usize i = 0; i < numFaces; i++)
-  {
-    g1 = faceLabelsSM[2 * i];
-    g2 = faceLabelsSM[2 * i + 1];
-    if(g1 > maxFeatureId)
-    {
-      maxFeatureId = g1;
-    }
-    if(g2 > maxFeatureId)
-    {
-      maxFeatureId = g2;
-    }
-  }
-
-  // Check for user canceled flag.
-  if(m_ShouldCancel)
-  {
-    return {};
-  }
-
-  // add one to account for feature 0
-  usize numFeatures = maxFeatureId + 1;
-
-  std::vector<std::vector<int32>> faceLists(numFeatures);
-  updateProgress("Counting number of triangle faces per feature ...");
-
-  // traverse data to determine number of faces belonging to each feature
-  for(usize i = 0; i < numFaces; i++)
-  {
-    g1 = faceLabelsSM[2 * i];
-    g2 = faceLabelsSM[2 * i + 1];
-    if(g1 > 0)
-    {
-      faceLists[g1].push_back(0);
-    }
-    if(g2 > 0)
-    {
-      faceLists[g2].push_back(0);
-    }
-  }
-
-  // Check for user canceled flag.
-  if(m_ShouldCancel)
-  {
-    return {};
-  }
-
-  updateProgress("Allocating triangle faces per feature ...");
-
-  // fill out lists with number of references to cells
-  std::vector<int32> linkLoc(numFaces, 0);
-
-  std::vector<BoundingBox3Df> faceBBs;
-  // traverse data again to get the faces belonging to each feature
-  for(int32 i = 0; i < numFaces; i++)
-  {
-    g1 = faceLabelsSM[2 * i];
-    g2 = faceLabelsSM[2 * i + 1];
-    if(g1 > 0)
-    {
-      faceLists[g1][(linkLoc[g1])++] = i;
-    }
-    if(g2 > 0)
-    {
-      faceLists[g2][(linkLoc[g2])++] = i;
-    }
-    // find bounding box for each face
-    faceBBs.emplace_back(GeometryMath::FindBoundingBoxOfFace(triangleGeom, i));
-  }
+  complex::Sampling::FeatureFacesStatistics ffStats = complex::Sampling::CalculateFeatureFacesStatistics(faceLabelsSM, triangleGeom, m_ShouldCancel, m_MessageHandler);
 
   // Check for user canceled flag.
   if(m_ShouldCancel)
@@ -277,19 +202,19 @@ Result<> SampleSurfaceMesh::execute(SampleSurfaceMeshInputValues& inputValues)
   auto nthreads = static_cast<int32>(std::thread::hardware_concurrency()); // Returns ZERO if not defined on this platform
   // If the number of features is larger than the number of cores to do the work then parallelize over the number of features
   // otherwise parallelize over the number of triangle points.
-  if(numFeatures > nthreads)
+  if(ffStats.numberOfFeatures > nthreads)
   {
     ParallelDataAlgorithm dataAlg;
-    dataAlg.setRange(0, numFeatures);
-    dataAlg.execute(SampleSurfaceMeshImpl(this, triangleGeom, faceLists, faceBBs, points, polyIds, m_ShouldCancel));
+    dataAlg.setRange(0, ffStats.numberOfFeatures);
+    dataAlg.execute(SampleSurfaceMeshImpl(this, triangleGeom, ffStats.faceLists, ffStats.faceBoundingBoxes, points, polyIds, m_ShouldCancel));
   }
   else
   {
-    for(int32 featureId = 0; featureId < numFeatures; featureId++)
+    for(int32 featureId = 0; featureId < ffStats.numberOfFeatures; featureId++)
     {
       ParallelDataAlgorithm dataAlg;
       dataAlg.setRange(0, points.size());
-      dataAlg.execute(SampleSurfaceMeshImplByPoints(this, triangleGeom, faceLists[featureId], faceBBs, points, featureId, polyIds, m_ShouldCancel));
+      dataAlg.execute(SampleSurfaceMeshImplByPoints(this, triangleGeom, ffStats.faceLists[featureId], ffStats.faceBoundingBoxes, points, featureId, polyIds, m_ShouldCancel));
     }
   }
 

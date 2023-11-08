@@ -10,16 +10,13 @@
 #include "complex/Parameters/ChoicesParameter.hpp"
 #include "complex/Parameters/DataGroupCreationParameter.hpp"
 #include "complex/Parameters/VectorParameter.hpp"
-#include "complex/Utilities/SampleSurfaceMesh.hpp"
 
 namespace complex
 {
 struct COMPLEXCORE_EXPORT RegularGridSampleSurfaceMeshInputValues
 {
-  VectorUInt64Parameter::ValueType Dimensions;
-  VectorFloat32Parameter::ValueType Spacing;
-  VectorFloat32Parameter::ValueType Origin;
   DataPath TriangleGeometryPath;
+  DataPath ImageGeometryPath;
   DataPath SurfaceMeshFaceLabelsArrayPath;
   DataPath FeatureIdsArrayPath;
 };
@@ -29,10 +26,10 @@ struct COMPLEXCORE_EXPORT RegularGridSampleSurfaceMeshInputValues
  * @brief This filter replaces values in the target array with a user specified value
  * where a bool mask array specifies.
  */
-class COMPLEXCORE_EXPORT RegularGridSampleSurfaceMesh : public SampleSurfaceMesh
+class COMPLEXCORE_EXPORT RegularGridSampleSurfaceMesh
 {
 public:
-  RegularGridSampleSurfaceMesh(DataStructure& dataStructure, const IFilter::MessageHandler& mesgHandler, const std::atomic_bool& shouldCancel, RegularGridSampleSurfaceMeshInputValues* inputValues);
+  RegularGridSampleSurfaceMesh(DataStructure& dataStructure, const IFilter::MessageHandler& msgHandler, const std::atomic_bool& shouldCancel, RegularGridSampleSurfaceMeshInputValues* inputValues);
   ~RegularGridSampleSurfaceMesh() noexcept;
 
   RegularGridSampleSurfaceMesh(const RegularGridSampleSurfaceMesh&) = delete;
@@ -45,7 +42,7 @@ public:
   const std::atomic_bool& getCancel();
 
 protected:
-  void generatePoints(std::vector<Point3Df>& points) override;
+  //  void generatePoints(std::vector<Point3Df>& points) override;
 
 private:
   DataStructure& m_DataStructure;
