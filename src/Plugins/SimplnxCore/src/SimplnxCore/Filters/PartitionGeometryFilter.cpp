@@ -1,7 +1,10 @@
 #include "PartitionGeometryFilter.hpp"
 
+#include <concepts>
+
 #include "simplnx/Common/Array.hpp"
 #include "simplnx/DataStructure/AttributeMatrix.hpp"
+#include "simplnx/DataStructure/Geometry/EdgeGeom.hpp"
 #include "simplnx/DataStructure/Geometry/RectGridGeom.hpp"
 #include "simplnx/DataStructure/Geometry/VertexGeom.hpp"
 #include "simplnx/Filter/Actions/CreateArrayAction.hpp"
@@ -119,16 +122,215 @@ std::string GeneratePartitioningSchemeDisplayText(const SizeVec3& psDims, const 
   return desc;
 }
 
+Result<> DataCheckNumberOfPartitions(const SizeVec3& numberOfPartitionsPerAxis)
+{
+  if(numberOfPartitionsPerAxis.getX() <= 0)
+  {
+    return {MakeErrorResult(-3012, "Number of Partitions Per Axis: The X dimension must be greater than 0.")};
+  }
+
+  if(numberOfPartitionsPerAxis.getY() <= 0)
+  {
+    return {MakeErrorResult(-3013, "Number of Partitions Per Axis: The Y dimension must be greater than 0.")};
+  }
+
+  if(numberOfPartitionsPerAxis.getZ() <= 0)
+  {
+    return {MakeErrorResult(-3014, "Number of Partitions Per Axis: The Z dimension must be greater than 0.")};
+  }
+
+  return {};
+}
+
+template <typename GeomType>
+Result<> DataCheckPartitioningScheme(const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix)
+{
+  if constexpr(std::is_same_v<GeomType, ImageGeom> || std::is_same_v<GeomType, RectGridGeom>)
+  {
+    if(attrMatrix.getNumTuples() != geometryToPartition.getNumberOfCells())
+    {
+      return {MakeErrorResult(-3009, fmt::format("The attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s cell count ({}).", attrMatrix.getName(),
+                                                 attrMatrix.getNumTuples(), geometryToPartition.getName(), geometryToPartition.getNumberOfCells()))};
+    }
+  }
+  else
+  {
+    const IGeometry::SharedVertexList& vertexList = geometryToPartition.getVertices();
+    if(attrMatrix.getNumTuples() != vertexList.getNumberOfTuples())
+    {
+      return {MakeErrorResult(-3010, fmt::format("The attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s vertex count ({}).", attrMatrix.getName(),
+                                                 attrMatrix.getNumTuples(), geometryToPartition.getName(), vertexList.getNumberOfTuples()))};
+    }
+  }
+
+  return {};
+}
+
+template <typename GeomType>
+Result<> DataCheckBasicMode(const SizeVec3& numOfPartitionsPerAxis, const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix)
+{
+  Result<> result = DataCheckNumberOfPartitions(numOfPartitionsPerAxis);
+  if(result.invalid())
+  {
+    return result;
+  }
+
+  result = DataCheckPartitioningScheme<GeomType>(geometryToPartition, attrMatrix);
+  if(result.invalid())
+  {
+    return result;
+  }
+
+  return {};
+}
+
+template <typename GeomType>
+Result<> DataCheckAdvancedMode(const SizeVec3& numOfPartitionsPerAxis, const FloatVec3& lengthPerPartition, const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix)
+{
+  Result<> result = DataCheckNumberOfPartitions(numOfPartitionsPerAxis);
+  if(result.invalid())
+  {
+    return result;
+  }
+
+  if(lengthPerPartition.getX() < 0)
+  {
+    return {MakeErrorResult(-3003, fmt::format("Length Per Partition - The X value cannot be negative."))};
+  }
+  if(lengthPerPartition.getY() < 0)
+  {
+    return {MakeErrorResult(-3004, fmt::format("Length Per Partition - The Y value cannot be negative."))};
+  }
+  if(lengthPerPartition.getZ() < 0)
+  {
+    return {MakeErrorResult(-3005, fmt::format("Length Per Partition - The Z value cannot be negative."))};
+  }
+
+  result = DataCheckPartitioningScheme<GeomType>(geometryToPartition, attrMatrix);
+  if(result.invalid())
+  {
+    return result;
+  }
+
+  return {};
+}
+
+template <typename GeomType>
+Result<> DataCheckBoundingBoxMode(const SizeVec3& numOfPartitionsPerAxis, const FloatVec3& llCoord, const FloatVec3& urCoord, const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix)
+{
+  Result<> result = DataCheckNumberOfPartitions(numOfPartitionsPerAxis);
+  if(result.invalid())
+  {
+    return result;
+  }
+
+  if(llCoord.getX() > urCoord.getX())
+  {
+    return {MakeErrorResult(-3006, fmt::format("Lower Left Coordinate - X value is larger than the upper right coordinate X value."))};
+  }
+
+  if(llCoord.getY() > urCoord.getY())
+  {
+    return {MakeErrorResult(-3007, fmt::format("Lower Left Coordinate - Y value is larger than the upper right coordinate Y value."))};
+  }
+
+  if(llCoord.getZ() > urCoord.getZ())
+  {
+    return {MakeErrorResult(-3008, fmt::format("Lower Left Coordinate - Z value is larger than the upper right coordinate Z value."))};
+  }
+
+  result = DataCheckPartitioningScheme<GeomType>(geometryToPartition, attrMatrix);
+  if(result.invalid())
+  {
+    return result;
+  }
+
+  return {};
+}
+
+Result<> DataCheckExistingGeometryMode()
+{
+  // Nothing to do!
+  return {};
+}
+
+template <typename GeomType>
+Result<> DataCheckPartitioningMode(const DataStructure& dataStructure, const Arguments& filterArgs, const GeomType& geometryToPartition)
+{
+  auto pPartitioningModeValue = filterArgs.value<ChoicesParameter::ValueType>(PartitionGeometryFilter::k_PartitioningMode_Key);
+  auto partitioningMode = static_cast<PartitionGeometryFilter::PartitioningMode>(pPartitioningModeValue);
+
+  auto pNumberOfCellsPerAxisValue = filterArgs.value<VectorInt32Parameter::ValueType>(PartitionGeometryFilter::k_NumberOfCellsPerAxis_Key);
+  SizeVec3 numOfPartitionsPerAxis = {static_cast<usize>(pNumberOfCellsPerAxisValue[0]), static_cast<usize>(pNumberOfCellsPerAxisValue[1]), static_cast<usize>(pNumberOfCellsPerAxisValue[2])};
+
+  auto pCellLengthValue = filterArgs.value<VectorFloat32Parameter::ValueType>(PartitionGeometryFilter::k_CellLength_Key);
+  auto pMinGridCoordValue = filterArgs.value<VectorFloat32Parameter::ValueType>(PartitionGeometryFilter::k_MinGridCoord_Key);
+  auto pMaxGridCoordValue = filterArgs.value<VectorFloat32Parameter::ValueType>(PartitionGeometryFilter::k_MaxGridCoord_Key);
+
+  auto pInputGeomCellAMPathValue = filterArgs.value<DataPath>(PartitionGeometryFilter::k_InputGeometryCellAttributeMatrixPath_Key);
+  const auto& attrMatrix = dataStructure.getDataRefAs<AttributeMatrix>({pInputGeomCellAMPathValue});
+
+  switch(partitioningMode)
+  {
+  case PartitionGeometryFilter::PartitioningMode::Basic:
+    return DataCheckBasicMode<GeomType>(numOfPartitionsPerAxis, geometryToPartition, attrMatrix);
+  case PartitionGeometryFilter::PartitioningMode::Advanced:
+    return DataCheckAdvancedMode<GeomType>(numOfPartitionsPerAxis, pCellLengthValue, geometryToPartition, attrMatrix);
+  case PartitionGeometryFilter::PartitioningMode::BoundingBox:
+    return DataCheckBoundingBoxMode<GeomType>(numOfPartitionsPerAxis, pMinGridCoordValue, pMaxGridCoordValue, geometryToPartition, attrMatrix);
+  case PartitionGeometryFilter::PartitioningMode::ExistingPartitionGrid:
+    return DataCheckExistingGeometryMode();
+  }
+
+  return {};
+}
+
+template <typename Geom>
+concept Node3DConcept = std::derived_from<Geom, INodeGeometry3D>;
+
+template <typename Geom>
+concept Node2DConcept = std::derived_from<Geom, INodeGeometry2D>;
+
+template <typename Geom>
+concept Node1DConcept = std::derived_from<Geom, INodeGeometry1D>;
+
+template <typename Geom>
+concept Node0DConcept = std::derived_from<Geom, INodeGeometry0D>;
+
+template <typename Geom>
+concept GridConcept = std::derived_from<Geom, IGridGeometry>;
+
+template <Node0DConcept Geom>
+Result<FloatVec3> CalculateGeometryOrigin(const Geom& geom)
+{
+  const IGeometry::SharedVertexList& vertexList = geom.getVerticesRef();
+  auto& vertexListStore = vertexList.getDataStoreRef();
+  try
+  {
+    auto& store = dynamic_cast<const EmptyDataStore<float32>&>(vertexListStore);
+    return MakeErrorResult<FloatVec3>(-3015, fmt::format("Unable to calculate origin of geometry '{}' - The vertex list is invalid.", geom.getName()));
+  } catch(const std::bad_cast&)
+  {
+    return GeometryUtilities::CalculateNodeBasedPartitionSchemeOrigin(geom);
+  }
+}
+
+template <GridConcept Geom>
+Result<FloatVec3> CalculateGeometryOrigin(const Geom& geom)
+{
+  return {geom.getOrigin()};
+}
+
 /**
- * @brief Generates the partitioning scheme information (dimensions, origin, spacing, units)
+ * @brief Calculates the partitioning scheme spatial metadata (dimensions, origin, spacing, units)
  * that the filter will use to create the partitioning scheme image geometry.
  * @param geometry The input geometry
  * @param filterArgs The arguments from the filter, some filter variables are needed.
- * @return Returns a result that either contains a PSGeomInfo object with the data inside,
+ * @return Returns a result that either contains a PSSpatialMetadata object with the data inside,
  * or an error describing what went wrong during the generation process.
  */
 template <typename Geom>
-Result<PartitionGeometry::PSGeomInfo> GeneratePartitioningSchemeInfo(const Geom& geometry, const DataStructure& dataStructure, const Arguments& filterArgs)
+Result<PartitionGeometry::PSSpatialMetadata> CalculatePSSpatialMetadataImpl(const Geom& geometry, const DataStructure& dataStructure, const Arguments& filterArgs)
 {
   auto pPartitioningModeValue = filterArgs.value<ChoicesParameter::ValueType>(PartitionGeometryFilter::k_PartitioningMode_Key);
   auto pNumberOfCellsPerAxisValue = filterArgs.value<VectorInt32Parameter::ValueType>(PartitionGeometryFilter::k_NumberOfCellsPerAxis_Key);
@@ -136,29 +338,18 @@ Result<PartitionGeometry::PSGeomInfo> GeneratePartitioningSchemeInfo(const Geom&
   const SizeVec3 numOfPartitionsPerAxisValue = {static_cast<usize>(pNumberOfCellsPerAxisValue[0]), static_cast<usize>(pNumberOfCellsPerAxisValue[1]),
                                                 static_cast<usize>(pNumberOfCellsPerAxisValue[2])};
 
-  PartitionGeometry::PSGeomInfo psGeomMetadata;
+  PartitionGeometry::PSSpatialMetadata psGeomMetadata;
 
   switch(static_cast<PartitionGeometryFilter::PartitioningMode>(pPartitioningModeValue))
   {
   case PartitionGeometryFilter::PartitioningMode::Basic: {
-    Result<FloatVec3> originResult;
-    if constexpr(std::is_same_v<Geom, ImageGeom> || std::is_same_v<Geom, RectGridGeom>)
-    {
-      originResult = {geometry.getOrigin()};
-    }
-    else
-    {
-      originResult = GeometryUtilities::CalculateNodeBasedPartitionSchemeOrigin(geometry);
-    }
-
+    Result<FloatVec3> originResult = CalculateGeometryOrigin(geometry);
     Result<FloatVec3> pLengthResult = GeometryUtilities::CalculatePartitionLengthsByPartitionCount(geometry, numOfPartitionsPerAxisValue);
-    if(originResult.valid() && pLengthResult.valid())
-    {
-      psGeomMetadata.geometryDims = {static_cast<usize>(pNumberOfCellsPerAxisValue[0]), static_cast<usize>(pNumberOfCellsPerAxisValue[1]), static_cast<usize>(pNumberOfCellsPerAxisValue[2])};
-      psGeomMetadata.geometryOrigin = originResult.value();
-      psGeomMetadata.geometrySpacing = pLengthResult.value();
-      psGeomMetadata.geometryUnits = geometry.getUnits();
-    }
+    psGeomMetadata.geometryDims = {static_cast<usize>(pNumberOfCellsPerAxisValue[0]), static_cast<usize>(pNumberOfCellsPerAxisValue[1]), static_cast<usize>(pNumberOfCellsPerAxisValue[2])};
+    psGeomMetadata.geometryOrigin = originResult.valid() ? originResult.value() : std::optional<FloatVec3>{};
+    psGeomMetadata.geometrySpacing = pLengthResult.valid() ? pLengthResult.value() : std::optional<FloatVec3>{};
+    psGeomMetadata.geometryUnits = geometry.getUnits();
+
     break;
   }
   case PartitionGeometryFilter::PartitioningMode::Advanced: {
@@ -199,11 +390,84 @@ Result<PartitionGeometry::PSGeomInfo> GeneratePartitioningSchemeInfo(const Geom&
     break;
   }
   default: {
-    return {MakeErrorResult<PartitionGeometry::PSGeomInfo>(-3011, "Unable to create partitioning scheme geometry - Unknown partitioning mode.")};
+    return {MakeErrorResult<PartitionGeometry::PSSpatialMetadata>(-3011, "Unable to create partitioning scheme geometry - Unknown partitioning mode.")};
   }
   }
 
   return {psGeomMetadata};
+}
+
+template <Node3DConcept Geom>
+Result<> ValidateCellCounts(const Geom& geom)
+{
+  auto& polyList = geom.getPolyhedraRef();
+  auto& polyAM = geom.getPolyhedraAttributeMatrixRef();
+  if(polyAM.getNumTuples() != polyList.getNumberOfTuples())
+  {
+    return {MakeErrorResult(-3014, fmt::format("The polyhedra attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s polyhedra count ({}).", polyAM.getName(),
+                                               polyAM.getNumTuples(), geom.getName(), polyList.getNumberOfTuples()))};
+  }
+  return {};
+}
+
+template <Node2DConcept Geom>
+  requires(!Node3DConcept<Geom>)
+Result<> ValidateCellCounts(const Geom& geom)
+{
+  auto& facesList = geom.getFacesRef();
+  auto& facesAM = geom.getFaceAttributeMatrixRef();
+  if(facesAM.getNumTuples() != facesList.getNumberOfTuples())
+  {
+    return {MakeErrorResult(-3014, fmt::format("The faces attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s face count ({}).", facesAM.getName(),
+                                               facesAM.getNumTuples(), geom.getName(), facesList.getNumberOfTuples()))};
+  }
+  return {};
+}
+
+template <Node1DConcept Geom>
+  requires(!Node2DConcept<Geom>)
+Result<> ValidateCellCounts(const Geom& geom)
+{
+  auto& edgesList = geom.getEdgesRef();
+  auto& edgesAM = geom.getEdgeAttributeMatrixRef();
+  if(edgesAM.getNumTuples() != edgesList.getNumberOfTuples())
+  {
+    return {MakeErrorResult(-3014, fmt::format("The edges attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s edge count ({}).", edgesAM.getName(),
+                                               edgesAM.getNumTuples(), geom.getName(), edgesList.getNumberOfTuples()))};
+  }
+  return {};
+}
+
+template <Node0DConcept Geom>
+  requires(!Node1DConcept<Geom>)
+Result<> ValidateCellCounts(const Geom& geom)
+{
+  auto& vertexList = geom.getVerticesRef();
+  auto& verticesAM = geom.getVertexAttributeMatrixRef();
+  if(verticesAM.getNumTuples() != vertexList.getNumberOfTuples())
+  {
+    return {MakeErrorResult(-3014, fmt::format("The vertex attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s vertex count ({}).", verticesAM.getName(),
+                                               verticesAM.getNumTuples(), geom.getName(), geom.getNumberOfVertices()))};
+  }
+  return {};
+}
+
+template <Node0DConcept Geom>
+Result<PartitionGeometry::PSSpatialMetadata> CalculatePSSpatialMetadata(const Geom& geom, const DataStructure& dataStructure, const Arguments& filterArgs)
+{
+  auto result = ValidateCellCounts(geom);
+  if(result.invalid())
+  {
+    return {ConvertResultTo<PartitionGeometry::PSSpatialMetadata>(std::move(std::move(result)), {})};
+  }
+
+  return CalculatePSSpatialMetadataImpl(geom, dataStructure, filterArgs);
+}
+
+template <GridConcept Geom>
+Result<PartitionGeometry::PSSpatialMetadata> CalculatePSSpatialMetadata(const Geom& geom, const DataStructure& dataStructure, const Arguments& filterArgs)
+{
+  return CalculatePSSpatialMetadataImpl(geom, dataStructure, filterArgs);
 }
 } // namespace
 
@@ -246,8 +510,9 @@ Parameters PartitionGeometryFilter::parameters() const
 
   // Create the parameter descriptors that are needed for this filter
   params.insertSeparator(Parameters::Separator{"Input Geometry Parameters"});
-  params.insert(std::make_unique<GeometrySelectionParameter>(k_InputGeometryToPartition_Key, "Input Geometry to Partition", "The input geometry that will be partitioned", DataPath{},
-                                                             IGeometry::GetAllGeomTypes()));
+  params.insert(
+      std::make_unique<GeometrySelectionParameter>(k_InputGeometryToPartition_Key, "Input Geometry to Partition", "The input geometry that will be partitioned", DataPath{},
+                                                   GeometrySelectionParameter::AllowedTypes{IGeometry::Type::Image, IGeometry::Type::RectGrid, IGeometry::Type::Vertex, IGeometry::Type::Edge}));
   params.insert(std::make_unique<AttributeMatrixSelectionParameter>(k_InputGeometryCellAttributeMatrixPath_Key, "Input Geometry Cell Attribute Matrix ",
                                                                     "The attribute matrix that represents the cell data for the geometry.(Vertex=>Node Geometry, Cell=>Image/Rectilinear)",
                                                                     DataPath{}));
@@ -255,8 +520,8 @@ Parameters PartitionGeometryFilter::parameters() const
   params.insertLinkableParameter(std::make_unique<ChoicesParameter>(k_PartitioningMode_Key, "Select the partitioning mode",
                                                                     "Mode can be 'Basic (0)', 'Advanced (1)', 'Bounding Box (2)', 'Existing Partition Grid (3)'", 0, ::k_Choices));
   params.insert(std::make_unique<Int32Parameter>(k_StartingFeatureID_Key, "Starting Feature ID", "The value to start the partition grid's feature ids at.", 1));
-  params.insert(std::make_unique<Int32Parameter>(k_OutOfBoundsFeatureID_Key, "Out-Of-Bounds Feature ID",
-                                                 "The value used as the feature id for voxels/nodes that are outside the bounds of the partition grid.", 0));
+  params.insert(std::make_unique<Int32Parameter>(k_DefaultFeatureID_Key, "Default Feature ID",
+                                                 "The value used as the feature id for nodes/cells that are either ignored or outside the bounds of the partition grid.", 0));
   params.insert(std::make_unique<VectorInt32Parameter>(k_NumberOfCellsPerAxis_Key, "Number Of Cells Per Axis", "The number of cells along each axis of the partition grid",
                                                        std::vector<int32>({5, 5, 5}), std::vector<std::string>({"X", "Y", "Z"})));
   params.insert(std::make_unique<VectorFloat32Parameter>(k_PartitionGridOrigin_Key, "Partition Grid Origin", "The origin of the generated partition geometry", std::vector<float32>({0.0F, 0.0F, 0.0F}),
@@ -272,6 +537,14 @@ Parameters PartitionGeometryFilter::parameters() const
                                                              "This is an existing Image Geometry that defines the partition grid that will be used.", DataPath{},
                                                              GeometrySelectionParameter::AllowedTypes{IGeometry::Type::Image}));
 
+  params.insertSeparator(Parameters::Separator{"Node Geometry Parameters"});
+  params.insert(std::make_unique<ChoicesParameter>(
+      k_BoundaryIntersectionBehavior_Key, "Boundary Intersection Behavior (Edge Geometries Only)",
+      "The behavior to implement if an edge intersects a partition bound (part of the edge is inside, part of it is "
+      "outside).\n\n\"Ignore Edge\" will ignore any edge that intersects a partition bound (essentially invalidating the edge).\n\"Assign to Majority "
+      "Partition\" will "
+      "assign the edge to the partition that contains the majority of the edge.\n\"Filter Error\" will make this filter throw an error when it encounters an edge that intersects a partition bound.",
+      to_underlying(PartitionGeometry::BoundaryIntersectionBehavior::IgnoreEdge), ChoicesParameter::Choices{"Ignore Edge", "Assign to Majority Partition", "Filter Error"}));
   params.insertLinkableParameter(
       std::make_unique<BoolParameter>(k_UseVertexMask_Key, "Use Vertex Mask (Node Geometries Only)",
                                       "Feature ID values will only be placed on vertices that have a 'true' mask value. All others will have the Out-Of-Bounds Feature ID value used instead", false));
@@ -296,9 +569,6 @@ Parameters PartitionGeometryFilter::parameters() const
   params.linkParameters(k_PartitioningMode_Key, k_StartingFeatureID_Key, std::make_any<ChoicesParameter::ValueType>(k_BasicModeIndex));
   params.linkParameters(k_PartitioningMode_Key, k_StartingFeatureID_Key, std::make_any<ChoicesParameter::ValueType>(k_AdvancedModeIndex));
   params.linkParameters(k_PartitioningMode_Key, k_StartingFeatureID_Key, std::make_any<ChoicesParameter::ValueType>(k_BoundingBoxModeIndex));
-  params.linkParameters(k_PartitioningMode_Key, k_OutOfBoundsFeatureID_Key, std::make_any<ChoicesParameter::ValueType>(k_AdvancedModeIndex));
-  params.linkParameters(k_PartitioningMode_Key, k_OutOfBoundsFeatureID_Key, std::make_any<ChoicesParameter::ValueType>(k_BoundingBoxModeIndex));
-  params.linkParameters(k_PartitioningMode_Key, k_OutOfBoundsFeatureID_Key, std::make_any<ChoicesParameter::ValueType>(k_ExistingSchemeModeIndex));
   params.linkParameters(k_PartitioningMode_Key, k_NumberOfCellsPerAxis_Key, std::make_any<ChoicesParameter::ValueType>(k_BasicModeIndex));
   params.linkParameters(k_PartitioningMode_Key, k_NumberOfCellsPerAxis_Key, std::make_any<ChoicesParameter::ValueType>(k_AdvancedModeIndex));
   params.linkParameters(k_PartitioningMode_Key, k_NumberOfCellsPerAxis_Key, std::make_any<ChoicesParameter::ValueType>(k_BoundingBoxModeIndex));
@@ -357,17 +627,17 @@ IFilter::PreflightResult PartitionGeometryFilter::preflightImpl(const DataStruct
   const auto& attrMatrix = dataStructure.getDataRefAs<AttributeMatrix>(pInputGeomCellAMPathValue);
   const auto& iGeom = dataStructure.getDataRefAs<IGeometry>({pInputGeometryToPartitionValue});
   std::string inputGeometryInformation;
-  Result<PartitionGeometry::PSGeomInfo> psInfo;
+  Result<PartitionGeometry::PSSpatialMetadata> psInfo;
   switch(iGeom.getGeomType())
   {
   case IGeometry::Type::Image: {
     const auto& geometry = dataStructure.getDataRefAs<ImageGeom>({pInputGeometryToPartitionValue});
-    Result<> result = dataCheckPartitioningMode<ImageGeom>(dataStructure, filterArgs, geometry);
+    Result<> result = DataCheckPartitioningMode<ImageGeom>(dataStructure, filterArgs, geometry);
     if(result.invalid())
     {
       return {ConvertResultTo<OutputActions>(std::move(result), {})};
     }
-    psInfo = GeneratePartitioningSchemeInfo(geometry, dataStructure, filterArgs);
+    psInfo = CalculatePSSpatialMetadata(geometry, dataStructure, filterArgs);
     inputGeometryInformation = GenerateInputGeometryDisplayText(geometry.getDimensions(), geometry.getOrigin(), geometry.getSpacing(), geometry.getUnits());
     break;
   }
@@ -378,12 +648,13 @@ IFilter::PreflightResult PartitionGeometryFilter::preflightImpl(const DataStruct
       return {MakeErrorResult<OutputActions>(-3010, fmt::format("{}: The attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s cell count ({}).", humanName(),
                                                                 attrMatrix.getName(), attrMatrix.getNumTuples(), geometry.getName(), geometry.getNumberOfCells()))};
     }
-    psInfo = GeneratePartitioningSchemeInfo(geometry, dataStructure, filterArgs);
+    psInfo = CalculatePSSpatialMetadata(geometry, dataStructure, filterArgs);
     inputGeometryInformation = "Rectilinear grid geometry space unknown during preflight.";
     break;
   }
   case IGeometry::Type::Vertex: {
-    psInfo = generateNodeBasedPSInfo(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
+    const auto& geometry = dataStructure.getDataRefAs<VertexGeom>({pInputGeometryToPartitionValue});
+    psInfo = CalculatePSSpatialMetadata(geometry, dataStructure, filterArgs);
     if(psInfo.invalid())
     {
       return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
@@ -392,7 +663,8 @@ IFilter::PreflightResult PartitionGeometryFilter::preflightImpl(const DataStruct
     break;
   }
   case IGeometry::Type::Edge: {
-    psInfo = generateNodeBasedPSInfo(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
+    const auto& geometry = dataStructure.getDataRefAs<EdgeGeom>({pInputGeometryToPartitionValue});
+    psInfo = CalculatePSSpatialMetadata(geometry, dataStructure, filterArgs);
     if(psInfo.invalid())
     {
       return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
@@ -400,44 +672,45 @@ IFilter::PreflightResult PartitionGeometryFilter::preflightImpl(const DataStruct
     inputGeometryInformation = "Edge geometry space unknown during preflight.";
     break;
   }
-  case IGeometry::Type::Triangle: {
-    psInfo = generateNodeBasedPSInfo(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
-    if(psInfo.invalid())
-    {
-      return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
-    }
-    inputGeometryInformation = "Triangle geometry space unknown during preflight.";
-    break;
-  }
-  case IGeometry::Type::Quad: {
-    psInfo = generateNodeBasedPSInfo(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
-    if(psInfo.invalid())
-    {
-      return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
-    }
-    inputGeometryInformation = "Quad geometry space unknown during preflight.";
-    break;
-  }
-  case IGeometry::Type::Tetrahedral: {
-    psInfo = generateNodeBasedPSInfo(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
-    if(psInfo.invalid())
-    {
-      return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
-    }
-    inputGeometryInformation = "Tetrahedral geometry space unknown during preflight.";
-    break;
-  }
-  case IGeometry::Type::Hexahedral: {
-    psInfo = generateNodeBasedPSInfo(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
-    if(psInfo.invalid())
-    {
-      return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
-    }
-    inputGeometryInformation = "Hexahedral geometry space unknown during preflight.";
-    break;
-  }
+    //  case IGeometry::Type::Triangle: {
+    //    psInfo = CalculatePSSpatialMetadata(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
+    //    if(psInfo.invalid())
+    //    {
+    //      return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
+    //    }
+    //    inputGeometryInformation = "Triangle geometry space unknown during preflight.";
+    //    break;
+    //  }
+    //  case IGeometry::Type::Quad: {
+    //    psInfo = CalculatePSSpatialMetadata(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
+    //    if(psInfo.invalid())
+    //    {
+    //      return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
+    //    }
+    //    inputGeometryInformation = "Quad geometry space unknown during preflight.";
+    //    break;
+    //  }
+    //  case IGeometry::Type::Tetrahedral: {
+    //    psInfo = CalculatePSSpatialMetadata(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
+    //    if(psInfo.invalid())
+    //    {
+    //      return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
+    //    }
+    //    inputGeometryInformation = "Tetrahedral geometry space unknown during preflight.";
+    //    break;
+    //  }
+    //  case IGeometry::Type::Hexahedral: {
+    //    psInfo = CalculatePSSpatialMetadata(dataStructure, filterArgs, pInputGeometryToPartitionValue, pInputGeomCellAMPathValue);
+    //    if(psInfo.invalid())
+    //    {
+    //      return {ConvertResultTo<OutputActions>(ConvertResult(std::move(psInfo)), {})};
+    //    }
+    //    inputGeometryInformation = "Hexahedral geometry space unknown during preflight.";
+    //    break;
+    //  }
   default: {
-    return {MakeErrorResult<OutputActions>(-3017, fmt::format("{}: Unable to partition geometry - Unknown geometry type detected.", humanName()))};
+    return {MakeErrorResult<OutputActions>(
+        -3017, fmt::format("{}: Unable to partition geometry - Geometry type '{}' not supported by this filter.", humanName(), IGeometry::GeomTypeToString(iGeom.getGeomType())))};
   }
   }
 
@@ -498,225 +771,6 @@ IFilter::PreflightResult PartitionGeometryFilter::preflightImpl(const DataStruct
   return {std::move(resultOutputActions), std::move(preflightUpdatedValues)};
 }
 
-// -----------------------------------------------------------------------------
-Result<PartitionGeometry::PSGeomInfo> PartitionGeometryFilter::generateNodeBasedPSInfo(const DataStructure& dataStructure, const Arguments& filterArgs, const DataPath& geometryToPartitionPath,
-                                                                                       const DataPath& attrMatrixPath) const
-{
-  const auto& geometry = dataStructure.getDataRefAs<INodeGeometry0D>({geometryToPartitionPath});
-  const IGeometry::SharedVertexList& vertexList = geometry.getVerticesRef();
-  const auto& attrMatrix = dataStructure.getDataRefAs<AttributeMatrix>(attrMatrixPath);
-  if(attrMatrix.getNumTuples() != vertexList.getNumberOfTuples())
-  {
-    return {MakeErrorResult<PartitionGeometry::PSGeomInfo>(-3014, fmt::format("{}: The attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s vertex count ({}).",
-                                                                              humanName(), attrMatrix.getName(), attrMatrix.getNumTuples(), geometry.getName(), geometry.getNumberOfVertices()))};
-  }
-  Result<> dimensionalityResult = DataCheckDimensionality(geometry);
-  if(dimensionalityResult.invalid())
-  {
-    return {ConvertResultTo<PartitionGeometry::PSGeomInfo>(std::move(dimensionalityResult), {})};
-  }
-  return GeneratePartitioningSchemeInfo(geometry, dataStructure, filterArgs);
-}
-
-// -----------------------------------------------------------------------------
-Result<> PartitionGeometryFilter::DataCheckDimensionality(const INodeGeometry0D& geometry)
-{
-  Result<bool> yzPlaneResult = geometry.isYZPlane();
-  if(yzPlaneResult.valid() && yzPlaneResult.value())
-  {
-    return {MakeErrorResult(-3040, "Unable to create a partitioning scheme with a X dimension size of 0.  Vertices are in an YZ plane.  Use the Advanced or Bounding Box "
-                                   "partitioning modes to manually create a partitioning scheme.")};
-  }
-
-  Result<bool> xzPlaneResult = geometry.isXZPlane();
-  if(xzPlaneResult.valid() && xzPlaneResult.value())
-  {
-    return {MakeErrorResult(-3041, "Unable to create a partitioning scheme with a Y dimension size of 0.  Vertices are in an XZ plane.  Use the Advanced or Bounding Box "
-                                   "partitioning modes to manually create a partitioning scheme.")};
-  }
-
-  Result<bool> xyPlaneResult = geometry.isXYPlane();
-  if(xyPlaneResult.valid() && xyPlaneResult.value())
-  {
-    return {MakeErrorResult(-3042, "Unable to create a partitioning scheme with a Z dimension size of 0.  Vertices are in an XY plane.  Use the Advanced or Bounding Box "
-                                   "partitioning modes to manually create a partitioning scheme.")};
-  }
-
-  return {};
-}
-
-// -----------------------------------------------------------------------------
-template <typename GeomType>
-Result<> PartitionGeometryFilter::dataCheckPartitioningMode(const DataStructure& dataStructure, const Arguments& filterArgs, const GeomType& geometryToPartition) const
-{
-  auto pPartitioningModeValue = filterArgs.value<ChoicesParameter::ValueType>(k_PartitioningMode_Key);
-  auto partitioningMode = static_cast<PartitioningMode>(pPartitioningModeValue);
-
-  auto pNumberOfCellsPerAxisValue = filterArgs.value<VectorInt32Parameter::ValueType>(k_NumberOfCellsPerAxis_Key);
-  SizeVec3 numOfPartitionsPerAxis = {static_cast<usize>(pNumberOfCellsPerAxisValue[0]), static_cast<usize>(pNumberOfCellsPerAxisValue[1]), static_cast<usize>(pNumberOfCellsPerAxisValue[2])};
-
-  auto pCellLengthValue = filterArgs.value<VectorFloat32Parameter::ValueType>(k_CellLength_Key);
-  auto pMinGridCoordValue = filterArgs.value<VectorFloat32Parameter::ValueType>(k_MinGridCoord_Key);
-  auto pMaxGridCoordValue = filterArgs.value<VectorFloat32Parameter::ValueType>(k_MaxGridCoord_Key);
-
-  auto pInputGeomCellAMPathValue = filterArgs.value<DataPath>(k_InputGeometryCellAttributeMatrixPath_Key);
-  const auto& attrMatrix = dataStructure.getDataRefAs<AttributeMatrix>({pInputGeomCellAMPathValue});
-
-  switch(partitioningMode)
-  {
-  case PartitioningMode::Basic:
-    return dataCheckBasicMode<GeomType>(numOfPartitionsPerAxis, geometryToPartition, attrMatrix);
-  case PartitioningMode::Advanced:
-    return dataCheckAdvancedMode<GeomType>(numOfPartitionsPerAxis, pCellLengthValue, geometryToPartition, attrMatrix);
-  case PartitioningMode::BoundingBox:
-    return dataCheckBoundingBoxMode<GeomType>(numOfPartitionsPerAxis, pMinGridCoordValue, pMaxGridCoordValue, geometryToPartition, attrMatrix);
-  case PartitioningMode::ExistingPartitionGrid:
-    return DataCheckExistingGeometryMode();
-  }
-
-  return {};
-}
-
-// -----------------------------------------------------------------------------
-template <typename GeomType>
-Result<> PartitionGeometryFilter::dataCheckBasicMode(const SizeVec3& numOfPartitionsPerAxis, const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix) const
-{
-  Result<> result = DataCheckNumberOfPartitions(numOfPartitionsPerAxis);
-  if(result.invalid())
-  {
-    return result;
-  }
-
-  result = dataCheckPartitioningScheme<GeomType>(geometryToPartition, attrMatrix);
-  if(result.invalid())
-  {
-    return result;
-  }
-
-  return {};
-}
-
-// -----------------------------------------------------------------------------
-template <typename GeomType>
-Result<> PartitionGeometryFilter::dataCheckAdvancedMode(const SizeVec3& numOfPartitionsPerAxis, const FloatVec3& lengthPerPartition, const GeomType& geometryToPartition,
-                                                        const AttributeMatrix& attrMatrix) const
-{
-  Result<> result = DataCheckNumberOfPartitions(numOfPartitionsPerAxis);
-  if(result.invalid())
-  {
-    return result;
-  }
-
-  if(lengthPerPartition.getX() < 0)
-  {
-    return {MakeErrorResult(-3003, fmt::format("{}: Length Per Partition - The X value cannot be negative.", humanName()))};
-  }
-  if(lengthPerPartition.getY() < 0)
-  {
-    return {MakeErrorResult(-3004, fmt::format("{}: Length Per Partition - The Y value cannot be negative.", humanName()))};
-  }
-  if(lengthPerPartition.getZ() < 0)
-  {
-    return {MakeErrorResult(-3005, fmt::format("{}: Length Per Partition - The Z value cannot be negative.", humanName()))};
-  }
-
-  result = dataCheckPartitioningScheme<GeomType>(geometryToPartition, attrMatrix);
-  if(result.invalid())
-  {
-    return result;
-  }
-
-  return {};
-}
-
-// -----------------------------------------------------------------------------
-template <typename GeomType>
-Result<> PartitionGeometryFilter::dataCheckBoundingBoxMode(const SizeVec3& numOfPartitionsPerAxis, const FloatVec3& llCoord, const FloatVec3& urCoord, const GeomType& geometryToPartition,
-                                                           const AttributeMatrix& attrMatrix) const
-{
-  Result<> result = DataCheckNumberOfPartitions(numOfPartitionsPerAxis);
-  if(result.invalid())
-  {
-    return result;
-  }
-
-  if(llCoord.getX() > urCoord.getX())
-  {
-    return {MakeErrorResult(-3006, fmt::format("{}: Lower Left Coordinate - X value is larger than the upper right coordinate X value.", humanName()))};
-  }
-
-  if(llCoord.getY() > urCoord.getY())
-  {
-    return {MakeErrorResult(-3007, fmt::format("{}: Lower Left Coordinate - Y value is larger than the upper right coordinate Y value.", humanName()))};
-  }
-
-  if(llCoord.getZ() > urCoord.getZ())
-  {
-    return {MakeErrorResult(-3008, fmt::format("{}: Lower Left Coordinate - Z value is larger than the upper right coordinate Z value.", humanName()))};
-  }
-
-  result = dataCheckPartitioningScheme<GeomType>(geometryToPartition, attrMatrix);
-  if(result.invalid())
-  {
-    return result;
-  }
-
-  return {};
-}
-
-// -----------------------------------------------------------------------------
-Result<> PartitionGeometryFilter::DataCheckExistingGeometryMode()
-{
-  // Nothing to do!
-  return {};
-}
-
-// -----------------------------------------------------------------------------
-template <typename GeomType>
-Result<> PartitionGeometryFilter::dataCheckPartitioningScheme(const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix) const
-{
-  if constexpr(std::is_same_v<GeomType, ImageGeom> || std::is_same_v<GeomType, RectGridGeom>)
-  {
-    if(attrMatrix.getNumTuples() != geometryToPartition.getNumberOfCells())
-    {
-      return {MakeErrorResult(-3009, fmt::format("{}: The attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s cell count ({}).", humanName(), attrMatrix.getName(),
-                                                 attrMatrix.getNumTuples(), geometryToPartition.getName(), geometryToPartition.getNumberOfCells()))};
-    }
-  }
-  else
-  {
-    const IGeometry::SharedVertexList& vertexList = geometryToPartition.getVertices();
-    if(attrMatrix.getNumTuples() != vertexList.getNumberOfTuples())
-    {
-      return {MakeErrorResult(-3010, fmt::format("{}: The attribute matrix '{}' does not have the same tuple count ({}) as geometry \"{}\"'s vertex count ({}).", humanName(), attrMatrix.getName(),
-                                                 attrMatrix.getNumTuples(), geometryToPartition.getName(), vertexList.getNumberOfTuples()))};
-    }
-  }
-
-  return {};
-}
-
-// -----------------------------------------------------------------------------
-Result<> PartitionGeometryFilter::DataCheckNumberOfPartitions(const SizeVec3& numberOfPartitionsPerAxis)
-{
-  if(numberOfPartitionsPerAxis.getX() <= 0)
-  {
-    return {MakeErrorResult(-3012, "Number of Partitions Per Axis: The X dimension must be greater than 0.")};
-  }
-
-  if(numberOfPartitionsPerAxis.getY() <= 0)
-  {
-    return {MakeErrorResult(-3013, "Number of Partitions Per Axis: The Y dimension must be greater than 0.")};
-  }
-
-  if(numberOfPartitionsPerAxis.getZ() <= 0)
-  {
-    return {MakeErrorResult(-3014, "Number of Partitions Per Axis: The Z dimension must be greater than 0.")};
-  }
-
-  return {};
-}
-
 //------------------------------------------------------------------------------
 Result<> PartitionGeometryFilter::executeImpl(DataStructure& dataStructure, const Arguments& filterArgs, const PipelineFilter* pipelineNode, const MessageHandler& messageHandler,
                                               const std::atomic_bool& shouldCancel, const ExecutionContext& executionContext) const
@@ -726,7 +780,7 @@ Result<> PartitionGeometryFilter::executeImpl(DataStructure& dataStructure, cons
 
   inputValues.PartitioningMode = filterArgs.value<ChoicesParameter::ValueType>(k_PartitioningMode_Key);
   inputValues.StartingFeatureID = filterArgs.value<int32>(k_StartingFeatureID_Key);
-  inputValues.OutOfBoundsFeatureID = filterArgs.value<int32>(k_OutOfBoundsFeatureID_Key);
+  inputValues.DefaultFeatureID = filterArgs.value<int32>(k_DefaultFeatureID_Key);
   inputValues.NumberOfCellsPerAxis = filterArgs.value<VectorInt32Parameter::ValueType>(k_NumberOfCellsPerAxis_Key);
   inputValues.PartitionGridOrigin = filterArgs.value<VectorFloat32Parameter::ValueType>(k_PartitionGridOrigin_Key);
   inputValues.CellLength = filterArgs.value<VectorFloat32Parameter::ValueType>(k_CellLength_Key);
@@ -739,6 +793,7 @@ Result<> PartitionGeometryFilter::executeImpl(DataStructure& dataStructure, cons
   inputValues.InputGeometryToPartition = filterArgs.value<DataPath>(k_InputGeometryToPartition_Key);
   inputValues.PartitionIdsArrayName = filterArgs.value<DataObjectNameParameter::ValueType>(k_PartitionIdsArrayName_Key);
   inputValues.ExistingPartitionGridPath = filterArgs.value<DataPath>(k_ExistingPartitionGridPath_Key);
+  inputValues.BoundaryIntersectionBehavior = filterArgs.value<ChoicesParameter::ValueType>(k_BoundaryIntersectionBehavior_Key);
   inputValues.UseVertexMask = filterArgs.value<bool>(k_UseVertexMask_Key);
   inputValues.VertexMaskPath = filterArgs.value<DataPath>(k_VertexMaskPath_Key);
   inputValues.FeatureAttrMatrixName = filterArgs.value<DataObjectNameParameter::ValueType>(k_FeatureAttrMatrixName_Key);

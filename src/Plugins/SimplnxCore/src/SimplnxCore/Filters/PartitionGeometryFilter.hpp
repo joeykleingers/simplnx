@@ -54,7 +54,7 @@ public:
   // Parameter Keys
   static inline constexpr StringLiteral k_PartitioningMode_Key = "partitioning_mode_index";
   static inline constexpr StringLiteral k_StartingFeatureID_Key = "starting_partition_id";
-  static inline constexpr StringLiteral k_OutOfBoundsFeatureID_Key = "out_of_bounds_value";
+  static inline constexpr StringLiteral k_DefaultFeatureID_Key = "out_of_bounds_value";
   static inline constexpr StringLiteral k_NumberOfCellsPerAxis_Key = "number_of_partitions_per_axis";
   static inline constexpr StringLiteral k_PartitionGridOrigin_Key = "partitioning_scheme_origin";
   static inline constexpr StringLiteral k_CellLength_Key = "length_per_partition";
@@ -66,6 +66,7 @@ public:
   static inline constexpr StringLiteral k_PartitionGridFeatureIDsName_Key = "created_feature_ids_name";
   static inline constexpr StringLiteral k_InputGeometryToPartition_Key = "input_geometry_path";
   static inline constexpr StringLiteral k_ExistingPartitionGridPath_Key = "existing_partitioning_scheme_path";
+  static inline constexpr StringLiteral k_BoundaryIntersectionBehavior_Key = "boundary_intersection_behavior_index";
   static inline constexpr StringLiteral k_UseVertexMask_Key = "use_vertex_mask";
   static inline constexpr StringLiteral k_VertexMaskPath_Key = "vertex_mask_path";
   static inline constexpr StringLiteral k_FeatureAttrMatrixName_Key = "feature_attr_matrix_name";
@@ -149,34 +150,6 @@ protected:
    */
   Result<> executeImpl(DataStructure& dataStructure, const Arguments& filterArgs, const PipelineFilter* pipelineNode, const MessageHandler& messageHandler, const std::atomic_bool& shouldCancel,
                        const ExecutionContext& executionContext) const override;
-
-  template <typename GeomType>
-  Result<> dataCheckPartitioningMode(const DataStructure& dataStructure, const Arguments& filterArgs, const GeomType& geometryToPartition) const;
-
-  template <typename GeomType>
-  Result<> dataCheckBasicMode(const SizeVec3& numOfPartitionsPerAxis, const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix) const;
-
-  template <typename GeomType>
-  Result<> dataCheckAdvancedMode(const SizeVec3& numOfPartitionsPerAxis, const FloatVec3& lengthPerPartition, const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix) const;
-
-  template <typename GeomType>
-  Result<> dataCheckBoundingBoxMode(const SizeVec3& numOfPartitionsPerAxis, const FloatVec3& llCoord, const FloatVec3& urCoord, const GeomType& geometryToPartition,
-                                    const AttributeMatrix& attrMatrix) const;
-
-  static Result<> DataCheckExistingGeometryMode();
-
-  template <typename GeomType>
-  Result<> dataCheckPartitioningScheme(const GeomType& geometryToPartition, const AttributeMatrix& attrMatrix) const;
-
-  /**
-   * @brief Helper method that data checks the Number Of Partitions Per Axis variable.
-   */
-  static Result<> DataCheckNumberOfPartitions(const SizeVec3& numberOfPartitionsPerAxis);
-
-  static Result<> DataCheckDimensionality(const INodeGeometry0D& geometry);
-
-  Result<PartitionGeometry::PSGeomInfo> generateNodeBasedPSInfo(const DataStructure& dataStructure, const Arguments& filterArgs, const DataPath& geometryToPartitionPath,
-                                                                const DataPath& attrMatrixPath) const;
 };
 } // namespace nx::core
 

@@ -52,16 +52,27 @@ void GeometryUtilities::FindUniqueIdsImpl::operator()(const Range& range) const
   convert(range.min(), range.max());
 }
 
+// -----------------------------------------------------------------------------
 Result<FloatVec3> GeometryUtilities::CalculatePartitionLengthsByPartitionCount(const INodeGeometry0D& geometry, const SizeVec3& numberOfPartitionsPerAxis)
 {
-  BoundingBox3Df boundingBox = geometry.getBoundingBox();
-  if(!boundingBox.isValid())
+  const IGeometry::SharedVertexList& vertexList = geometry.getVerticesRef();
+  auto& vertexListStore = vertexList.getDataStoreRef();
+  try
   {
-    return {};
+    auto& store = dynamic_cast<const EmptyDataStore<float32>&>(vertexListStore);
+    return MakeErrorResult<FloatVec3>(-3015, fmt::format("Unable to calculate spacing of geometry '{}' - The vertex list is invalid.", geometry.getName()));
+  } catch(const std::bad_cast&)
+  {
+    BoundingBox3Df boundingBox = geometry.getBoundingBox();
+    if(!boundingBox.isValid())
+    {
+      return {};
+    }
+    return GeometryUtilities::CalculatePartitionLengthsOfBoundingBox({(boundingBox.getMinPoint() - k_Padding), (boundingBox.getMaxPoint() + k_Padding)}, numberOfPartitionsPerAxis);
   }
-  return GeometryUtilities::CalculatePartitionLengthsOfBoundingBox({(boundingBox.getMinPoint() - k_Padding), (boundingBox.getMaxPoint() + k_Padding)}, numberOfPartitionsPerAxis);
 }
 
+// -----------------------------------------------------------------------------
 Result<FloatVec3> GeometryUtilities::CalculatePartitionLengthsByPartitionCount(const ImageGeom& geometry, const SizeVec3& numberOfPartitionsPerAxis)
 {
   SizeVec3 dims = geometry.getDimensions();
@@ -613,7 +624,7 @@ GeometryUtilities::SliceTriangleReturnType GeometryUtilities::SliceTriangleGeome
         edgeCounter++;
       }
     } // END TRIANGLE LOOP
-  }   // END SLICE LOOP
+  } // END SLICE LOOP
 
   return {std::move(slicedVerts), std::move(sliceIds), std::move(regionIds), numberOfSlices};
 }

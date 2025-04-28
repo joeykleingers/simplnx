@@ -17,7 +17,7 @@ struct SIMPLNXCORE_EXPORT PartitionGeometryInputValues
 {
   ChoicesParameter::ValueType PartitioningMode;
   int32 StartingFeatureID;
-  int32 OutOfBoundsFeatureID;
+  int32 DefaultFeatureID;
   VectorInt32Parameter::ValueType NumberOfCellsPerAxis;
   VectorFloat32Parameter::ValueType PartitionGridOrigin;
   VectorFloat32Parameter::ValueType CellLength;
@@ -30,6 +30,7 @@ struct SIMPLNXCORE_EXPORT PartitionGeometryInputValues
   DataPath InputGeometryToPartition;
   std::string PartitionIdsArrayName;
   DataPath ExistingPartitionGridPath;
+  uint64 BoundaryIntersectionBehavior;
   bool UseVertexMask;
   DataPath VertexMaskPath;
   std::string FeatureAttrMatrixName;
@@ -55,6 +56,7 @@ class SIMPLNXCORE_EXPORT PartitionGeometry
 {
 public:
   using VertexStore = AbstractDataStore<IGeometry::SharedVertexList::value_type>;
+  using EdgesStore = AbstractDataStore<IGeometry::SharedEdgeList::value_type>;
 
   PartitionGeometry(DataStructure& dataStructure, const IFilter::MessageHandler& msgHandler, const std::atomic_bool& shouldCancel, PartitionGeometryInputValues* inputValues);
   ~PartitionGeometry() noexcept;
@@ -64,7 +66,23 @@ public:
   PartitionGeometry& operator=(const PartitionGeometry&) = delete;
   PartitionGeometry& operator=(PartitionGeometry&&) noexcept = delete;
 
-  struct PSGeomInfo
+  enum class BoundaryIntersectionBehavior : uint64
+  {
+    IgnoreEdge = 0,
+    AssignToMajorityPartition = 1,
+    FilterError = 2
+  };
+
+  struct BoundaryIntersectionMetadata
+  {
+    int32 partitionId1;
+    int32 partitionId2;
+    usize edgeId;
+    FloatVec3 edgeEndpoint1;
+    FloatVec3 edgeEndpoint2;
+  };
+
+  struct PSSpatialMetadata
   {
     USizeVec3 geometryDims;
     std::optional<FloatVec3> geometryOrigin;
@@ -100,28 +118,6 @@ private:
    * if there was an error.
    */
   Result<> partitionCellBasedGeometry(const IGridGeometry& inputGeometry, Int32AbstractDataStore& partitionIdsStore, const ImageGeom& psImageGeom, int outOfBoundsValue);
-
-  /**
-   * @brief Partitions a vertex list (typically from a node-based geometry) according to
-   * the partitioning scheme geometry provided, and stores the partition ids in the
-   * partitionIds array.
-   *
-   * If a given vertex is outside the partitioning scheme bounds and an out of bounds value
-   * is provided, the vertex will be labeled with the out of bounds value.  Otherwise,
-   * the function will return an invalid Result with an error message.
-   *
-   * @param vertexListStore The list of vertices from the node-based geometry
-   * @param partitionIdsStore The partition ids array that stores the results.
-   * @param psImageGeom The partitioning scheme image geometry that is used
-   * to partition the vertex list.
-   * @param outOfBoundsValue Value that out-of-bounds vertices will be
-   * labeled with
-   * @param maskArrayOpt Optional mask array
-   * @return The result of the partitioning algorithm.  Valid if successful, invalid
-   * if there was an error.
-   */
-  Result<> partitionNodeBasedGeometry(const VertexStore& vertexListStore, Int32AbstractDataStore& partitionIdsStore, const ImageGeom& psImageGeom, int outOfBoundsValue,
-                                      const std::optional<const BoolArray>& maskArrayOpt);
 };
 
 } // namespace nx::core
