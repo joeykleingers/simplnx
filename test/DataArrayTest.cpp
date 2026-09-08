@@ -7,6 +7,8 @@
 #include "simplnx/DataStructure/EmptyDataStore.hpp"
 #include "simplnx/UnitTest/UnitTestCommon.hpp"
 #include "simplnx/Utilities/ArrayCreationUtilities.hpp"
+#include "simplnx/Utilities/DataArrayUtilities.hpp"
+#include "simplnx/Utilities/ParallelTaskAlgorithm.hpp"
 
 #include <catch2/catch.hpp>
 #include <fmt/ranges.h>
@@ -74,6 +76,63 @@ TEST_CASE("DataArrayCreation")
   size_t numTuples = data_array.getNumberOfTuples();
   REQUIRE(numTuples == 0);
 
+  UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}
+
+TEMPLATE_TEST_CASE("CopyUsingIndexList maps data arrays", "[simplnx][DataArray][CopyUsingIndexList]", bool, int8, uint8, int16, uint16, int32, uint32, int64, uint64, float32, float64)
+{
+  DataStructure dataStructure;
+  auto* sourceArrayPtr = DataArray<TestType>::Create(dataStructure, "Source", std::make_shared<DataStore<TestType>>(ShapeType{3}, ShapeType{2}, TestType{0}));
+  auto* destArrayPtr = DataArray<TestType>::Create(dataStructure, "Destination", std::make_shared<DataStore<TestType>>(ShapeType{4}, ShapeType{2}, TestType{1}));
+  REQUIRE(sourceArrayPtr != nullptr);
+  REQUIRE(destArrayPtr != nullptr);
+  const std::array<TestType, 6> sourceValues = {TestType{1}, TestType{0}, TestType{0}, TestType{1}, TestType{1}, TestType{1}};
+  for(usize valueIndex = 0; valueIndex < sourceValues.size(); ++valueIndex)
+  {
+    (*sourceArrayPtr)[valueIndex] = sourceValues[valueIndex];
+  }
+  const std::vector<int64> indexMap = {2, -1, 0, 2};
+  const nonstd::span<const int64> indexSpan(indexMap);
+  CopyFromArray::ParallelTaskResult taskResult;
+  ParallelTaskAlgorithm runner;
+  runner.setParallelizationEnabled(false);
+  CopyFromArray::RunParallelCopyUsingIndexList(*destArrayPtr, runner, taskResult, *sourceArrayPtr, indexSpan);
+  runner.wait();
+  REQUIRE(taskResult.takeResult().valid());
+  const std::array<TestType, 8> expectedValues = {TestType{1}, TestType{1}, TestType{0}, TestType{0}, TestType{1}, TestType{0}, TestType{1}, TestType{1}};
+  for(usize valueIndex = 0; valueIndex < expectedValues.size(); ++valueIndex)
+  {
+    REQUIRE((*destArrayPtr)[valueIndex] == expectedValues[valueIndex]);
+  }
+  UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}
+
+TEST_CASE("CopyUsingIndexList maps neighbor lists", "[simplnx][NeighborList][CopyUsingIndexList]")
+{
+  DataStructure dataStructure;
+  auto* sourceListPtr = NeighborList<int32>::Create(dataStructure, "Source", ShapeType{3});
+  auto* destListPtr = NeighborList<int32>::Create(dataStructure, "Destination", ShapeType{4});
+  REQUIRE(sourceListPtr != nullptr);
+  REQUIRE(destListPtr != nullptr);
+  sourceListPtr->setList(0, std::vector<int32>{7, 8});
+  sourceListPtr->setList(1, std::vector<int32>{9});
+  sourceListPtr->setList(2, std::vector<int32>{10, 11, 12});
+  for(int32 tupleIndex = 0; tupleIndex < 4; ++tupleIndex)
+  {
+    destListPtr->setList(tupleIndex, std::vector<int32>{99});
+  }
+  const std::vector<int64> indexMap = {2, -1, 0, 2};
+  const nonstd::span<const int64> indexSpan(indexMap);
+  CopyFromArray::ParallelTaskResult taskResult;
+  ParallelTaskAlgorithm runner;
+  runner.setParallelizationEnabled(false);
+  CopyFromArray::RunParallelCopyUsingIndexList(*destListPtr, runner, taskResult, *sourceListPtr, indexSpan);
+  runner.wait();
+  REQUIRE(taskResult.takeResult().valid());
+  REQUIRE(destListPtr->getList(0) == std::vector<int32>{10, 11, 12});
+  REQUIRE(destListPtr->getList(1).empty());
+  REQUIRE(destListPtr->getList(2) == std::vector<int32>{7, 8});
+  REQUIRE(destListPtr->getList(3) == std::vector<int32>{10, 11, 12});
   UnitTest::CheckArraysInheritTupleDims(dataStructure);
 }
 

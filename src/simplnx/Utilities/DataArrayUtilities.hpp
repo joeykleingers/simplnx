@@ -1929,13 +1929,17 @@ private:
       Result<> copySucceeded;
       if(m_ArrayType == IArray::ArrayType::NeighborListArray)
       {
-        using NeighborListT = NeighborList<T>;
-        auto* destArray = dynamic_cast<NeighborListT*>(m_DestCellArray);
-        // The destination list must be initialized before the tuple copy.
-        destArray->setList(i, typename NeighborListT::SharedVectorType(new typename NeighborListT::VectorType));
-        if(oldIndexI >= 0)
+        // The bool copy path must not instantiate the unsupported NeighborList<bool> type.
+        if constexpr(!std::is_same_v<T, bool>)
         {
-          copySucceeded = CopyData<NeighborListT>(*dynamic_cast<const NeighborListT*>(m_InputCellArray), *destArray, i, oldIndexI, 1);
+          using NeighborListT = NeighborList<T>;
+          auto* destArray = dynamic_cast<NeighborListT*>(m_DestCellArray);
+          // The destination list must be initialized before the tuple copy.
+          destArray->setList(i, typename NeighborListT::SharedVectorType(new typename NeighborListT::VectorType));
+          if(oldIndexI >= 0)
+          {
+            copySucceeded = CopyData<NeighborListT>(*dynamic_cast<const NeighborListT*>(m_InputCellArray), *destArray, i, oldIndexI, 1);
+          }
         }
       }
       else if(m_ArrayType == IArray::ArrayType::DataArray)
