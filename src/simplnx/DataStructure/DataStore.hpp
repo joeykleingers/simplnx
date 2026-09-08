@@ -257,13 +257,13 @@ public:
     {
       ShapeType newTupleShape = tupleShape;
       const usize oldSize = this->getSize();
-      const usize numTuples = std::accumulate(newTupleShape.cbegin(), newTupleShape.cend(), static_cast<usize>(1), std::multiplies<>());
-      const usize newSize = getNumberOfComponents() * numTuples;
+      const usize totalTuples = std::accumulate(newTupleShape.cbegin(), newTupleShape.cend(), static_cast<usize>(1), std::multiplies<>());
+      const usize newSize = getNumberOfComponents() * totalTuples;
 
       if(newSize == oldSize && m_Data != nullptr)
       {
         m_TupleShape = std::move(newTupleShape);
-        m_NumTuples = numTuples;
+        m_NumTuples = totalTuples;
         return {};
       }
 
@@ -287,7 +287,7 @@ public:
 
       m_Data = std::move(data);
       m_TupleShape = std::move(newTupleShape);
-      m_NumTuples = numTuples;
+      m_NumTuples = totalTuples;
     } catch(const std::exception& exception)
     {
       return MakeErrorResult(-6035, fmt::format("DataStore resize to shape [{}] failed: {}", fmt::join(tupleShape, ", "), exception.what()));
