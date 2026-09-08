@@ -191,9 +191,12 @@ Result<> ComputeSurfaceFeaturesScanline::operator()()
   // repeated random output-store access.
   const usize numFeatures = surfaceFeatures.getNumberOfTuples();
   std::vector<uint8> localSurfaceFeatures(numFeatures, 0);
-  // Current bulk-I/O Result values are not inspected. A failure can leave input
-  // buffers or output labels incomplete while this method returns success.
-  surfaceFeatures.copyIntoBuffer(0, nonstd::span<uint8>(localSurfaceFeatures.data(), numFeatures));
+  // A bulk-I/O error stops the scan before later slices or output labels change.
+  Result<> ioResult = surfaceFeatures.copyIntoBuffer(0, nonstd::span<uint8>(localSurfaceFeatures.data(), numFeatures));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
 
   const usize xPoints = featureGeometry.getNumXCells();
   const usize yPoints = featureGeometry.getNumYCells();
@@ -227,10 +230,18 @@ Result<> ComputeSurfaceFeaturesScanline::operator()()
   std::vector<int32> curSlice(sliceSize, 0);
   std::vector<int32> nextSlice(sliceSize, 0);
 
-  featureIds.copyIntoBuffer(0, nonstd::span<int32>(curSlice.data(), sliceSize));
+  ioResult = featureIds.copyIntoBuffer(0, nonstd::span<int32>(curSlice.data(), sliceSize));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
   if(zPoints > 1)
   {
-    featureIds.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+    ioResult = featureIds.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
 
   for(usize z = 0; z < zPoints; z++)
@@ -297,11 +308,19 @@ Result<> ComputeSurfaceFeaturesScanline::operator()()
     std::swap(curSlice, nextSlice);
     if(z + 2 < zPoints)
     {
-      featureIds.copyIntoBuffer((z + 2) * sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+      ioResult = featureIds.copyIntoBuffer((z + 2) * sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
 
-  surfaceFeatures.copyFromBuffer(0, nonstd::span<const uint8>(localSurfaceFeatures.data(), numFeatures));
+  ioResult = surfaceFeatures.copyFromBuffer(0, nonstd::span<const uint8>(localSurfaceFeatures.data(), numFeatures));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
 
   return {};
 }

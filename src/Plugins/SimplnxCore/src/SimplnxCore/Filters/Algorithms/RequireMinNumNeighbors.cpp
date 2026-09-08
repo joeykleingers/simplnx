@@ -66,7 +66,12 @@ Result<> RequireMinNumNeighbors::operator()()
 
   // Mark removed cells and compact surviving IDs in one cell pass.
   Error errorReturn = {0, ""};
-  std::vector<bool> activeObjects = removeFeaturesUnderNeighborThreshold(featureIds, numNeighbors, totalPoints, errorReturn);
+  Result<std::vector<bool>> activeObjectsResult = removeFeaturesUnderNeighborThreshold(featureIds, numNeighbors, totalPoints, errorReturn);
+  if(activeObjectsResult.invalid())
+  {
+    return ConvertResult(std::move(activeObjectsResult));
+  }
+  std::vector<bool> activeObjects = std::move(activeObjectsResult.value());
   if(errorReturn.code < 0)
   {
     return {nonstd::make_unexpected(std::vector<Error>{errorReturn})};
@@ -103,17 +108,20 @@ Result<> RequireMinNumNeighbors::operator()()
   DataPath cellFeatureGroupPath = m_InputValues->NumNeighborsPath.getParent();
   // Cell IDs already use the shared compaction map. Skip another cell pass and
   // compact only the feature-level arrays.
-  if(!nx::core::RemoveInactiveObjects(m_DataStructure, cellFeatureGroupPath, activeObjects, featureIds, totalFeatures, m_MessageHandler, m_ShouldCancel,
-                                      /*cellFeatureIdsRenumbered=*/true))
+  Result<> removeResult = nx::core::RemoveInactiveObjects(m_DataStructure, cellFeatureGroupPath, activeObjects, featureIds, totalFeatures, m_MessageHandler, m_ShouldCancel,
+                                                          /*cellFeatureIdsRenumbered=*/true);
+  if(removeResult.invalid())
   {
-    return MakeErrorResult(-55570, fmt::format("Failed to remove inactive feature tuples from feature group '{}'. Check that its arrays match the tuple count of '{}'.",
-                                               cellFeatureGroupPath.toString(), m_InputValues->NumNeighborsPath.toString()));
+    return removeResult;
   }
+  // RemoveInactiveObjects reports a cancelled compaction as success. No work follows this
+  // call, so a cancelled and a completed run both leave through the empty valid Result below.
 
   return {};
 }
 
-std::vector<bool> RequireMinNumNeighbors::removeFeaturesUnderNeighborThreshold(Int32AbstractDataStore& featureIds, const Int32AbstractDataStore& numNeighbors, usize totalPoints, Error& errorReturn)
+Result<std::vector<bool>> RequireMinNumNeighbors::removeFeaturesUnderNeighborThreshold(Int32AbstractDataStore& featureIds, const Int32AbstractDataStore& numNeighbors, usize totalPoints,
+                                                                                       Error& errorReturn)
 {
   usize totalFeatures = numNeighbors.getNumberOfTuples();
   std::vector<bool> activeObjects(totalFeatures, true);
@@ -161,15 +169,14 @@ std::vector<bool> RequireMinNumNeighbors::removeFeaturesUnderNeighborThreshold(I
   if(!valid)
   {
     errorReturn = Error{-55569, "The minimum number of neighbors is larger than the Feature with the most neighbors.  All Features would be removed"};
-    return activeObjects;
+    return {std::move(activeObjects)};
   }
 
   // Use the same stable mapping that later compacts feature arrays.
   const FeatureRenumbering renumbering = ComputeFeatureRenumbering(activeObjects);
   const std::vector<size_t>& newNames = renumbering.newNames;
 
-  // Fuse marking and renumbering because both operations require the same cell
-  // read. Write only chunks that change. Current bulk-I/O results are discarded.
+  // Fuse marking and renumbering because both operations require the same cell read. Write only chunks that change.
   auto featureIdBuf = std::make_unique<int32[]>(k_ChunkTuples);
   for(usize offset = 0; offset < totalPoints; offset += k_ChunkTuples)
   {
@@ -178,7 +185,11 @@ std::vector<bool> RequireMinNumNeighbors::removeFeaturesUnderNeighborThreshold(I
       return {};
     }
     const usize count = std::min(k_ChunkTuples, totalPoints - offset);
-    featureIds.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), count));
+    Result<> ioResult = featureIds.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), count));
+    if(ioResult.invalid())
+    {
+      return ConvertInvalidResult<std::vector<bool>>(std::move(ioResult));
+    }
 
     bool modified = false;
     for(usize i = 0; i < count; i++)
@@ -189,7 +200,7 @@ std::vector<bool> RequireMinNumNeighbors::removeFeaturesUnderNeighborThreshold(I
       {
         errorReturn = Error{
             -55567, fmt::format("Feature ID '{}' in array '{}' is outside the valid range [0, {}). The array may have been modified.", oldId, m_InputValues->FeatureIdsPath.toString(), totalFeatures)};
-        return activeObjects;
+        return {std::move(activeObjects)};
       }
 
       const int32 newId = (oldId >= 0 && activeObjects[oldId]) ? static_cast<int32>(newNames[oldId]) : -1;
@@ -201,10 +212,14 @@ std::vector<bool> RequireMinNumNeighbors::removeFeaturesUnderNeighborThreshold(I
     }
     if(modified)
     {
-      featureIds.copyFromBuffer(offset, nonstd::span<const int32>(featureIdBuf.get(), count));
+      ioResult = featureIds.copyFromBuffer(offset, nonstd::span<const int32>(featureIdBuf.get(), count));
+      if(ioResult.invalid())
+      {
+        return ConvertInvalidResult<std::vector<bool>>(std::move(ioResult));
+      }
     }
   }
-  return activeObjects;
+  return {std::move(activeObjects)};
 }
 
 Result<> RequireMinNumNeighbors::assignBadVoxels(SizeVec3 dimensions, usize totalFeatures)

@@ -84,7 +84,7 @@ void BuildLargeTestData(DataStructure& dataStructure, bool includeBlockedCells =
         sliceBuffer[y * k_LargeDimX + x] = static_cast<int32>(blockZ * k_BlocksY * k_BlocksX + blockY * k_BlocksX + blockX + 1);
       }
     }
-    featureIdsRef.copyFromBuffer(z * k_LargeSliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceBuffer.size()));
+    SIMPLNX_RESULT_REQUIRE_VALID(featureIdsRef.copyFromBuffer(z * k_LargeSliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceBuffer.size())));
   }
 }
 
@@ -146,7 +146,7 @@ uint64 HashInt32Store(const AbstractDataStore<int32>& dataStore)
   for(usize offset = 0; offset < dataStore.getSize(); offset += buffer.size())
   {
     const usize count = std::min(buffer.size(), dataStore.getSize() - offset);
-    dataStore.copyIntoBuffer(offset, nonstd::span<int32>(buffer.data(), count));
+    SIMPLNX_RESULT_REQUIRE_VALID(dataStore.copyIntoBuffer(offset, nonstd::span<int32>(buffer.data(), count)));
     for(usize index = 0; index < count; index++)
     {
       hash ^= static_cast<uint32>(buffer[index]);
@@ -173,7 +173,7 @@ uint64 HashDataStoreBytes(const AbstractDataStore<T>& dataStore)
   for(usize offset = 0; offset < dataStore.getSize(); offset += buffer.size())
   {
     const usize count = std::min(buffer.size(), dataStore.getSize() - offset);
-    dataStore.copyIntoBuffer(offset, nonstd::span<T>(buffer.data(), count));
+    SIMPLNX_RESULT_REQUIRE_VALID(dataStore.copyIntoBuffer(offset, nonstd::span<T>(buffer.data(), count)));
     const auto* bytes = reinterpret_cast<const uint8*>(buffer.data());
     for(usize byteIndex = 0; byteIndex < count * sizeof(T); byteIndex++)
     {
@@ -261,7 +261,7 @@ void BuildComparisonTestData(DataStructure& dataStructure, bool includeBlockedCe
         sliceBuffer[y * k_DimX + x] = static_cast<int32>(blockZ * k_BlocksY * k_BlocksX + blockY * k_BlocksX + blockX + 1);
       }
     }
-    featureIdsRef.copyFromBuffer(z * k_SliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceBuffer.size()));
+    SIMPLNX_RESULT_REQUIRE_VALID(featureIdsRef.copyFromBuffer(z * k_SliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceBuffer.size())));
   }
 }
 

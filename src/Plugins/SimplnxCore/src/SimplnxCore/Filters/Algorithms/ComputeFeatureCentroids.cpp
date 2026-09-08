@@ -88,7 +88,11 @@ Result<> ComputeFeatureCentroids::operator()()
     }
 
     const usize chunkCount = std::min(k_ChunkTuples, totalVoxels - offset);
-    featureIdsStoreRef.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), chunkCount));
+    Result<> ioResult = featureIdsStoreRef.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), chunkCount));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
 
     for(usize idx = 0; idx < chunkCount; idx++)
     {
@@ -142,7 +146,11 @@ Result<> ComputeFeatureCentroids::operator()()
       }
     }
   }
-  centroids.copyFromBuffer(0, nonstd::span<const float32>(centroidsBuf.data(), featureElems3));
+  Result<> writeResult = centroids.copyFromBuffer(0, nonstd::span<const float32>(centroidsBuf.data(), featureElems3));
+  if(writeResult.invalid())
+  {
+    return writeResult;
+  }
 
   if(m_InputValues->IsPeriodic)
   {

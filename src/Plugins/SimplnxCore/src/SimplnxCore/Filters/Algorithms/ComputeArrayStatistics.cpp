@@ -1959,6 +1959,11 @@ Result<> generateScanlineStatistics(DataStructure& dataStructure, const IDataArr
     Result<> result = inputStore.copyIntoBuffer(offset, nonstd::span<T>(valueBuffer.get(), count));
     if(result.invalid())
     {
+      for(auto& error : result.errors())
+      {
+        error.message =
+            fmt::format("ComputeArrayStatistics: bulk read failed for array '{}' over tuple range [{}, {}): {}", inputValues.SelectedArrayPath.toString(), offset, offset + count, error.message);
+      }
       return result;
     }
     if(featureIdsStore != nullptr)
@@ -1966,12 +1971,25 @@ Result<> generateScanlineStatistics(DataStructure& dataStructure, const IDataArr
       result = featureIdsStore->copyIntoBuffer(offset, nonstd::span<int32>(featureBuffer.get(), count));
       if(result.invalid())
       {
+        for(auto& error : result.errors())
+        {
+          error.message =
+              fmt::format("ComputeArrayStatistics: bulk read failed for array '{}' over tuple range [{}, {}): {}", inputValues.FeatureIdsArrayPath.toString(), offset, offset + count, error.message);
+        }
         return result;
       }
     }
     if(maskStore != nullptr)
     {
       result = maskStore->copyIntoBuffer(offset, nonstd::span<MaskT>(maskBuffer.get(), count));
+      if(result.invalid())
+      {
+        for(auto& error : result.errors())
+        {
+          error.message =
+              fmt::format("ComputeArrayStatistics: bulk read failed for array '{}' over tuple range [{}, {}): {}", inputValues.MaskArrayPath.toString(), offset, offset + count, error.message);
+        }
+      }
     }
     return result;
   };
@@ -2319,7 +2337,15 @@ Result<> generateScanlineStatistics(DataStructure& dataStructure, const IDataArr
       try
       {
         modeArray->clearAllLists();
-        modeArray->resizeTuples({groupCount});
+        Result<> resizeResult = modeArray->resizeTuples({groupCount});
+        if(resizeResult.invalid())
+        {
+          for(auto& error : resizeResult.errors())
+          {
+            error.message = fmt::format("ComputeArrayStatistics: could not resize Mode output '{}' to {} tuples: {}", inputValues.ModeArrayName.toString(), groupCount, error.message);
+          }
+          return resizeResult;
+        }
       } catch(const std::exception& exception)
       {
         return MakeErrorResult(-57309, fmt::format("ComputeArrayStatistics: could not initialize Mode output '{}': {}", inputValues.ModeArrayName.toString(), exception.what()));
@@ -2811,7 +2837,11 @@ Result<> ComputeArrayStatistics::operator()()
     }
     try
     {
-      destination->resizeTuples({layout.GroupCount});
+      Result<> resizeResult = destination->resizeTuples({layout.GroupCount});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
     } catch(const std::exception& exception)
     {
       return MakeErrorResult(-57319, fmt::format("ComputeArrayStatistics: could not resize destination AttributeMatrix '{}' to {} tuples: {}", m_InputValues->DestinationAttributeMatrix.toString(),

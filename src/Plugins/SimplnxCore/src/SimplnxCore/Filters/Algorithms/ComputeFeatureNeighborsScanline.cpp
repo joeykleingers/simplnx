@@ -65,10 +65,18 @@ Result<> ComputeFeatureNeighborsScanline::operator()()
     boundaryCellsSlice.resize(sliceSize, 0);
   }
 
-  featureIds.copyIntoBuffer(0, nonstd::span<int32>(curSlice.data(), sliceSize));
+  Result<> ioResult = featureIds.copyIntoBuffer(0, nonstd::span<int32>(curSlice.data(), sliceSize));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
   if(dimZ > 1)
   {
-    featureIds.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+    ioResult = featureIds.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
 
   for(int64 z = 0; z < dimZ; z++)
@@ -192,7 +200,11 @@ Result<> ComputeFeatureNeighborsScanline::operator()()
 
     if(boundaryCellsStore != nullptr)
     {
-      boundaryCellsStore->copyFromBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<const int8>(boundaryCellsSlice.data(), sliceSize));
+      ioResult = boundaryCellsStore->copyFromBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<const int8>(boundaryCellsSlice.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
 
     // Swaps rotate owned slice buffers in O(1) before z+2 is read.
@@ -200,7 +212,11 @@ Result<> ComputeFeatureNeighborsScanline::operator()()
     std::swap(curSlice, nextSlice);
     if(z + 2 < dimZ)
     {
-      featureIds.copyIntoBuffer(static_cast<usize>(z + 2) * sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+      ioResult = featureIds.copyIntoBuffer(static_cast<usize>(z + 2) * sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
 

@@ -9,6 +9,7 @@
 #include "simplnx/Utilities/Math/GeometryMath.hpp"
 
 #include <Eigen/Dense>
+#include <fmt/format.h>
 
 #include <memory>
 #include <set>
@@ -211,11 +212,10 @@ usize FindNumEdges(const AbstractDataStore<T>& faceStore, usize numVertices = (d
  * @param elemList Provides element vertex indexes.
  * @param dynamicList Receives element indexes for each vertex.
  * @param numVerts Specifies vertex count.
- *
- * The method does not inspect source bulk-read results.
+ * @return Error from the first connectivity read that fails.
  */
 template <typename T, typename K>
-void FindElementsContainingVert(const DataArray<K>* elemList, DynamicListArray<T, K>* dynamicList, usize numVerts)
+[[nodiscard]] Result<> FindElementsContainingVert(const DataArray<K>* elemList, DynamicListArray<T, K>* dynamicList, usize numVerts)
 {
   const usize numElems = elemList->getNumberOfTuples();
   const usize numVertsPerElem = elemList->getNumberOfComponents();
@@ -233,7 +233,11 @@ void FindElementsContainingVert(const DataArray<K>* elemList, DynamicListArray<T
   {
     usize count = std::min(k_ChunkElems, numElems - start);
     usize elemCount = count * numVertsPerElem;
-    elemStore.copyIntoBuffer(start * numVertsPerElem, nonstd::span<K>(chunkBuf.get(), elemCount));
+    auto readResult = elemStore.copyIntoBuffer(start * numVertsPerElem, nonstd::span<K>(chunkBuf.get(), elemCount));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       for(usize j = 0; j < numVertsPerElem; j++)
@@ -250,7 +254,11 @@ void FindElementsContainingVert(const DataArray<K>* elemList, DynamicListArray<T
   {
     usize count = std::min(k_ChunkElems, numElems - start);
     usize elemCount = count * numVertsPerElem;
-    elemStore.copyIntoBuffer(start * numVertsPerElem, nonstd::span<K>(chunkBuf.get(), elemCount));
+    auto readResult = elemStore.copyIntoBuffer(start * numVertsPerElem, nonstd::span<K>(chunkBuf.get(), elemCount));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       usize elemId = start + i;
@@ -261,6 +269,7 @@ void FindElementsContainingVert(const DataArray<K>* elemList, DynamicListArray<T
       }
     }
   }
+  return {};
 }
 
 /**
@@ -271,20 +280,19 @@ void FindElementsContainingVert(const DataArray<K>* elemList, DynamicListArray<T
  * @param elemsContainingVert Provides candidate elements for each vertex.
  * @param dynamicList Receives neighbors for each element.
  * @param geometryType Selects required shared-vertex count.
- * @return -1 for an unsupported geometry type, or 0 after processing.
+ * @return Error for an unsupported geometry type or the first failed connectivity read.
  *
  * Outer connectivity reads use chunks. Candidate reads outside the active chunk
- * use one bulk read. Source read results are not inspected.
+ * use one bulk read.
  */
 template <typename T, typename K>
-ErrorCode FindElementNeighbors(const DataArray<K>* elemList, const DynamicListArray<T, K>* elemsContainingVert, DynamicListArray<T, K>* dynamicList, IGeometry::Type geometryType)
+[[nodiscard]] Result<> FindElementNeighbors(const DataArray<K>* elemList, const DynamicListArray<T, K>* elemsContainingVert, DynamicListArray<T, K>* dynamicList, IGeometry::Type geometryType)
 {
   const usize numElems = elemList->getNumberOfTuples();
   const usize numVertsPerElem = elemList->getNumberOfComponents();
   const auto& elemStore = elemList->getDataStoreRef();
   usize numSharedVerts = 0;
   std::vector<T> linkCount(numElems, 0);
-  ErrorCode err = 0;
 
   switch(geometryType)
   {
@@ -320,7 +328,8 @@ ErrorCode FindElementNeighbors(const DataArray<K>* elemList, const DynamicListAr
 
   if(numSharedVerts == 0)
   {
-    return -1;
+    return MakeErrorResult(-1, fmt::format("Cannot find element neighbors for unsupported geometry type value '{}'. Supported types are Edge, Triangle, Quad, Tetrahedral, and Hexahedral.",
+                                           static_cast<int32>(geometryType)));
   }
 
   dynamicList->allocateLists(linkCount);
@@ -341,7 +350,11 @@ ErrorCode FindElementNeighbors(const DataArray<K>* elemList, const DynamicListAr
   for(usize chunkStart = 0; chunkStart < numElems; chunkStart += k_ChunkElems)
   {
     usize chunkCount = std::min(k_ChunkElems, numElems - chunkStart);
-    elemStore.copyIntoBuffer(chunkStart * numVertsPerElem, nonstd::span<K>(chunkBuf.get(), chunkCount * numVertsPerElem));
+    auto chunkReadResult = elemStore.copyIntoBuffer(chunkStart * numVertsPerElem, nonstd::span<K>(chunkBuf.get(), chunkCount * numVertsPerElem));
+    if(chunkReadResult.invalid())
+    {
+      return chunkReadResult;
+    }
 
     for(usize ci = 0; ci < chunkCount; ci++)
     {
@@ -374,7 +387,11 @@ ErrorCode FindElementNeighbors(const DataArray<K>* elemList, const DynamicListAr
           }
           else
           {
-            elemStore.copyIntoBuffer(candidateElem * numVertsPerElem, nonstd::span<K>(neighborVertsBuf.get(), numVertsPerElem));
+            auto candidateReadResult = elemStore.copyIntoBuffer(candidateElem * numVertsPerElem, nonstd::span<K>(neighborVertsBuf.get(), numVertsPerElem));
+            if(candidateReadResult.invalid())
+            {
+              return candidateReadResult;
+            }
             candidateVerts = neighborVertsBuf.get();
           }
 
@@ -414,7 +431,7 @@ ErrorCode FindElementNeighbors(const DataArray<K>* elemList, const DynamicListAr
     }
   }
 
-  return err;
+  return {};
 }
 
 /**
@@ -422,9 +439,10 @@ ErrorCode FindElementNeighbors(const DataArray<K>* elemList, const DynamicListAr
  * @tparam T Specifies mesh-index type.
  * @param tetList Provides four vertex indexes per tetrahedron.
  * @param edgeList Receives sorted two-index edges.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void FindTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
+[[nodiscard]] Result<> FindTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
 {
   const usize numElems = tetList->getNumberOfTuples();
   const usize numVertsPerTet = tetList->getNumberOfComponents();
@@ -452,7 +470,11 @@ void FindTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
     }
   }
 
-  edgeList->getDataStore()->resizeTuples({edgeSet.size()});
+  auto resizeResult = edgeList->getDataStore()->resizeTuples({edgeSet.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& uEdges = *edgeList;
   T index = 0;
 
@@ -462,6 +484,7 @@ void FindTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
     uEdges[2 * index + 1] = edge.second;
     ++index;
   }
+  return {};
 }
 
 /**
@@ -469,9 +492,10 @@ void FindTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
  * @tparam T Specifies mesh-index type.
  * @param hexList Provides eight vertex indexes per hexahedron.
  * @param edge_List Receives sorted two-index edges.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void FindHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
+[[nodiscard]] Result<> FindHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
 {
   const usize numElems = hexList->getNumberOfTuples();
   const usize numVertsPerHex = hexList->getNumberOfComponents();
@@ -510,7 +534,11 @@ void FindHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
   }
 
   typename std::set<std::pair<T, T>>::iterator setIter;
-  edge_List->getDataStore()->resizeTuples({edgeSet.size()});
+  auto resizeResult = edge_List->getDataStore()->resizeTuples({edgeSet.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& uEdges = *edge_List;
   T index = 0;
 
@@ -520,6 +548,7 @@ void FindHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
     uEdges[2 * index + 1] = edge.second;
     ++index;
   }
+  return {};
 }
 
 /**
@@ -527,9 +556,10 @@ void FindHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
  * @tparam T Specifies mesh-index type.
  * @param tetList Provides four vertex indexes per tetrahedron.
  * @param faceList Receives sorted three-index faces.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void FindTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
+[[nodiscard]] Result<> FindTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
 {
   auto& tets = *tetList;
   const usize numElems = tetList->getNumberOfTuples();
@@ -555,7 +585,11 @@ void FindTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
     }
   }
 
-  faceList->getDataStore()->resizeTuples({faceSet.size()});
+  auto resizeResult = faceList->getDataStore()->resizeTuples({faceSet.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& uFaces = *faceList;
   T index = 0;
 
@@ -566,6 +600,7 @@ void FindTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
     uFaces[3 * index + 2] = std::get<2>(face);
     ++index;
   }
+  return {};
 }
 
 /**
@@ -573,9 +608,10 @@ void FindTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
  * @tparam T Specifies mesh-index type.
  * @param hexList Provides eight vertex indexes per hexahedron.
  * @param faceList Receives sorted four-index faces.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void FindHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
+[[nodiscard]] Result<> FindHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
 {
   auto& hexas = *hexList;
   const usize numElems = hexList->getNumberOfTuples();
@@ -604,7 +640,11 @@ void FindHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
     }
   }
 
-  faceList->getDataStore()->resizeTuples({faceSet.size()});
+  auto resizeResult = faceList->getDataStore()->resizeTuples({faceSet.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& uFaces = *faceList;
   T index = 0;
 
@@ -616,6 +656,7 @@ void FindHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
     uFaces[4 * index + 3] = std::get<3>(face);
     ++index;
   }
+  return {};
 }
 
 /**
@@ -623,9 +664,10 @@ void FindHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
  * @tparam T Specifies mesh-index type and reference-count type.
  * @param tetList Provides four vertex indexes per tetrahedron.
  * @param edgeList Receives sorted boundary edges.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void FindUnsharedTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
+[[nodiscard]] Result<> FindUnsharedTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
 {
   auto& tets = *tetList;
   const usize numElems = tetList->getNumberOfTuples();
@@ -667,7 +709,11 @@ void FindUnsharedTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
     }
   }
 
-  edgeList->getDataStore()->resizeTuples({edgeMap.size()});
+  auto resizeResult = edgeList->getDataStore()->resizeTuples({edgeMap.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& bEdges = *edgeList;
   T index = 0;
 
@@ -677,6 +723,7 @@ void FindUnsharedTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
     bEdges[2 * index + 1] = pair.first.second;
     ++index;
   }
+  return {};
 }
 
 /**
@@ -684,9 +731,10 @@ void FindUnsharedTetEdges(const DataArray<T>* tetList, DataArray<T>* edgeList)
  * @tparam T Specifies mesh-index type and reference-count type.
  * @param hexList Provides eight vertex indexes per hexahedron.
  * @param edge_List Receives sorted boundary edges.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void FindUnsharedHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
+[[nodiscard]] Result<> FindUnsharedHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
 {
   const usize numElems = hexList->getNumberOfTuples();
   const usize numVertsPerHex = hexList->getNumberOfComponents();
@@ -738,7 +786,11 @@ void FindUnsharedHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
     }
   }
 
-  edge_List->getDataStore()->resizeTuples({edgeMap.size()});
+  auto resizeResult = edge_List->getDataStore()->resizeTuples({edgeMap.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& bEdges = *edge_List;
   T index = 0;
 
@@ -748,6 +800,7 @@ void FindUnsharedHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
     bEdges[2 * index + 1] = pair.first.second;
     ++index;
   }
+  return {};
 }
 
 /**
@@ -755,9 +808,10 @@ void FindUnsharedHexEdges(const DataArray<T>* hexList, DataArray<T>* edge_List)
  * @tparam T Specifies mesh-index type and reference-count type.
  * @param tetList Provides four vertex indexes per tetrahedron.
  * @param faceList Receives sorted boundary faces.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void FindUnsharedTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
+[[nodiscard]] Result<> FindUnsharedTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
 {
   const usize numElems = tetList->getNumberOfTuples();
   const usize numVertsPerTet = tetList->getNumberOfComponents();
@@ -798,7 +852,11 @@ void FindUnsharedTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
     }
   }
 
-  faceList->getDataStore()->resizeTuples({faceMap.size()});
+  auto resizeResult = faceList->getDataStore()->resizeTuples({faceMap.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& uFaces = *faceList;
   T index = 0;
 
@@ -809,6 +867,7 @@ void FindUnsharedTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
     uFaces[3 * index + 2] = std::get<2>(pair.first);
     ++index;
   }
+  return {};
 }
 
 /**
@@ -816,9 +875,10 @@ void FindUnsharedTetFaces(const DataArray<T>* tetList, DataArray<T>* faceList)
  * @tparam T Specifies mesh-index type and reference-count type.
  * @param hexList Provides eight vertex indexes per hexahedron.
  * @param faceList Receives sorted boundary faces.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void FindUnsharedHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
+[[nodiscard]] Result<> FindUnsharedHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
 {
   auto& hexas = *hexList;
   const usize numElems = hexList->getNumberOfTuples();
@@ -862,7 +922,11 @@ void FindUnsharedHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
     }
   }
 
-  faceList->getDataStore()->resizeTuples({faceMap.size()});
+  auto resizeResult = faceList->getDataStore()->resizeTuples({faceMap.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& uFaces = *faceList;
   T index = 0;
 
@@ -874,6 +938,7 @@ void FindUnsharedHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
     uFaces[4 * index + 3] = std::get<3>(pair.first);
     ++index;
   }
+  return {};
 }
 
 /**
@@ -881,9 +946,10 @@ void FindUnsharedHexFaces(const DataArray<T>* hexList, DataArray<T>* faceList)
  * @tparam T Specifies mesh-index type.
  * @param elemList Provides cyclic polygon vertex indexes.
  * @param edgeList Receives sorted two-index edges.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void Find2DElementEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
+[[nodiscard]] Result<> Find2DElementEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
 {
   const usize numElems = elemList->getNumberOfTuples();
   const usize numVertsPerElem = elemList->getNumberOfComponents();
@@ -919,7 +985,11 @@ void Find2DElementEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
   }
 
   typename std::set<std::pair<T, T>>::iterator setIter;
-  edgeList->getDataStore()->resizeTuples({edgeSet.size()});
+  auto resizeResult = edgeList->getDataStore()->resizeTuples({edgeSet.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& uEdges = *edgeList;
   T index = 0;
 
@@ -929,6 +999,7 @@ void Find2DElementEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
     uEdges[2 * index + 1] = edge.second;
     ++index;
   }
+  return {};
 }
 
 /**
@@ -936,9 +1007,10 @@ void Find2DElementEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
  * @tparam T Specifies mesh-index type and reference-count type.
  * @param elemList Provides cyclic polygon vertex indexes.
  * @param edgeList Receives sorted boundary edges.
+ * @return Error if destination resize fails.
  */
 template <typename T>
-void Find2DUnsharedEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
+[[nodiscard]] Result<> Find2DUnsharedEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
 {
   auto& elems = *elemList;
   const usize numElems = elemList->getNumberOfTuples();
@@ -987,7 +1059,11 @@ void Find2DUnsharedEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
     }
   }
 
-  edgeList->getDataStore()->resizeTuples({edgeMap.size()});
+  auto resizeResult = edgeList->getDataStore()->resizeTuples({edgeMap.size()});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& bEdges = *edgeList;
   T index = 0;
 
@@ -997,6 +1073,7 @@ void Find2DUnsharedEdges(const DataArray<T>* elemList, DataArray<T>* edgeList)
     bEdges[2 * index + 1] = edge.first.second;
     ++index;
   }
+  return {};
 }
 } // namespace Connectivity
 

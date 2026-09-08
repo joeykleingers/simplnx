@@ -178,7 +178,10 @@ Result<> ReadCtfData::copyRawEbsdData(ebsdlib::CtfReader* reader) const
             -19602, fmt::format("Scan point {} carries phase value {}, which is outside the valid range [0, {}] established by the file's phase definitions.", i, phasePtr[i], ensembleTupleCount - 1));
       }
     }
-    targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const int32>(phasePtr, totalCells));
+    if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const int32>(phasePtr, totalCells)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   // Interleave Euler values with optional hex correction and unit conversion.
@@ -195,7 +198,10 @@ Result<> ReadCtfData::copyRawEbsdData(ebsdlib::CtfReader* reader) const
     const auto& csStore = crystalStructures.getDataStoreRef();
     const usize numPhases = csStore.getNumberOfTuples();
     std::vector<uint32> csCache(numPhases);
-    csStore.copyIntoBuffer(0, nonstd::span<uint32>(csCache.data(), numPhases));
+    if(Result<> ioResult = csStore.copyIntoBuffer(0, nonstd::span<uint32>(csCache.data(), numPhases)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
 
     const auto* fComp0 = static_cast<const float32*>(euler1Ptr);
     const auto* fComp1 = static_cast<const float32*>(euler2Ptr);
@@ -229,7 +235,10 @@ Result<> ReadCtfData::copyRawEbsdData(ebsdlib::CtfReader* reader) const
         eulerBuf[3 * i + 1] = euler2;
         eulerBuf[3 * i + 2] = euler3;
       }
-      eulerStore.copyFromBuffer(offset * 3, nonstd::span<const float32>(eulerBuf.data(), count * 3));
+      if(Result<> ioResult = eulerStore.copyFromBuffer(offset * 3, nonstd::span<const float32>(eulerBuf.data(), count * 3)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
   }
 
@@ -256,13 +265,19 @@ Result<> ReadCtfData::copyRawEbsdData(ebsdlib::CtfReader* reader) const
     {
       const auto* sourcePtr = static_cast<const int32*>(columnPtr);
       auto& targetArray = m_DataStructure.getDataRefAs<Int32Array>(targetPath);
-      targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const int32>(sourcePtr, totalCells));
+      if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const int32>(sourcePtr, totalCells)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
     else
     {
       const auto* sourcePtr = static_cast<const float32*>(columnPtr);
       auto& targetArray = m_DataStructure.getDataRefAs<Float32Array>(targetPath);
-      targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(sourcePtr, totalCells));
+      if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(sourcePtr, totalCells)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
   }
 

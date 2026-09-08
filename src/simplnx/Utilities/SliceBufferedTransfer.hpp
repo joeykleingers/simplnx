@@ -118,13 +118,13 @@ struct SliceBufferedTransferFunctor
    * @pre neighbors contains at least sliceSize times dimZ entries.
    * @pre Each nonnegative source is in range and is at most one Z slice from its destination.
    * @pre shouldCopy contains a callable target and does not throw.
-   * @pre Component and slice-size products fit usize. All bulk store operations succeed.
+   * @pre Component and slice-size products fit usize.
+   * @return Error from the first slice read or write that fails.
    *
-   * The function discards bulk-I/O Result values and cannot report a storage failure.
    * Modified slices are written once. Unmodified slices remain unchanged.
    */
   template <typename T>
-  void operator()(IDataArray& dataArray, const std::vector<int64>& neighbors, usize sliceSize, usize dimZ, const std::function<bool(usize)>& shouldCopy)
+  Result<> operator()(IDataArray& dataArray, const std::vector<int64>& neighbors, usize sliceSize, usize dimZ, const std::function<bool(usize)>& shouldCopy)
   {
     auto& store = dynamic_cast<DataArray<T>&>(dataArray).getDataStoreRef();
     const usize numComp = store.getNumberOfComponents();
@@ -138,13 +138,21 @@ struct SliceBufferedTransferFunctor
     }
     auto destSlice = makeBuf<T>(sliceValues);
 
-    auto readSlice = [&](usize z, usize slot) { store.copyIntoBuffer(z * sliceValues, nonstd::span<T>(bufPtr(srcSlices[slot]), sliceValues)); };
+    auto readSlice = [&](usize z, usize slot) { return store.copyIntoBuffer(z * sliceValues, nonstd::span<T>(bufPtr(srcSlices[slot]), sliceValues)); };
 
     // Prime the current and next slots.
-    readSlice(0, 1);
+    auto readResult = readSlice(0, 1);
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     if(dimZ > 1)
     {
-      readSlice(1, 2);
+      readResult = readSlice(1, 2);
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
     }
 
     for(usize zIdx = 0; zIdx < dimZ; zIdx++)
@@ -155,12 +163,20 @@ struct SliceBufferedTransferFunctor
         std::swap(srcSlices[1], srcSlices[2]);
         if(zIdx + 1 < dimZ)
         {
-          readSlice(zIdx + 1, 2);
+          readResult = readSlice(zIdx + 1, 2);
+          if(readResult.invalid())
+          {
+            return readResult;
+          }
         }
       }
 
       // Preserve tuples that have no selected source.
-      store.copyIntoBuffer(zIdx * sliceValues, nonstd::span<T>(bufPtr(destSlice), sliceValues));
+      readResult = store.copyIntoBuffer(zIdx * sliceValues, nonstd::span<T>(bufPtr(destSlice), sliceValues));
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
 
       bool modified = false;
       for(usize inSlice = 0; inSlice < sliceSize; inSlice++)
@@ -192,9 +208,14 @@ struct SliceBufferedTransferFunctor
       // Avoid a disk-backed write when the destination slice did not change.
       if(modified)
       {
-        store.copyFromBuffer(zIdx * sliceValues, nonstd::span<const T>(bufPtr(destSlice), sliceValues));
+        auto writeResult = store.copyFromBuffer(zIdx * sliceValues, nonstd::span<const T>(bufPtr(destSlice), sliceValues));
+        if(writeResult.invalid())
+        {
+          return writeResult;
+        }
       }
     }
+    return {};
   }
 };
 
@@ -205,13 +226,14 @@ struct SliceBufferedTransferFunctor
  * @param sliceSize Specifies cells in one XY slice.
  * @param dimZ Specifies the Z-slice count.
  * @param shouldCopy Selects mapped destinations to overwrite.
+ * @return Error from the first slice read or write that fails.
  *
  * See SliceBufferedTransferFunctor for preconditions. The neighbor map remains
  * proportional to the complete volume even though transfer buffers are slice-bounded.
  */
-inline void SliceBufferedTransfer(IDataArray& dataArray, const std::vector<int64>& neighbors, usize sliceSize, usize dimZ, const std::function<bool(usize)>& shouldCopy)
+[[nodiscard]] inline Result<> SliceBufferedTransfer(IDataArray& dataArray, const std::vector<int64>& neighbors, usize sliceSize, usize dimZ, const std::function<bool(usize)>& shouldCopy)
 {
-  ExecuteDataFunction(SliceBufferedTransferFunctor{}, dataArray.getDataType(), dataArray, neighbors, sliceSize, dimZ, shouldCopy);
+  return ExecuteDataFunction(SliceBufferedTransferFunctor{}, dataArray.getDataType(), dataArray, neighbors, sliceSize, dimZ, shouldCopy);
 }
 
 /**
@@ -237,12 +259,11 @@ struct SliceTransferOneZFunctor
    * @pre sliceMarks contains sliceSize entries.
    * @pre Each source is valid and is on destZ-1, destZ, or destZ+1.
    * @pre The array contains at least sliceSize times dimZ tuples.
-   * @pre Component and slice-size products fit usize. All bulk store operations succeed.
-   *
-   * The function discards bulk-I/O Result values and cannot report a storage failure.
+   * @pre Component and slice-size products fit usize.
+   * @return Error from the first slice read or write that fails.
    */
   template <typename T>
-  void operator()(IDataArray& dataArray, const std::vector<int64>& sliceMarks, usize sliceSize, usize destZ, usize dimZ)
+  Result<> operator()(IDataArray& dataArray, const std::vector<int64>& sliceMarks, usize sliceSize, usize destZ, usize dimZ)
   {
     using BufT = typename SliceBufferedTransferFunctor::BufferType<T>;
     auto& store = dynamic_cast<DataArray<T>&>(dataArray).getDataStoreRef();
@@ -251,20 +272,29 @@ struct SliceTransferOneZFunctor
 
     // Preserve destination tuples that have no source mark.
     auto destBuf = SliceBufferedTransferFunctor::makeBuf<T>(sliceValues);
-    store.copyIntoBuffer(destZ * sliceValues, nonstd::span<T>(SliceBufferedTransferFunctor::bufPtr(destBuf), sliceValues));
+    auto readResult = store.copyIntoBuffer(destZ * sliceValues, nonstd::span<T>(SliceBufferedTransferFunctor::bufPtr(destBuf), sliceValues));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
 
     // Slots zero, one, and two contain Z-1, Z, and Z+1 when loaded.
     std::array<BufT, 3> srcBufs;
     std::array<bool, 3> srcLoaded = {false, false, false};
 
     // Load each required source slice at most once.
-    auto ensureSrcLoaded = [&](usize slot, usize srcZ) {
+    auto ensureSrcLoaded = [&](usize slot, usize srcZ) -> Result<> {
       if(!srcLoaded[slot] && srcZ < dimZ)
       {
         srcBufs[slot] = SliceBufferedTransferFunctor::makeBuf<T>(sliceValues);
-        store.copyIntoBuffer(srcZ * sliceValues, nonstd::span<T>(SliceBufferedTransferFunctor::bufPtr(srcBufs[slot]), sliceValues));
+        auto sourceReadResult = store.copyIntoBuffer(srcZ * sliceValues, nonstd::span<T>(SliceBufferedTransferFunctor::bufPtr(srcBufs[slot]), sliceValues));
+        if(sourceReadResult.invalid())
+        {
+          return sourceReadResult;
+        }
         srcLoaded[slot] = true;
       }
+      return {};
     };
 
     bool modified = false;
@@ -289,7 +319,11 @@ struct SliceTransferOneZFunctor
         srcSlot = 2;
       }
 
-      ensureSrcLoaded(srcSlot, srcZ);
+      auto sourceReadResult = ensureSrcLoaded(srcSlot, srcZ);
+      if(sourceReadResult.invalid())
+      {
+        return sourceReadResult;
+      }
 
       for(usize c = 0; c < numComp; c++)
       {
@@ -301,8 +335,13 @@ struct SliceTransferOneZFunctor
     // Avoid a disk-backed write when the destination slice did not change.
     if(modified)
     {
-      store.copyFromBuffer(destZ * sliceValues, nonstd::span<const T>(SliceBufferedTransferFunctor::bufPtr(destBuf), sliceValues));
+      auto writeResult = store.copyFromBuffer(destZ * sliceValues, nonstd::span<const T>(SliceBufferedTransferFunctor::bufPtr(destBuf), sliceValues));
+      if(writeResult.invalid())
+      {
+        return writeResult;
+      }
     }
+    return {};
   }
 };
 
@@ -313,12 +352,13 @@ struct SliceTransferOneZFunctor
  * @param sliceSize Specifies cells in one XY slice.
  * @param destZ Identifies the destination Z slice.
  * @param dimZ Specifies the total Z-slice count.
+ * @return Error from the first slice read or write that fails.
  *
  * See SliceTransferOneZFunctor for preconditions.
  */
-inline void SliceBufferedTransferOneZ(IDataArray& dataArray, const std::vector<int64>& sliceMarks, usize sliceSize, usize destZ, usize dimZ)
+[[nodiscard]] inline Result<> SliceBufferedTransferOneZ(IDataArray& dataArray, const std::vector<int64>& sliceMarks, usize sliceSize, usize destZ, usize dimZ)
 {
-  ExecuteDataFunction(SliceTransferOneZFunctor{}, dataArray.getDataType(), dataArray, sliceMarks, sliceSize, destZ, dimZ);
+  return ExecuteDataFunction(SliceTransferOneZFunctor{}, dataArray.getDataType(), dataArray, sliceMarks, sliceSize, destZ, dimZ);
 }
 
 } // namespace nx::core

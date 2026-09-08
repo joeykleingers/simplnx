@@ -85,7 +85,7 @@ Result<> WriteAvizoUniformCoordinate::writeData(FILE* outputFile) const
   const auto& featureIds = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FeatureIdsArrayPath);
   const usize totalPoints = featureIds.getNumberOfTuples();
 
-  // Source and file-write results are currently discarded.
+  // Source read failures stop output. The legacy stdio path does not report short writes.
   constexpr usize k_ChunkSize = 65536;
   std::vector<int32> buffer(k_ChunkSize);
   const auto& featureIdsStore = featureIds.getDataStoreRef();
@@ -98,7 +98,11 @@ Result<> WriteAvizoUniformCoordinate::writeData(FILE* outputFile) const
         return {};
       }
       const usize count = std::min(k_ChunkSize, totalPoints - offset);
-      featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(buffer.data(), count));
+      Result<> readResult = featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(buffer.data(), count));
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
       fwrite(buffer.data(), sizeof(int32), count, outputFile);
     }
   }
@@ -113,7 +117,11 @@ Result<> WriteAvizoUniformCoordinate::writeData(FILE* outputFile) const
         return {};
       }
       const usize count = std::min(k_ChunkSize, totalPoints - offset);
-      featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(buffer.data(), count));
+      Result<> readResult = featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(buffer.data(), count));
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
       for(usize i = 0; i < count; ++i)
       {
         fprintf(outputFile, "%d", buffer[i]);

@@ -5,12 +5,15 @@
 #include "simplnx/Utilities/Parsing/HDF5/IO/DatasetIO.hpp"
 
 #include <fmt/core.h>
+#include <fmt/ranges.h>
 #include <nonstd/span.hpp>
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numeric>
@@ -89,7 +92,7 @@ public:
   , m_NumTuples(std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<usize>(1), std::multiplies<>()))
   , m_InitValue(initValue)
   {
-    resizeTuples(m_TupleShape);
+    m_Data = std::make_unique<value_type[]>(this->getSize());
     if(m_InitValue.has_value())
     {
       std::fill_n(data(), this->getSize(), *m_InitValue);
@@ -240,42 +243,50 @@ public:
    * A size change retains values in the shared prefix. When existing storage
    * grows, added values use the initialization or mudflap value. A size change can invalidate pointers and spans.
    * @param tupleShape New tuple dimensions in slowest-to-fastest order.
+   * @return Valid on success. Allocation failure returns error -6035 and preserves the prior store.
+   *
+   * The Result contract prevents an allocation failure from escaping across the store boundary.
    */
-  void resizeTuples(const ShapeType& tupleShape) override
+  [[nodiscard]] Result<> resizeTuples(const ShapeType& tupleShape) override
   {
-    auto oldSize = this->getSize();
-    m_TupleShape = tupleShape;
-    m_NumTuples = std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<usize>(1), std::multiplies<>());
-
-    usize newSize = getNumberOfComponents() * m_NumTuples;
-
-    if(m_Data.get() == nullptr)
+    try
     {
-      auto data = new value_type[newSize];
-      m_Data.reset(data);
-      return;
+      ShapeType newTupleShape = tupleShape;
+      const usize oldSize = this->getSize();
+      const usize numTuples = std::accumulate(newTupleShape.cbegin(), newTupleShape.cend(), static_cast<usize>(1), std::multiplies<>());
+      const usize newSize = getNumberOfComponents() * numTuples;
+
+      if(newSize == oldSize && m_Data != nullptr)
+      {
+        m_TupleShape = std::move(newTupleShape);
+        m_NumTuples = numTuples;
+        return {};
+      }
+
+      auto data = std::make_unique<value_type[]>(newSize);
+      if(m_Data != nullptr)
+      {
+        for(usize valueIndex = 0; valueIndex < newSize && valueIndex < oldSize; ++valueIndex)
+        {
+          data[valueIndex] = m_Data[valueIndex];
+        }
+
+        const T initValue = m_InitValue.has_value() ? *m_InitValue : GetMudflap<T>();
+        for(usize valueIndex = oldSize; valueIndex < newSize; ++valueIndex)
+        {
+          data[valueIndex] = initValue;
+        }
+      }
+
+      m_Data = std::move(data);
+      m_TupleShape = std::move(newTupleShape);
+      m_NumTuples = numTuples;
+    } catch(const std::exception& exception)
+    {
+      return MakeErrorResult(-6035, fmt::format("DataStore resize to shape [{}] failed: {}", fmt::join(tupleShape, ", "), exception.what()));
     }
 
-    // Matching value counts change shape metadata without reallocating storage.
-    if(newSize == oldSize)
-    {
-      return;
-    }
-
-    auto data = new value_type[newSize];
-    for(usize i = 0; i < newSize && i < oldSize; i++)
-    {
-      data[i] = m_Data.get()[i];
-    }
-
-    // New values use the configured initialization value.
-    T initValue = m_InitValue.has_value() ? *m_InitValue : GetMudflap<T>();
-    for(usize i = oldSize; i < newSize; i++)
-    {
-      data[i] = initValue;
-    }
-
-    m_Data.reset(data);
+    return {};
   }
 
   value_type getValue(usize index) const override
@@ -299,16 +310,19 @@ public:
    * This is the in-memory fast path for storage-neutral bulk I/O.
    * @param startIndex First flat value index to read.
    * @param buffer Receives copied values.
-   * @return Error if the requested range exceeds this store.
+   * @return Valid on success. Error -6030 reports an invalid range. Error -6032 reports a missing value buffer.
    */
-  Result<> copyIntoBuffer(usize startIndex, nonstd::span<T> buffer) const override
+  [[nodiscard]] Result<> copyIntoBuffer(usize startIndex, nonstd::span<T> buffer) const override
   {
     const usize count = buffer.size();
 
-    if(startIndex + count > this->getSize())
+    if(startIndex > this->getSize() || count > this->getSize() - startIndex)
     {
-      return MakeErrorResult(-6020, fmt::format("DataStore bulk read failed: requested range [{}, {}) exceeds store size ({}). Requested {} elements starting at index {}.", startIndex,
-                                                startIndex + count, this->getSize(), count, startIndex));
+      return MakeErrorResult(-6030, fmt::format("DataStore bulk read [{}..{}) failed: requested range exceeds store size {}.", startIndex, startIndex + count, this->getSize()));
+    }
+    if(count > 0 && m_Data == nullptr)
+    {
+      return MakeErrorResult(-6032, fmt::format("DataStore bulk read [{}..{}) failed: the store has no allocated value buffer.", startIndex, startIndex + count));
     }
 
     std::copy(m_Data.get() + startIndex, m_Data.get() + startIndex + count, buffer.data());
@@ -321,16 +335,19 @@ public:
    * This is the in-memory fast path for storage-neutral bulk I/O.
    * @param startIndex First flat value index to write.
    * @param buffer Values to copy.
-   * @return Error if the requested range exceeds this store.
+   * @return Valid on success. Error -6031 reports an invalid range. Error -6033 reports a missing value buffer.
    */
-  Result<> copyFromBuffer(usize startIndex, nonstd::span<const T> buffer) override
+  [[nodiscard]] Result<> copyFromBuffer(usize startIndex, nonstd::span<const T> buffer) override
   {
     const usize count = buffer.size();
 
-    if(startIndex + count > this->getSize())
+    if(startIndex > this->getSize() || count > this->getSize() - startIndex)
     {
-      return MakeErrorResult(-6021, fmt::format("DataStore bulk write failed: requested range [{}, {}) exceeds store size ({}). Requested {} elements starting at index {}.", startIndex,
-                                                startIndex + count, this->getSize(), count, startIndex));
+      return MakeErrorResult(-6031, fmt::format("DataStore bulk write [{}..{}) failed: requested range exceeds store size {}.", startIndex, startIndex + count, this->getSize()));
+    }
+    if(count > 0 && m_Data == nullptr)
+    {
+      return MakeErrorResult(-6033, fmt::format("DataStore bulk write [{}..{}) failed: the store has no allocated value buffer.", startIndex, startIndex + count));
     }
 
     std::copy(buffer.begin(), buffer.end(), m_Data.get() + startIndex);
@@ -343,27 +360,52 @@ public:
    * The 3D path copies contiguous X rows. Strided and other dimensions use
    * index mapping. Boolean output writes packed vector values without a temporary.
    * @param extent Tuple-space extent with minimum, maximum, and stride values.
-   * @return Extent values in row-major, component-fastest order, or an empty vector when invalid.
+   * @return Extent values on success. Error -6034 reports an invalid extent. Error -6032 reports a read or allocation failure.
    */
-  std::vector<T> readExtent(const Extent& extent) const override
+  [[nodiscard]] Result<std::vector<T>> readExtent(const Extent& extent) const override
   {
     const ShapeType& tupleShape = getTupleShape();
     const usize tupleDimensions = tupleShape.size();
 
     if(extent.dimensions() != tupleDimensions)
     {
-      return {};
+      return MakeErrorResult<std::vector<T>>(-6034, fmt::format("DataStore extent read failed: extent rank {} does not match tuple-shape rank {}.", extent.dimensions(), tupleDimensions));
     }
     for(usize dimension = 0; dimension < tupleDimensions; ++dimension)
     {
       if(extent.stride[dimension] == 0 || extent.min[dimension] > extent.max[dimension] || extent.max[dimension] >= tupleShape[dimension])
       {
-        return {};
+        return MakeErrorResult<std::vector<T>>(-6034, fmt::format("DataStore extent read failed: dimension {} has range [{}..{}], stride {}, and tuple bound {}.", dimension, extent.min[dimension],
+                                                                  extent.max[dimension], extent.stride[dimension], tupleShape[dimension]));
       }
     }
 
-    const usize totalValues = static_cast<usize>(extent.totalElements()) * getNumberOfComponents();
-    std::vector<T> result(totalValues);
+    usize totalValues = 0;
+    try
+    {
+      const uint64 extentTuples = extent.totalElements();
+      const usize numComponents = getNumberOfComponents();
+      if(numComponents > 0 && extentTuples > std::numeric_limits<usize>::max() / numComponents)
+      {
+        return MakeErrorResult<std::vector<T>>(-6034, fmt::format("DataStore extent read failed: {} tuples with {} components exceed the addressable value count.", extentTuples, numComponents));
+      }
+      totalValues = static_cast<usize>(extentTuples) * numComponents;
+    } catch(const std::exception& exception)
+    {
+      return MakeErrorResult<std::vector<T>>(-6034, fmt::format("DataStore extent read failed: the extent element count is invalid: {}", exception.what()));
+    }
+    if(totalValues > 0 && m_Data == nullptr)
+    {
+      return MakeErrorResult<std::vector<T>>(-6032, "DataStore extent read failed: the store has no allocated value buffer.");
+    }
+    std::vector<T> result;
+    try
+    {
+      result.resize(totalValues);
+    } catch(const std::exception& exception)
+    {
+      return MakeErrorResult<std::vector<T>>(-6032, fmt::format("DataStore extent read failed: result allocation for {} values failed: {}", totalValues, exception.what()));
+    }
     if constexpr(std::is_same_v<T, bool>)
     {
       // Packed vector<bool> storage requires direct proxy writes.
@@ -391,12 +433,16 @@ public:
           result[destinationValueIndex + componentIndex] = m_Data[sourceValueIndex + componentIndex];
         }
       }
-      return result;
+      return {std::move(result)};
     }
     else
     {
-      readExtentIntoBuffer(extent, nonstd::span<T>(result.data(), result.size()));
-      return result;
+      Result<> readResult = readExtentIntoBuffer(extent, nonstd::span<T>(result.data(), result.size()));
+      if(readResult.invalid())
+      {
+        return ConvertInvalidResult<std::vector<T>>(std::move(readResult));
+      }
+      return {std::move(result)};
     }
   }
 
@@ -406,9 +452,9 @@ public:
    * The 3D path copies contiguous X rows. Other layouts use index mapping.
    * @param extent Tuple-space extent with minimum, maximum, and stride values.
    * @param destination Receives exactly `extent.totalElements() * getNumberOfComponents()` values.
-   * @throws std::invalid_argument If the extent or destination size is invalid.
+   * @return Valid on success. Error -6034 reports an invalid extent or destination size. Error -6032 reports a missing value buffer.
    */
-  void readExtentIntoBuffer(const Extent& extent, nonstd::span<T> destination) const override
+  [[nodiscard]] Result<> readExtentIntoBuffer(const Extent& extent, nonstd::span<T> destination) const override
   {
     const ShapeType& tupleShape = getTupleShape();
     const usize tupleDimensions = tupleShape.size();
@@ -416,25 +462,41 @@ public:
 
     if(extent.dimensions() != tupleDimensions)
     {
-      throw std::invalid_argument(fmt::format("DataStore::readExtentIntoBuffer: extent dimensions ({}) do not match tuple-shape dimensions ({})", extent.dimensions(), tupleDimensions));
+      return MakeErrorResult(-6034, fmt::format("DataStore extent read failed: extent rank {} does not match tuple-shape rank {}.", extent.dimensions(), tupleDimensions));
     }
     for(usize dimension = 0; dimension < tupleDimensions; ++dimension)
     {
       if(extent.stride[dimension] == 0 || extent.min[dimension] > extent.max[dimension] || extent.max[dimension] >= tupleShape[dimension])
       {
-        throw std::invalid_argument(fmt::format("DataStore::readExtentIntoBuffer: extent dimension {} has min {}, max {}, stride {}, and tuple bound {}", dimension, extent.min[dimension],
-                                                extent.max[dimension], extent.stride[dimension], tupleShape[dimension]));
+        return MakeErrorResult(-6034, fmt::format("DataStore extent read failed: dimension {} has range [{}..{}], stride {}, and tuple bound {}.", dimension, extent.min[dimension],
+                                                  extent.max[dimension], extent.stride[dimension], tupleShape[dimension]));
       }
     }
 
-    const usize requiredValues = static_cast<usize>(extent.totalElements()) * numComponents;
+    usize requiredValues = 0;
+    try
+    {
+      const uint64 extentTuples = extent.totalElements();
+      if(numComponents > 0 && extentTuples > std::numeric_limits<usize>::max() / numComponents)
+      {
+        return MakeErrorResult(-6034, fmt::format("DataStore extent read failed: {} tuples with {} components exceed the addressable value count.", extentTuples, numComponents));
+      }
+      requiredValues = static_cast<usize>(extentTuples) * numComponents;
+    } catch(const std::exception& exception)
+    {
+      return MakeErrorResult(-6034, fmt::format("DataStore extent read failed: the extent element count is invalid: {}", exception.what()));
+    }
     if(destination.size() != requiredValues)
     {
-      throw std::invalid_argument(fmt::format("DataStore::readExtentIntoBuffer: destination has {} values; expected {}", destination.size(), requiredValues));
+      return MakeErrorResult(-6034, fmt::format("DataStore extent read failed: destination has {} values; expected {}.", destination.size(), requiredValues));
     }
-    if(requiredValues == 0 || m_Data.get() == nullptr)
+    if(requiredValues == 0)
     {
-      return;
+      return {};
+    }
+    if(m_Data == nullptr)
+    {
+      return MakeErrorResult(-6032, "DataStore extent read failed: the store has no allocated value buffer.");
     }
 
     const T* source = m_Data.get();
@@ -474,7 +536,7 @@ public:
           }
         }
       }
-      return;
+      return {};
     }
 
     if(tupleDimensions == 1)
@@ -492,7 +554,7 @@ public:
         }
         outputIndex += numComponents;
       }
-      return;
+      return {};
     }
 
     const usize outputTupleCount = static_cast<usize>(extent.totalElements());
@@ -518,18 +580,20 @@ public:
         destination[destinationValueIndex + componentIndex] = source[sourceValueIndex + componentIndex];
       }
     }
+    return {};
   }
 
   /**
    * @brief Writes values into a tuple-space extent.
    *
    * The 3D path copies contiguous X rows. The 1D path writes strided tuples.
-   * Other dimensions leave this store unchanged. The span must contain at least
+   * Other ranks return an error. The span must contain exactly
    * `extent.totalElements() * getNumberOfComponents()` values.
    * @param extent Tuple-space extent with minimum, maximum, and stride values.
    * @param data Values in row-major, component-fastest order.
+   * @return Valid on success. Error -6034 reports invalid arguments. Error -6033 reports a missing value buffer. Error -6037 reports an unsupported rank.
    */
-  void writeExtent(const Extent& extent, nonstd::span<const T> data) override
+  [[nodiscard]] Result<> writeExtent(const Extent& extent, nonstd::span<const T> data) override
   {
     const ShapeType& tupleShape = getTupleShape();
     const usize tupleDims = tupleShape.size();
@@ -537,20 +601,45 @@ public:
 
     if(extent.dimensions() != tupleDims)
     {
-      return;
+      return MakeErrorResult(-6034, fmt::format("DataStore extent write failed: extent rank {} does not match tuple-shape rank {}.", extent.dimensions(), tupleDims));
+    }
+    if(tupleDims != 1 && tupleDims != 3)
+    {
+      return MakeErrorResult(-6037, fmt::format("DataStore extent write failed: tuple-shape rank {} is unsupported. Supported ranks are 1 and 3.", tupleDims));
     }
     for(usize d = 0; d < tupleDims; ++d)
     {
-      if(extent.max[d] >= tupleShape[d])
+      if(extent.stride[d] == 0 || extent.min[d] > extent.max[d] || extent.max[d] >= tupleShape[d])
       {
-        return;
+        return MakeErrorResult(
+            -6034, fmt::format("DataStore extent write failed: dimension {} has range [{}..{}], stride {}, and tuple bound {}.", d, extent.min[d], extent.max[d], extent.stride[d], tupleShape[d]));
       }
     }
 
-    const usize totalIn = static_cast<usize>(extent.totalElements()) * numComp;
-    if(totalIn == 0 || data.size() < totalIn || m_Data.get() == nullptr)
+    usize totalIn = 0;
+    try
     {
-      return;
+      const uint64 extentTuples = extent.totalElements();
+      if(numComp > 0 && extentTuples > std::numeric_limits<usize>::max() / numComp)
+      {
+        return MakeErrorResult(-6034, fmt::format("DataStore extent write failed: {} tuples with {} components exceed the addressable value count.", extentTuples, numComp));
+      }
+      totalIn = static_cast<usize>(extentTuples) * numComp;
+    } catch(const std::exception& exception)
+    {
+      return MakeErrorResult(-6034, fmt::format("DataStore extent write failed: the extent element count is invalid: {}", exception.what()));
+    }
+    if(data.size() != totalIn)
+    {
+      return MakeErrorResult(-6034, fmt::format("DataStore extent write failed: source has {} values; expected {}.", data.size(), totalIn));
+    }
+    if(totalIn == 0)
+    {
+      return {};
+    }
+    if(m_Data == nullptr)
+    {
+      return MakeErrorResult(-6033, "DataStore extent write failed: the store has no allocated value buffer.");
     }
 
     T* destBase = m_Data.get();
@@ -591,7 +680,7 @@ public:
           }
         }
       }
-      return;
+      return {};
     }
 
     if(tupleDims == 1)
@@ -610,6 +699,7 @@ public:
         srcIdx += numComp;
       }
     }
+    return {};
   }
 
   /**

@@ -3,6 +3,7 @@
 #include "simplnx/DataStructure/DataArray.hpp"
 #include "simplnx/DataStructure/DataStore.hpp"
 #include "simplnx/Utilities/AlgorithmDispatch.hpp"
+#include "simplnx/Utilities/DataArrayUtilities.hpp"
 #include "simplnx/Utilities/FilterUtilities.hpp"
 #include "simplnx/Utilities/ParallelTaskAlgorithm.hpp"
 #include "simplnx/Utilities/StringUtilities.hpp"
@@ -424,7 +425,7 @@ private:
  * @tparam ArrayType Specifies DataArray or StringArray storage behavior.
  *
  * CopyDataND validates and copies the complete block after one cancellation
- * check. This task discards its Result.
+ * check. The shared task result retains the first copy error.
  */
 template <typename ArrayType>
 class SplitDataArrayByTupleImpl
@@ -436,13 +437,16 @@ public:
    * @param outputArray Receives one output block.
    * @param inputTupleShapeOffsets First source tuple in each dimension.
    * @param shouldCancel Signals cancellation before the complete copy.
+   * @param taskResult Stores the first copy error from all output tasks.
    * @pre All arguments outlive this task.
    */
-  SplitDataArrayByTupleImpl(const ArrayType& inputArray, ArrayType& outputArray, const std::vector<usize> inputTupleShapeOffsets, const std::atomic_bool& shouldCancel)
+  SplitDataArrayByTupleImpl(const ArrayType& inputArray, ArrayType& outputArray, const std::vector<usize> inputTupleShapeOffsets, const std::atomic_bool& shouldCancel,
+                            CopyFromArray::ParallelTaskResult& taskResult)
   : m_InputArray(inputArray)
   , m_OutputArray(outputArray)
   , m_InputTupleShapeOffsets(inputTupleShapeOffsets)
   , m_ShouldCancel(shouldCancel)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -465,11 +469,11 @@ protected:
   /**
    * @brief Invokes CopyDataND for the complete output shape.
    *
-   * The current implementation discards the copy Result.
+   * The shared task result stores the first copy error.
    */
   void convert() const
   {
-    if(m_ShouldCancel)
+    if(m_ShouldCancel || m_TaskResult.shouldAbort())
     {
       return;
     }
@@ -477,7 +481,7 @@ protected:
     auto inputTupleShape = m_InputArray.getTupleShape();
     auto outputTupleShape = m_OutputArray.getTupleShape();
     const std::vector<usize> startOutputTupleOffsets(inputTupleShape.size(), 0);
-    CopyFromArray::CopyDataND(m_InputArray, m_OutputArray, m_InputTupleShapeOffsets, startOutputTupleOffsets, outputTupleShape);
+    m_TaskResult.store(CopyFromArray::CopyDataND(m_InputArray, m_OutputArray, m_InputTupleShapeOffsets, startOutputTupleOffsets, outputTupleShape));
   }
 
 private:
@@ -485,6 +489,7 @@ private:
   ArrayType& m_OutputArray;
   const std::vector<usize> m_InputTupleShapeOffsets;
   const std::atomic_bool& m_ShouldCancel;
+  CopyFromArray::ParallelTaskResult& m_TaskResult;
 };
 
 /**
@@ -492,8 +497,7 @@ private:
  * @brief Copies one complete NeighborList output range.
  * @tparam T Specifies the NeighborList value type.
  *
- * CopyDataND validates and copies the complete range after one cancellation
- * check. This task discards its Result.
+ * CopyDataND validates and copies the complete range after one cancellation check.
  */
 template <typename T>
 class SplitNeighborListByTupleImpl
@@ -505,13 +509,15 @@ public:
    * @param outputNL Receives one output range.
    * @param inputTupleOffset First source list.
    * @param shouldCancel Signals cancellation before the complete copy.
+   * @param taskResult Stores the first copy error from all output tasks.
    * @pre All arguments outlive this task.
    */
-  SplitNeighborListByTupleImpl(const NeighborList<T>& inputNL, NeighborList<T>& outputNL, usize inputTupleOffset, const std::atomic_bool& shouldCancel)
+  SplitNeighborListByTupleImpl(const NeighborList<T>& inputNL, NeighborList<T>& outputNL, usize inputTupleOffset, const std::atomic_bool& shouldCancel, CopyFromArray::ParallelTaskResult& taskResult)
   : m_InputNL(inputNL)
   , m_OutputNL(outputNL)
   , m_InputTupleOffset(inputTupleOffset)
   , m_ShouldCancel(shouldCancel)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -534,18 +540,18 @@ protected:
   /**
    * @brief Invokes CopyDataND for the complete output list range.
    *
-   * The current implementation discards the copy Result.
+   * The shared task result stores the first copy error.
    */
   void convert() const
   {
-    if(m_ShouldCancel)
+    if(m_ShouldCancel || m_TaskResult.shouldAbort())
     {
       return;
     }
 
     auto outputTupleShape = m_OutputNL.getTupleShape();
     usize startOutputOffset = 0;
-    CopyFromArray::CopyDataND(m_InputNL, m_OutputNL, {m_InputTupleOffset}, {startOutputOffset}, outputTupleShape);
+    m_TaskResult.store(CopyFromArray::CopyDataND(m_InputNL, m_OutputNL, {m_InputTupleOffset}, {startOutputOffset}, outputTupleShape));
   }
 
 private:
@@ -553,6 +559,7 @@ private:
   NeighborList<T>& m_OutputNL;
   usize m_InputTupleOffset;
   const std::atomic_bool& m_ShouldCancel;
+  CopyFromArray::ParallelTaskResult& m_TaskResult;
 };
 
 template <typename T>
@@ -579,11 +586,10 @@ struct is_allowed_array_type<StringArray> : std::true_type
  * @param splitDimension Selects the partitioned tuple dimension.
  * @param messageHandler Receives output messages.
  * @param shouldCancel Signals cancellation during scheduling and task start.
- * @return Success after all tasks join.
+ * @return The first output-task copy error.
  * @pre Output extents form an ordered partition of the source dimension.
  *
- * Each task copies one output without further cancellation checks and discards
- * its CopyDataND Result. Outputs can complete in a different order.
+ * Each task copies one output without further cancellation checks. Outputs can complete in a different order.
  */
 template <typename ArrayType>
 typename std::enable_if<is_allowed_array_type<ArrayType>::value, Result<>>::type SplitArraysByTupleImpl(DataStructure& dataStructure, const DataPath& inputArrayPath,
@@ -591,6 +597,8 @@ typename std::enable_if<is_allowed_array_type<ArrayType>::value, Result<>>::type
                                                                                                         const IFilter::MessageHandler& messageHandler, const std::atomic_bool& shouldCancel)
 {
   // Independent output blocks run as separate tasks.
+  // Declared before the task runner so the runner's destructor joins every worker while this holder is still alive.
+  CopyFromArray::ParallelTaskResult taskResult;
   ParallelTaskAlgorithm taskRunner;
   auto& inputArray = dataStructure.getDataRefAs<ArrayType>(inputArrayPath);
   auto inputTupleShape = inputArray.getTupleShape();
@@ -606,13 +614,13 @@ typename std::enable_if<is_allowed_array_type<ArrayType>::value, Result<>>::type
 
     messageHandler({IFilter::Message::Type::Info, fmt::format("Splitting data array '{}' by tuple ({}/{})", inputArrayPath.toString(), i + 1, outputArrayPaths.size())});
 
-    taskRunner.execute(SplitDataArrayByTupleImpl<ArrayType>(inputArray, outputArray, inputTupleShapeOffset, shouldCancel));
+    taskRunner.execute(SplitDataArrayByTupleImpl<ArrayType>(inputArray, outputArray, inputTupleShapeOffset, shouldCancel, taskResult));
 
     inputTupleShapeOffset[splitDimension] += outputArray.getTupleShape()[splitDimension];
   }
   taskRunner.wait();
 
-  return {};
+  return taskResult.takeResult();
 }
 
 /**
@@ -623,15 +631,16 @@ typename std::enable_if<is_allowed_array_type<ArrayType>::value, Result<>>::type
  * @param outputArrayPaths Identifies ordered outputs.
  * @param messageHandler Receives output messages.
  * @param shouldCancel Signals cancellation during scheduling and task start.
- * @return Success after task-runner destruction joins all tasks.
+ * @return The first output-task copy error.
  *
- * Each task discards its CopyDataND Result. Output tuple counts define sequential
- * source ranges because NeighborList tuple shapes are one-dimensional.
+ * Output tuple counts define sequential source ranges because NeighborList tuple shapes are one-dimensional.
  */
 template <typename T>
 Result<> SplitNeighborListsByTupleImpl(DataStructure& dataStructure, const DataPath& inputArrayPath, const std::vector<DataPath>& outputArrayPaths, const IFilter::MessageHandler& messageHandler,
                                        const std::atomic_bool& shouldCancel)
 {
+  // Declared before the task runner so the runner's destructor joins every worker while this holder is still alive.
+  CopyFromArray::ParallelTaskResult taskResult;
   ParallelTaskAlgorithm taskRunner;
   auto& inputNeighborList = dataStructure.getDataRefAs<NeighborList<T>>(inputArrayPath);
 
@@ -646,11 +655,12 @@ Result<> SplitNeighborListsByTupleImpl(DataStructure& dataStructure, const DataP
     messageHandler({IFilter::Message::Type::Info, fmt::format("Splitting neighbor list '{}' by tuple ({}/{})", inputArrayPath.toString(), i + 1, outputArrayPaths.size())});
 
     auto& outputNeighborList = dataStructure.getDataRefAs<NeighborList<T>>(outputArrayPaths[i]);
-    taskRunner.execute(SplitNeighborListByTupleImpl(inputNeighborList, outputNeighborList, inputTupleOffset, shouldCancel));
+    taskRunner.execute(SplitNeighborListByTupleImpl(inputNeighborList, outputNeighborList, inputTupleOffset, shouldCancel, taskResult));
     inputTupleOffset += outputNeighborList.getNumberOfTuples();
   }
 
-  return {};
+  taskRunner.wait();
+  return taskResult.takeResult();
 }
 
 /**

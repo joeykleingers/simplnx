@@ -106,7 +106,12 @@ Result<> ComputeLargestCrossSectionsScanline::operator()()
       // Feature Id tuple axes are [Z, Y, X]. Extent reads collect one
       // noncontiguous cross-section without per-cell OOC access or rescanning.
       const Extent planeExtent = m_InputValues->Plane == 1 ? Extent({0, planeIndex, 0}, {zCells - 1, planeIndex, xCells - 1}) : Extent({0, 0, planeIndex}, {zCells - 1, yCells - 1, planeIndex});
-      stridedPlane = featureIdsStore.readExtent(planeExtent);
+      Result<std::vector<int32>> readResult = featureIdsStore.readExtent(planeExtent);
+      if(readResult.invalid())
+      {
+        return ConvertResult(std::move(readResult));
+      }
+      stridedPlane = std::move(readResult.value());
       planeFeatureIds = nonstd::span<const int32>(stridedPlane.data(), stridedPlane.size());
     }
 

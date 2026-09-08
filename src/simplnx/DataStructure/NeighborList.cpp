@@ -141,7 +141,7 @@ std::shared_ptr<DataObject> NeighborList<T>::deepCopy(const DataPath& copyPath)
   {
     return nullptr;
   }
-  // Don't construct with identifier since it will get created when inserting into data structure
+  // Insertion assigns the identifier for the copy.
   auto copy = std::shared_ptr<NeighborList<T>>(new NeighborList<T>(dataStruct, copyPath.getTargetName(), getTupleShape()));
   copy->setNumNeighborsArrayName(getNumNeighborsArrayName());
   copy->m_Store = m_Store->deepCopy();
@@ -171,13 +171,16 @@ int32 NeighborList<T>::eraseTuples(const std::vector<usize>& idxs)
   auto indicesSize = static_cast<usize>(idxs.size());
   if(indicesSize >= getNumberOfTuples())
   {
-    resizeTuples(ShapeType{0});
+    Result<> resizeResult = resizeTuples(ShapeType{0});
+    if(resizeResult.invalid())
+    {
+      return resizeResult.errors()[0].code;
+    }
     return 0;
   }
 
   usize arraySize = m_Store->size();
-  // Sanity Check the Indices in the vector to make sure we are not trying to remove any indices that are
-  // off the end of the array and return an error code.
+  // Reject an index outside the list before the copy changes any values.
   for(usize idx : idxs)
   {
     if(idx >= arraySize)
@@ -187,7 +190,11 @@ int32 NeighborList<T>::eraseTuples(const std::vector<usize>& idxs)
   }
 
   auto copy = m_Store->deepCopy();
-  copy->resizeTuples(ShapeType{static_cast<ShapeType::value_type>(arraySize - indicesSize)});
+  Result<> resizeResult = copy->resizeTuples(ShapeType{static_cast<ShapeType::value_type>(arraySize - indicesSize)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult.errors()[0].code;
+  }
 
   usize idxsIndex = 0;
   usize rIdx = 0;
@@ -282,7 +289,11 @@ void NeighborList<T>::addEntry(int32 grainId, value_type value)
   if(grainId >= static_cast<int32>(m_Store->size()))
   {
     usize old = m_Store->size();
-    m_Store->resizeTuples(ShapeType{static_cast<ShapeType::value_type>(grainId + 1)});
+    Result<> resizeResult = m_Store->resizeTuples(ShapeType{static_cast<ShapeType::value_type>(grainId + 1)});
+    if(resizeResult.invalid())
+    {
+      throw std::runtime_error(resizeResult.errors()[0].message);
+    }
     m_IsAllocated = true;
     // Initialize with zero length Vectors
     for(usize i = old; i < m_Store->size(); ++i)
@@ -312,7 +323,11 @@ void NeighborList<T>::setList(int32 grainId, const SharedVectorType& neighborLis
 {
   if(grainId >= static_cast<int32>(m_Store->size()))
   {
-    m_Store->resizeTuples(ShapeType{static_cast<ShapeType::value_type>(grainId + 1)});
+    Result<> resizeResult = m_Store->resizeTuples(ShapeType{static_cast<ShapeType::value_type>(grainId + 1)});
+    if(resizeResult.invalid())
+    {
+      throw std::runtime_error(resizeResult.errors()[0].message);
+    }
     m_IsAllocated = true;
   }
   m_Store->setList(grainId, neighborList);
@@ -323,7 +338,11 @@ void NeighborList<T>::setList(int32 grainId, const VectorType& neighborList)
 {
   if(grainId >= static_cast<int32>(m_Store->size()))
   {
-    m_Store->resizeTuples(ShapeType{static_cast<ShapeType::value_type>(grainId + 1)});
+    Result<> resizeResult = m_Store->resizeTuples(ShapeType{static_cast<ShapeType::value_type>(grainId + 1)});
+    if(resizeResult.invalid())
+    {
+      throw std::runtime_error(resizeResult.errors()[0].message);
+    }
     m_IsAllocated = true;
   }
   m_Store->setList(grainId, neighborList);

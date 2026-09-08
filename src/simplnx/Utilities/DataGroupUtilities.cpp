@@ -9,6 +9,19 @@
 
 namespace nx::core
 {
+namespace
+{
+/**
+ * @brief Reported when the requested feature group does not exist in the DataStructure.
+ */
+constexpr int32 k_MissingFeatureGroupError = -46000;
+
+/**
+ * @brief Reported when the supplied active-flag count does not match the feature tuple count.
+ */
+constexpr int32 k_FeatureTupleCountMismatchError = -46001;
+} // namespace
+
 FeatureRenumbering ComputeFeatureRenumbering(const std::vector<bool>& activeObjects)
 {
   FeatureRenumbering result;
@@ -33,14 +46,14 @@ FeatureRenumbering ComputeFeatureRenumbering(const std::vector<bool>& activeObje
   return result;
 }
 
-bool RemoveInactiveObjects(DataStructure& dataStructure, const DataPath& featureDataGroupPath, const std::vector<bool>& activeObjects, Int32AbstractDataStore& cellFeatureIds,
-                           size_t currentFeatureCount, const IFilter::MessageHandler& messageHandler, const std::atomic_bool& shouldCancel, bool cellFeatureIdsRenumbered)
+Result<> RemoveInactiveObjects(DataStructure& dataStructure, const DataPath& featureDataGroupPath, const std::vector<bool>& activeObjects, Int32AbstractDataStore& cellFeatureIds,
+                               size_t currentFeatureCount, const IFilter::MessageHandler& messageHandler, const std::atomic_bool& shouldCancel, bool cellFeatureIdsRenumbered)
 {
   const auto* featureLevelBaseGroup = dataStructure.getDataAs<const BaseGroup>(featureDataGroupPath);
 
   if(nullptr == featureLevelBaseGroup)
   {
-    return false;
+    return MakeErrorResult(k_MissingFeatureGroupError, fmt::format("Feature group '{}' does not exist or is not a group that can hold feature-level arrays.", featureDataGroupPath.toString()));
   }
   const DataMap& featureDataMap = featureLevelBaseGroup->getDataMap();
 
@@ -76,7 +89,7 @@ bool RemoveInactiveObjects(DataStructure& dataStructure, const DataPath& feature
       {
         if(shouldCancel)
         {
-          return false;
+          return {};
         }
         // keepList is ascending. Each source is at or after its destination, so
         // forward in-place copies cannot overwrite an unread source tuple.
@@ -102,10 +115,14 @@ bool RemoveInactiveObjects(DataStructure& dataStructure, const DataPath& feature
         {
           if(shouldCancel)
           {
-            return false;
+            return {};
           }
           size_t count = std::min(k_ChunkSize, totalPoints - offset);
-          cellFeatureIds.copyIntoBuffer(offset, nonstd::span<int32_t>(chunkBuf.get(), count));
+          auto readResult = cellFeatureIds.copyIntoBuffer(offset, nonstd::span<int32_t>(chunkBuf.get(), count));
+          if(readResult.invalid())
+          {
+            return readResult;
+          }
           bool chunkModified = false;
           for(size_t i = 0; i < count; i++)
           {
@@ -117,7 +134,11 @@ bool RemoveInactiveObjects(DataStructure& dataStructure, const DataPath& feature
           }
           if(chunkModified)
           {
-            cellFeatureIds.copyFromBuffer(offset, nonstd::span<const int32_t>(chunkBuf.get(), count));
+            auto writeResult = cellFeatureIds.copyFromBuffer(offset, nonstd::span<const int32_t>(chunkBuf.get(), count));
+            if(writeResult.invalid())
+            {
+              return writeResult;
+            }
             featureIdsChanged = true;
           }
         }
@@ -147,14 +168,20 @@ bool RemoveInactiveObjects(DataStructure& dataStructure, const DataPath& feature
     auto* featureAttMatrixPtr = dataStructure.getDataAs<AttributeMatrix>(featureDataGroupPath);
     if(featureAttMatrixPtr != nullptr)
     {
-      featureAttMatrixPtr->resizeTuples(newShape);
+      auto resizeResult = featureAttMatrixPtr->resizeTuples(newShape);
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
     }
   }
   else
   {
-    return false;
+    return MakeErrorResult(k_FeatureTupleCountMismatchError,
+                           fmt::format("Feature group '{}' holds {} feature tuples, but {} active flags were supplied. The active-flag count must match the feature tuple count.",
+                                       featureDataGroupPath.toString(), totalTuples, activeObjects.size()));
   }
-  return true;
+  return {};
 }
 
 std::vector<std::shared_ptr<IDataArray>> GenerateDataArrayList(const DataStructure& dataStructure, const DataPath& dataArrayPath, const std::vector<DataPath>& ignoredDataPaths)

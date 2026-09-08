@@ -7,6 +7,7 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
+#include <exception>
 #include <new>
 #include <sstream>
 #include <vector>
@@ -275,6 +276,12 @@ IFilter::ExecuteResult IFilter::execute(DataStructure& dataStructure, const Argu
       message = "A filter ran out of memory while executing.";
     }
     return {MakeErrorResult(-272, std::move(message))};
+  } catch(const std::exception& e)
+  {
+    // Backstop for any other exception that escapes executeImpl. Every storage failure has to
+    // reach the user, so an escaped exception becomes an execution error instead of terminating
+    // the process or being reported as success.
+    executeImplResult = MakeErrorResult(-2, fmt::format("{}: unhandled exception during execution: {}", name(), e.what()));
   }
   if(shouldCancel)
   {

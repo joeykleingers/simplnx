@@ -16,9 +16,11 @@
 #include <nonstd/span.hpp>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 
@@ -130,4 +132,67 @@ TEST_CASE("SimplnxCore::WriteVtkStructuredPointsFilter: Binary correctness", "[S
   REQUIRE(terminator == '\n');
   REQUIRE(vtkFile.peek() == std::ifstream::traits_type::eof());
   UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}
+
+TEST_CASE("SimplnxCore::WriteVtkStructuredPointsFilter: cancellation leaves the existing output untouched", "[SimplnxCore][WriteVtkStructuredPointsFilter]")
+{
+  UnitTest::LoadPlugins();
+
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  CAPTURE(scenario);
+  UnitTest::AlgorithmTestScope scope(scenario);
+
+  constexpr std::array<uint16, 4> k_Values = {1, 2, 3, 4};
+  const std::string geomName = "Cancellation ImageGeom";
+  const std::string cellDataName = "Cell Data";
+  const std::string scalarsName = "Cancellation Scalars";
+  const DataPath geomPath({geomName});
+  const DataPath cellDataPath = geomPath.createChildPath(cellDataName);
+  const DataPath scalarsPath = cellDataPath.createChildPath(scalarsName);
+
+  DataStructure dataStructure;
+  auto* imageGeom = ImageGeom::Create(dataStructure, geomName);
+  REQUIRE(imageGeom != nullptr);
+  imageGeom->setDimensions({2, 2, 1});
+
+  const ShapeType tupleShape = {1, 2, 2};
+  auto* cellData = AttributeMatrix::Create(dataStructure, cellDataName, tupleShape, imageGeom->getId());
+  REQUIRE(cellData != nullptr);
+  imageGeom->setCellData(*cellData);
+
+  auto scalarsStore = DataStoreUtilities::CreateDataStore<uint16>(dataStructure, scalarsPath, tupleShape, {1}, IDataAction::Mode::Execute);
+  auto* scalars = UInt16Array::Create(dataStructure, scalarsName, scalarsStore, cellData->getId());
+  REQUIRE(scalars != nullptr);
+  SIMPLNX_RESULT_REQUIRE_VALID(scalarsStore->copyFromBuffer(0, nonstd::span<const uint16>(k_Values.data(), k_Values.size())));
+  scope.requireExpectedStore(*scalars);
+
+  const fs::path outputPath = fs::temp_directory_path() / "nx_cancel_vtk_writer.vtk";
+  auto outputFileGuard = MakeScopeGuard([&outputPath]() noexcept {
+    std::error_code errorCode;
+    fs::remove(outputPath, errorCode);
+  });
+  const std::string sentinel = "PRE-EXISTING USER OUTPUT";
+  {
+    std::ofstream outputStream(outputPath, std::ios::binary | std::ios::trunc);
+    REQUIRE(outputStream.is_open());
+    outputStream << sentinel;
+  }
+
+  WriteVtkStructuredPointsFilter filter;
+  Arguments args = filter.getDefaultArguments();
+  args.insertOrAssign(WriteVtkStructuredPointsFilter::k_OutputFile_Key, std::make_any<FileSystemPathParameter::ValueType>(outputPath));
+  args.insertOrAssign(WriteVtkStructuredPointsFilter::k_WriteBinaryFile_Key, std::make_any<bool>(true));
+  args.insertOrAssign(WriteVtkStructuredPointsFilter::k_ImageGeometryPath_Key, std::make_any<DataPath>(geomPath));
+  args.insertOrAssign(WriteVtkStructuredPointsFilter::k_SelectedDataArrayPaths_Key, std::make_any<MultiArraySelectionParameter::ValueType>(MultiArraySelectionParameter::ValueType{scalarsPath}));
+
+  std::atomic_bool shouldCancel = false;
+  IFilter::MessageHandler cancelOnFirstMessage{[&shouldCancel](const IFilter::Message&) { shouldCancel.store(true); }};
+  auto executeResult = scope.executeFilter(filter, dataStructure, args, nullptr, cancelOnFirstMessage, shouldCancel);
+
+  REQUIRE(shouldCancel.load());
+  REQUIRE(executeResult.result.invalid());
+  std::ifstream inputStream(outputPath, std::ios::binary);
+  REQUIRE(inputStream.is_open());
+  const std::string contents((std::istreambuf_iterator<char>(inputStream)), std::istreambuf_iterator<char>());
+  REQUIRE(contents == sentinel);
 }

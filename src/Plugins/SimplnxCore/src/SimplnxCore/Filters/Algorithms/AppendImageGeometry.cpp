@@ -51,12 +51,18 @@ Result<> AppendImageGeometry::operator()()
     }
     destGeometry.setDimensions(newDestGeomDims);
     const std::vector<size_t> newDims = {newDestGeomDims[2], newDestGeomDims[1], newDestGeomDims[0]};
-    destCellData->resizeTuples(newDims);
+    Result<> resizeResult = destCellData->resizeTuples(newDims);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   }
 
   // Temporary default-filled arrays supply data that a source geometry lacks.
   DataStructure tmpDataStructure;
 
+  // Declared before the task runner so the runner's destructor joins every worker while this holder is still alive.
+  CopyFromArray::ParallelTaskResult taskResult;
   ParallelTaskAlgorithm taskRunner;
   for(const auto& [dataId, dataObject] : *newCellData)
   {
@@ -108,11 +114,9 @@ Result<> AppendImageGeometry::operator()()
 
       if(m_DataStructure.getData(inputCellDataPath.createChildPath(name)) == nullptr)
       {
-        results = MergeResults(
-            results,
-            MakeWarningVoidResult(
-                -8213, fmt::format("Data object {} does not exist in the input geometry cell data attribute matrix. The resulting appended data will be initialized to the chosen default value '{}'",
-                                   name, m_InputValues->DefaultValue)));
+        results.warnings().push_back(
+            {-8213, fmt::format("Data object {} does not exist in the input geometry cell data attribute matrix. The resulting appended data will be initialized to the chosen default value '{}'",
+                                name, m_InputValues->DefaultValue)});
 
         // A UUID prevents name collisions in the temporary structure.
         auto result = CreateDefaultValueArrayFromArray(tmpDataStructure, destDataArray, Uuid::GenerateV4().str(), tupleShape, m_InputValues->DefaultValue);
@@ -139,7 +143,7 @@ Result<> AppendImageGeometry::operator()()
       auto newGeometry = m_DataStructure.getDataRefAs<ImageGeom>(m_InputValues->NewGeometryPath);
       auto newDestGeomDimsVec = newGeometry.getDimensions().toContainer<std::vector<usize>>();
       std::reverse(newDestGeomDimsVec.begin(), newDestGeomDimsVec.end());
-      CopyFromArray::RunParallelCombine(*newDataArray, taskRunner, inputDataArrays, inputTupleShapes, newDestGeomDimsVec, m_InputValues->Direction, m_InputValues->MirrorGeometry);
+      CopyFromArray::RunParallelCombine(*newDataArray, taskRunner, taskResult, inputDataArrays, inputTupleShapes, newDestGeomDimsVec, m_InputValues->Direction, m_InputValues->MirrorGeometry);
     }
     else
     {
@@ -148,11 +152,11 @@ Result<> AppendImageGeometry::operator()()
       std::reverse(originalDestGeomDimsVec.begin(), originalDestGeomDimsVec.end());
       auto newDestGeomDimsVec = destGeometry.getDimensions().toContainer<std::vector<usize>>();
       std::reverse(newDestGeomDimsVec.begin(), newDestGeomDimsVec.end());
-      CopyFromArray::RunParallelAppend(*destDataArray, taskRunner, inputDataArrays, inputTupleShapes, originalDestGeomDimsVec, newDestGeomDimsVec, m_InputValues->Direction,
+      CopyFromArray::RunParallelAppend(*destDataArray, taskRunner, taskResult, inputDataArrays, inputTupleShapes, originalDestGeomDimsVec, newDestGeomDimsVec, m_InputValues->Direction,
                                        m_InputValues->MirrorGeometry);
     }
   }
   taskRunner.wait();
-
-  return results;
+  Result<> taskExecutionResult = taskResult.takeResult();
+  return MergeResults(std::move(results), std::move(taskExecutionResult));
 }

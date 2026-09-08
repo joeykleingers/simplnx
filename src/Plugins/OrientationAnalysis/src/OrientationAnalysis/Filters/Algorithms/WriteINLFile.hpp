@@ -36,8 +36,8 @@ struct ORIENTATIONANALYSIS_EXPORT WriteINLFileInputValues
  * A set of distinct feature IDs also grows with the number of unique IDs and can
  * contain one entry per cell.
  *
- * Cancellation returns success. It can leave an empty file during the feature-ID
- * scan or a partial file after the header is written.
+ * Cancellation can leave the temporary output empty during the feature-ID scan or
+ * incomplete after the header is written.
  */
 class ORIENTATIONANALYSIS_EXPORT WriteINLFile
 {
@@ -61,7 +61,7 @@ public:
 
   /**
    * @brief Writes the INL header and one record per image cell.
-   * @return Directory, input bulk-read, or output-write errors.
+   * @return Directory, input bulk-read, output-write, or cancellation errors.
    * @pre Cell arrays match the image cell count and use component counts 1, 3, and 1.
    * @pre Cell phase IDs are nonnegative and index all ensemble arrays.
    * @pre Material names, crystal structures, and feature counts have equal tuple counts.

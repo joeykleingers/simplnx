@@ -90,6 +90,8 @@
 
 #include <fmt/ranges.h>
 
+#include <string_view>
+
 #include <filesystem>
 
 using namespace nx::core;
@@ -128,6 +130,53 @@ struct fmt::formatter<nx::core::Error>
     return fmt::format_to(ctx.out(), "Error(code={}, message='{}')", value.code, value.message);
   }
 };
+
+namespace
+{
+/**
+ * @brief Raises a Python-visible exception for an invalid Result so a script never continues after a silently failed
+ * storage operation. Every error is reported as "code: message"; an invalid Result that carries no error is reported as an
+ * unknown failure instead of being indexed.
+ * @param result Result returned by the wrapped simplnx call.
+ */
+void ThrowIfInvalid(const nx::core::Result<>& result)
+{
+  if(result.valid())
+  {
+    return;
+  }
+  if(result.errors().empty())
+  {
+    throw std::runtime_error("operation failed without an error message");
+  }
+  std::string message;
+  for(const nx::core::Error& error : result.errors())
+  {
+    if(!message.empty())
+    {
+      message += "; ";
+    }
+    message += fmt::format("{}: {}", error.code, error.message);
+  }
+  throw std::runtime_error(message);
+}
+
+/**
+ * @brief Returns the attribute matrix a geometry resize binding must resize together with its shared element list, or raises
+ * when the geometry has none, because dereferencing the null pointer would crash the interpreter.
+ * @param attributeMatrix Attribute matrix pointer read from the geometry; may be null.
+ * @param geometry Geometry named in the exception.
+ * @param role Element role named in the exception ("vertex", "edge", "face", "polyhedra").
+ */
+nx::core::AttributeMatrix& RequireAttributeMatrix(nx::core::AttributeMatrix* attributeMatrix, const nx::core::DataObject& geometry, std::string_view role)
+{
+  if(attributeMatrix == nullptr)
+  {
+    throw std::runtime_error(fmt::format("Geometry '{}' has no {} attribute matrix to resize", geometry.getName(), role));
+  }
+  return *attributeMatrix;
+}
+} // namespace
 
 template <>
 /**
@@ -296,7 +345,13 @@ auto BindDataStore(py::handle scope, const char* name)
       py::return_value_policy::reference_internal);
   dataStore.def("__getitem__", &DataStore<T>::at);
   dataStore.def("__len__", &DataStore<T>::getSize);
-  dataStore.def("resize_tuples", &DataStore<T>::resizeTuples, "Resize the tuples with the given shape");
+  dataStore.def(
+      "resize_tuples",
+      [](DataStore<T>& dataStore_, const ShapeType& tupleShape) {
+        Result<> result = dataStore_.resizeTuples(tupleShape);
+        ThrowIfInvalid(result);
+      },
+      "Resize the tuples with the given shape");
   return dataStore;
 }
 
@@ -1223,8 +1278,10 @@ PYBIND11_MODULE(simplnx, mod)
   iNodeGeometry0D.def(
       "resize_vertices",
       [](INodeGeometry0D& nodeGeometry0D, usize size) {
-        nodeGeometry0D.resizeVertexList(size);
-        nodeGeometry0D.getVertexAttributeMatrix()->resizeTuples({size});
+        Result<> resizeResult = nodeGeometry0D.resizeVertexList(size);
+        ThrowIfInvalid(resizeResult);
+        resizeResult = RequireAttributeMatrix(nodeGeometry0D.getVertexAttributeMatrix(), nodeGeometry0D, "vertex").resizeTuples({size});
+        ThrowIfInvalid(resizeResult);
       },
       "This will resize the shared vertex list and also resize the associated attribute matrix");
   py::class_<VertexGeom, INodeGeometry0D, std::shared_ptr<VertexGeom>> vertexGeom(mod, "VertexGeom");
@@ -1233,8 +1290,10 @@ PYBIND11_MODULE(simplnx, mod)
   iNodeGeometry1D.def(
       "resize_edges",
       [](INodeGeometry1D& nodeGeometry1D, usize size) {
-        nodeGeometry1D.resizeEdgeList(size);
-        nodeGeometry1D.getEdgeAttributeMatrix()->resizeTuples({size});
+        Result<> resizeResult = nodeGeometry1D.resizeEdgeList(size);
+        ThrowIfInvalid(resizeResult);
+        resizeResult = RequireAttributeMatrix(nodeGeometry1D.getEdgeAttributeMatrix(), nodeGeometry1D, "edge").resizeTuples({size});
+        ThrowIfInvalid(resizeResult);
       },
       "This will resize the shared edge list and also resize the associated attribute matrix");
   py::class_<EdgeGeom, INodeGeometry1D, std::shared_ptr<EdgeGeom>> edgeGeom(mod, "EdgeGeom");
@@ -1243,8 +1302,11 @@ PYBIND11_MODULE(simplnx, mod)
   iNodeGeometry2D.def(
       "resize_faces",
       [](INodeGeometry2D& nodeGeometry2D, usize size) {
-        nodeGeometry2D.resizeFaceList(size);
-        nodeGeometry2D.getEdgeAttributeMatrix()->resizeTuples({size});
+        Result<> resizeResult = nodeGeometry2D.resizeFaceList(size);
+        ThrowIfInvalid(resizeResult);
+        // The face attribute matrix is resized together with the shared face list.
+        resizeResult = RequireAttributeMatrix(nodeGeometry2D.getFaceAttributeMatrix(), nodeGeometry2D, "face").resizeTuples({size});
+        ThrowIfInvalid(resizeResult);
       },
       "This will resize the shared triangle list and also resize the associated attribute matrix");
   py::class_<TriangleGeom, INodeGeometry2D, std::shared_ptr<TriangleGeom>> triangleGeom(mod, "TriangleGeom");
@@ -1254,8 +1316,10 @@ PYBIND11_MODULE(simplnx, mod)
   iNodeGeometry3D.def(
       "resize_polyhedra",
       [](INodeGeometry3D& nodeGeometry3D, usize size) {
-        nodeGeometry3D.resizePolyhedraList(size);
-        nodeGeometry3D.getPolyhedraAttributeMatrix()->resizeTuples({size});
+        Result<> resizeResult = nodeGeometry3D.resizePolyhedraList(size);
+        ThrowIfInvalid(resizeResult);
+        resizeResult = RequireAttributeMatrix(nodeGeometry3D.getPolyhedraAttributeMatrix(), nodeGeometry3D, "polyhedra").resizeTuples({size});
+        ThrowIfInvalid(resizeResult);
       },
       "This will resize the shared polyhedra list and also resize the associated attribute matrix");
   py::class_<TetrahedralGeom, INodeGeometry3D, std::shared_ptr<TetrahedralGeom>> tetrahedralGeom(mod, "TetrahedralGeom");
@@ -1264,7 +1328,13 @@ PYBIND11_MODULE(simplnx, mod)
   py::class_<DataGroup, BaseGroup, std::shared_ptr<DataGroup>> dataGroup(mod, "DataGroup");
 
   py::class_<AttributeMatrix, BaseGroup, std::shared_ptr<AttributeMatrix>> attributeMatrix(mod, "AttributeMatrix");
-  attributeMatrix.def("resize_tuples", &AttributeMatrix::resizeTuples, "Resize the tuples with the given shape");
+  attributeMatrix.def(
+      "resize_tuples",
+      [](AttributeMatrix& attributeMatrix_, const ShapeType& tupleShape) {
+        Result<> resizeResult = attributeMatrix_.resizeTuples(tupleShape);
+        ThrowIfInvalid(resizeResult);
+      },
+      "Resize the tuples with the given shape");
   attributeMatrix.def_property_readonly("tuple_shape", &AttributeMatrix::getShape, "Returns the Tuple dimensions of the AttributeMatrix");
   attributeMatrix.def_property_readonly("size", &AttributeMatrix::getNumberOfTuples, "Returns the total number of tuples");
 
@@ -1283,7 +1353,13 @@ PYBIND11_MODULE(simplnx, mod)
   iDataArray.def_property_readonly("tdims", &IDataArray::getTupleShape);
   iDataArray.def_property_readonly("cdims", &IDataArray::getComponentShape);
   iDataArray.def_property_readonly("data_type", &IDataArray::getDataType);
-  iDataArray.def("resize_tuples", &IDataArray::resizeTuples, "Resize the tuples with the given shape");
+  iDataArray.def(
+      "resize_tuples",
+      [](IDataArray& dataArray, const ShapeType& tupleShape) {
+        Result<> resizeResult = dataArray.resizeTuples(tupleShape);
+        ThrowIfInvalid(resizeResult);
+      },
+      "Resize the tuples with the given shape");
 
   py::class_<StringArray, IArray, std::shared_ptr<StringArray>> stringArray(mod, "StringArray");
   stringArray.def(
@@ -1323,7 +1399,13 @@ PYBIND11_MODULE(simplnx, mod)
   stringArray.def_property_readonly("tdims", &StringArray::getTupleShape);
   stringArray.def_property_readonly("cdims", &StringArray::getComponentShape);
   stringArray.def_property_readonly("values", &StringArray::values);
-  stringArray.def("resize_tuples", &StringArray::resizeTuples, "Resize the tuples with the given shape");
+  stringArray.def(
+      "resize_tuples",
+      [](StringArray& stringArray_, const ShapeType& tupleShape) {
+        Result<> resizeResult = stringArray_.resizeTuples(tupleShape);
+        ThrowIfInvalid(resizeResult);
+      },
+      "Resize the tuples with the given shape");
 
   auto iNeighborList = py::class_<INeighborList, IArray, std::shared_ptr<INeighborList>>(mod, "INeighborList");
 

@@ -68,7 +68,7 @@ DataObject* QuadGeom::shallowCopy()
 std::shared_ptr<DataObject> QuadGeom::deepCopy(const DataPath& copyPath)
 {
   auto& dataStruct = getDataStructureRef();
-  // Don't construct with identifier since it will get created when inserting into data structure
+  // Construct without an identifier because insertion creates it.
   auto copy = std::shared_ptr<QuadGeom>(new QuadGeom(dataStruct, copyPath.getTargetName()));
   if(!dataStruct.containsData(copyPath) && dataStruct.insert(copy, copyPath.getParent()))
   {
@@ -189,7 +189,6 @@ Result<> QuadGeom::findElementSizes(bool recalculate)
     if(quadSizes == nullptr)
     {
       m_ElementSizesId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2630, "QuadGeom Error: Unable to find or create a valid element sizes array or data store.");
     }
   }
@@ -197,7 +196,6 @@ Result<> QuadGeom::findElementSizes(bool recalculate)
   GeometryHelpers::Topology::Find2DElementAreas(getFaces(), getVertices(), quadSizes);
   m_ElementSizesId = quadSizes->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -216,15 +214,18 @@ Result<> QuadGeom::findElementsContainingVert(bool recalculate)
     if(quadsContainingVert == nullptr)
     {
       m_CellContainingVertDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2631, "QuadGeom Error: Unable to find or create a valid dynamic list array.");
     }
   }
 
-  GeometryHelpers::Connectivity::FindElementsContainingVert<uint16, MeshIndexType>(getFaces(), quadsContainingVert, getNumberOfVertices());
+  auto findResult = GeometryHelpers::Connectivity::FindElementsContainingVert<uint16, MeshIndexType>(getFaces(), quadsContainingVert, getNumberOfVertices());
+  if(findResult.invalid())
+  {
+    m_CellContainingVertDataArrayId.reset();
+    return findResult;
+  }
   m_CellContainingVertDataArrayId = quadsContainingVert->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -249,17 +250,19 @@ Result<> QuadGeom::findElementNeighbors(bool recalculate)
     if(quadNeighbors == nullptr)
     {
       m_CellNeighborsDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2632, "QuadGeom Error: Unable to find or create a dynamic list array.");
     }
   }
 
   m_CellNeighborsDataArrayId = quadNeighbors->getId();
 
-  // No error value ( < 0) returned from below function ever
-  GeometryHelpers::Connectivity::FindElementNeighbors<uint16, MeshIndexType>(getFaces(), getElementsContainingVert(), quadNeighbors, Type::Quad);
+  auto findResult = GeometryHelpers::Connectivity::FindElementNeighbors<uint16, MeshIndexType>(getFaces(), getElementsContainingVert(), quadNeighbors, Type::Quad);
+  if(findResult.invalid())
+  {
+    m_CellNeighborsDataArrayId.reset();
+    return findResult;
+  }
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -278,7 +281,6 @@ Result<> QuadGeom::findElementCentroids(bool recalculate)
     if(quadCentroids == nullptr)
     {
       m_CellCentroidsDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2633, "QuadGeom Error: Unable to find or create a valid element centroids array or data store.");
     }
   }
@@ -286,7 +288,6 @@ Result<> QuadGeom::findElementCentroids(bool recalculate)
   GeometryHelpers::Topology::FindElementCentroids(getFaces(), getVertices(), quadCentroids);
   m_CellCentroidsDataArrayId = quadCentroids->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -324,15 +325,18 @@ Result<> QuadGeom::findEdges(bool recalculate)
     if(edgeList == nullptr)
     {
       m_EdgeDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2634, "QuadGeom Error: Unable to find or create a valid shared edges array or data store.");
     }
   }
 
-  GeometryHelpers::Connectivity::Find2DElementEdges(getFaces(), edgeList);
+  auto findResult = GeometryHelpers::Connectivity::Find2DElementEdges(getFaces(), edgeList);
+  if(findResult.invalid())
+  {
+    m_EdgeDataArrayId.reset();
+    return findResult;
+  }
   m_EdgeDataArrayId = edgeList->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -352,14 +356,17 @@ Result<> QuadGeom::findUnsharedEdges(bool recalculate)
     if(unsharedEdgeList == nullptr)
     {
       m_UnsharedEdgeListId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2635, "QuadGeom Error: Unable to find or create a valid unshared edges array or data store.");
     }
   }
 
-  GeometryHelpers::Connectivity::Find2DUnsharedEdges<MeshIndexType>(getFaces(), unsharedEdgeList);
+  auto findResult = GeometryHelpers::Connectivity::Find2DUnsharedEdges<MeshIndexType>(getFaces(), unsharedEdgeList);
+  if(findResult.invalid())
+  {
+    m_UnsharedEdgeListId.reset();
+    return findResult;
+  }
   m_UnsharedEdgeListId = unsharedEdgeList->getId();
 
-  // Used to be error code `1`
   return {};
 }

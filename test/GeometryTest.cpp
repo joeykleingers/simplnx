@@ -61,7 +61,7 @@ void testGeom2D(INodeGeometry2D* geom)
       geom->setVertices(*vertices);
       REQUIRE(geom->getVertices() == vertices);
       const usize numVertices = 10;
-      geom->resizeVertexList(numVertices);
+      REQUIRE(geom->resizeVertexList(numVertices).valid());
       REQUIRE(geom->getNumberOfVertices() == numVertices);
 
       geom->setVertexCoordinate(vertId, coord);
@@ -74,7 +74,7 @@ void testGeom2D(INodeGeometry2D* geom)
       geom->setEdgeList(*edges);
       REQUIRE(geom->getEdges() == edges);
       const usize numEdges = 5;
-      geom->resizeEdgeList(numEdges);
+      REQUIRE(geom->resizeEdgeList(numEdges).valid());
       REQUIRE(geom->getNumberOfEdges() == numEdges);
       const usize edgeId = 3;
       std::array<usize, 2> verts = {vertId, vertId + 1};
@@ -110,7 +110,7 @@ void testGeom3D(INodeGeometry3D* geom)
       geom->setVertices(*vertices);
       REQUIRE(geom->getVertices() == vertices);
       const usize numVertices = 10;
-      geom->resizeVertexList(numVertices);
+      REQUIRE(geom->resizeVertexList(numVertices).valid());
       REQUIRE(geom->getNumberOfVertices() == numVertices);
 
       geom->setVertexCoordinate(vertId, coord);
@@ -122,7 +122,7 @@ void testGeom3D(INodeGeometry3D* geom)
       geom->setEdgeList(*edges);
       REQUIRE(geom->getEdges() == edges);
       const usize numEdges = 5;
-      geom->resizeEdgeList(numEdges);
+      REQUIRE(geom->resizeEdgeList(numEdges).valid());
       REQUIRE(geom->getNumberOfEdges() == numEdges);
       const usize edgeId = 3;
       std::array<usize, 2> verts = {vertId, vertId + 1};
@@ -201,7 +201,7 @@ void testNodeGeometryBoundingBox()
 
   // Negative coordinates require the upper corner to start below every input value.
   {
-    geom->resizeVertexList(4);
+    REQUIRE(geom->resizeVertexList(4).valid());
     geom->setVertexCoordinate(0, Point3Df{-3.0f, -4.0f, -5.0f});
     geom->setVertexCoordinate(1, Point3Df{-1.0f, -8.0f, -2.0f});
     geom->setVertexCoordinate(2, Point3Df{-6.0f, -2.0f, -9.0f});
@@ -211,7 +211,7 @@ void testNodeGeometryBoundingBox()
 
   // Mixed-sign coordinates include zero on every axis.
   {
-    geom->resizeVertexList(3);
+    REQUIRE(geom->resizeVertexList(3).valid());
     geom->setVertexCoordinate(0, Point3Df{-2.0f, 3.0f, -4.0f});
     geom->setVertexCoordinate(1, Point3Df{5.0f, -6.0f, 1.0f});
     geom->setVertexCoordinate(2, Point3Df{0.0f, 0.0f, 0.0f});
@@ -220,7 +220,7 @@ void testNodeGeometryBoundingBox()
 
   // Positive coordinates verify the common case remains correct.
   {
-    geom->resizeVertexList(2);
+    REQUIRE(geom->resizeVertexList(2).valid());
     geom->setVertexCoordinate(0, Point3Df{2.0f, 4.0f, 6.0f});
     geom->setVertexCoordinate(1, Point3Df{8.0f, 1.0f, 3.0f});
     checkBoundingBox<float32>(geom->getBoundingBox(), Point3Df{2.0f, 1.0f, 3.0f}, Point3Df{8.0f, 4.0f, 6.0f});

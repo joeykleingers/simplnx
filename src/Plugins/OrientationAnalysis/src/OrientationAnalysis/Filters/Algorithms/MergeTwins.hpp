@@ -89,8 +89,18 @@ private:
   std::mt19937_64 m_Generator = {};
   std::uniform_real_distribution<float32> m_Distribution = {};
 
-  void groupFeaturesExecute();
-  int getSeed(int32 newFid);
+  /**
+   * @brief Groups connected twin features.
+   * @return Success, cancellation, or the first feature-matrix resize error.
+   */
+  Result<> groupFeaturesExecute();
+
+  /**
+   * @brief Selects and initializes one unassigned feature seed.
+   * @param newFid Parent feature identifier assigned to the seed.
+   * @return Seed index, or the first feature-matrix resize error.
+   */
+  Result<int32> getSeed(int32 newFid);
   bool determineGrouping(int32 referenceFeature, int32 neighborFeature, int32 newFid);
 };
 

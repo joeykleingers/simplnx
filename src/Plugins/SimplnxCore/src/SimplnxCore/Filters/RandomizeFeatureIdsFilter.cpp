@@ -149,8 +149,6 @@ Result<> RandomizeFeatureIdsFilter::executeImpl(DataStructure& dataStructure, co
     }
   }
 
-  ClusterUtilities::RandomizeFeatureIds(featureIdsStore, totalFeatures, featureIArrays);
-
-  return {};
+  return ClusterUtilities::RandomizeFeatureIds(featureIdsStore, totalFeatures, featureIArrays);
 }
 } // namespace nx::core

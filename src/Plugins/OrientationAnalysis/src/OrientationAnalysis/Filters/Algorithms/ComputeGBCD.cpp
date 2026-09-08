@@ -362,15 +362,24 @@ Result<> ComputeGBCD::operator()()
   // Triangle labels access feature data in random order.
   const usize numEulerElements = eulerAngles.getSize();
   std::vector<float32> eulersCache(numEulerElements);
-  eulerAngles.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(eulersCache.data(), numEulerElements));
+  if(Result<> ioResult = eulerAngles.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(eulersCache.data(), numEulerElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const usize numPhaseElements = phases.getSize();
   std::vector<int32> phasesCache(numPhaseElements);
-  phases.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phasesCache.data(), numPhaseElements));
+  if(Result<> ioResult = phases.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phasesCache.data(), numPhaseElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   usize totalPhases = crystalStructures.getNumberOfTuples();
   std::vector<uint32> crystalStructuresCache(totalPhases);
-  crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), totalPhases));
+  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), totalPhases)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
   usize totalFaces = faceLabels.getNumberOfTuples();
   usize triangleChunkSize = 50000;
 
@@ -419,9 +428,18 @@ Result<> ComputeGBCD::operator()()
     // Bulk-read this chunk of triangle data (labels, normals, areas).
     // The parallel worker receives offset-adjusted raw pointers into these
     // buffers so it can index using absolute triangle indices.
-    labelsStore.copyIntoBuffer(i * 2, nonstd::span<int32>(labelsBuf.data(), triangleChunkSize * 2));
-    normalsStore.copyIntoBuffer(i * 3, nonstd::span<float64>(normalsBuf.data(), triangleChunkSize * 3));
-    areasStore.copyIntoBuffer(i, nonstd::span<float64>(areasBuf.data(), triangleChunkSize));
+    if(Result<> ioResult = labelsStore.copyIntoBuffer(i * 2, nonstd::span<int32>(labelsBuf.data(), triangleChunkSize * 2)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = normalsStore.copyIntoBuffer(i * 3, nonstd::span<float64>(normalsBuf.data(), triangleChunkSize * 3)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = areasStore.copyIntoBuffer(i, nonstd::span<float64>(areasBuf.data(), triangleChunkSize)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
 
     ParallelDataAlgorithm parallelTask;
     parallelTask.setRange(i, i + triangleChunkSize);
@@ -483,7 +501,10 @@ Result<> ComputeGBCD::operator()()
     }
   }
   // Single bulk-write of the normalized GBCD histogram to the output DataStore
-  gbcd.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(gbcdBuf.data(), gbcdTotalElements));
+  if(Result<> ioResult = gbcd.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(gbcdBuf.data(), gbcdTotalElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   return {};
 }

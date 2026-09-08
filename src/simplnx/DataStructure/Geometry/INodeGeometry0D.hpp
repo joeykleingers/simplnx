@@ -53,7 +53,7 @@ public:
 
   /**
    * @brief Sets the internal reference to vertex coordinates to vertices
-   * @param vertices The coordinate array that will now be used for the vertex coordinates
+   * @param vertices Coordinate array to use for vertex coordinates.
    */
   void setVertices(const SharedVertexList& vertices);
 
@@ -71,9 +71,10 @@ public:
 
   /**
    * @brief Resizes the vertex list to the target size.
-   * @param size
+   * @param size Specifies the new vertex count.
+   * @return Error if the vertex store cannot resize.
    */
-  void resizeVertexList(usize size);
+  [[nodiscard]] Result<> resizeVertexList(usize size);
 
   /**
    * @brief Returns the number of vertices in the geometry.
@@ -127,11 +128,6 @@ public:
    * @param coords
    */
   void setVertexCoordinate(usize vertId, const Point3D<float32>& coords);
-
-  /****************************************************************************
-   * These functions get values related to where the Vertex Coordinates are
-   * stored in the DataStructure
-   */
 
   /**
    * @brief Returns the DataStructure unique ID of the vertex coordinate array

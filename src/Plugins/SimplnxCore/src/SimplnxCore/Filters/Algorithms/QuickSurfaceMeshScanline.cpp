@@ -437,10 +437,26 @@ Result<> QuickSurfaceMeshScanline::operator()()
 
   // Resize after counting so generation writes contiguous, final-size output arrays.
   ShapeType tupleShape = {triangleCount};
-  triangleGeom.resizeFaceList(triangleCount);
-  triangleGeom.resizeVertexList(nodeCount);
-  triangleGeom.getFaceAttributeMatrix()->resizeTuples(tupleShape);
-  triangleGeom.getVertexAttributeMatrix()->resizeTuples({nodeCount});
+  Result<> resizeResult = triangleGeom.resizeFaceList(triangleCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.resizeVertexList(nodeCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getFaceAttributeMatrix()->resizeTuples(tupleShape);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({nodeCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   for(const auto& dataPath : m_InputValues->CreatedDataArrayPaths)
   {
@@ -1114,15 +1130,35 @@ Result<> QuickSurfaceMeshScanline::createNodesAndTriangles(MeshIndexType nodeCou
   auto* triangleGeom = m_DataStructure.getDataAs<TriangleGeom>(m_InputValues->TriangleGeometryPath);
 
   ShapeType tDims = {nodeCount};
-  triangleGeom->resizeVertexList(nodeCount);
-  triangleGeom->resizeFaceList(triangleCount);
-  triangleGeom->getFaceAttributeMatrix()->resizeTuples({triangleCount});
-  triangleGeom->getVertexAttributeMatrix()->resizeTuples(tDims);
+  Result<> resizeResult = triangleGeom->resizeVertexList(nodeCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom->resizeFaceList(triangleCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom->getFaceAttributeMatrix()->resizeTuples({triangleCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom->getVertexAttributeMatrix()->resizeTuples(tDims);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   auto& faceLabelsStore = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FaceLabelsDataPath)->getDataStoreRef();
 
   auto& nodeTypesStore = m_DataStructure.getDataAs<Int8Array>(m_InputValues->NodeTypesDataPath)->getDataStoreRef();
-  nodeTypesStore.resizeTuples({nodeCount});
+  resizeResult = nodeTypesStore.resizeTuples({nodeCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   VertexStore& vertex = triangleGeom->getVertices()->getDataStoreRef();
   TriStore& triangle = triangleGeom->getFaces()->getDataStoreRef();

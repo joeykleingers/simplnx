@@ -140,11 +140,19 @@ Result<> ComputeFeatureClustering::operator()()
   // Local feature arrays remove store access from the quadratic distance loop.
   const usize numPhases = featurePhasesStoreRef.getSize();
   std::vector<int32> featurePhasesCache(numPhases);
-  featurePhasesStoreRef.copyIntoBuffer(0, nonstd::span<int32>(featurePhasesCache.data(), numPhases));
+  Result<> ioResult = featurePhasesStoreRef.copyIntoBuffer(0, nonstd::span<int32>(featurePhasesCache.data(), numPhases));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
 
   const usize numCentroidValues = centroidsStoreRef.getSize();
   std::vector<float32> centroidsCache(numCentroidValues);
-  centroidsStoreRef.copyIntoBuffer(0, nonstd::span<float32>(centroidsCache.data(), numCentroidValues));
+  ioResult = centroidsStoreRef.copyIntoBuffer(0, nonstd::span<float32>(centroidsCache.data(), numCentroidValues));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
 
   auto& clusteringList = m_DataStructure.getDataRefAs<NeighborList<float32>>(m_InputValues->ClusteringListArrayName);
   auto& rdfStore = m_DataStructure.getDataAs<Float32Array>(m_InputValues->RDFArrayName)->getDataStoreRef();
@@ -334,7 +342,11 @@ Result<> ComputeFeatureClustering::operator()()
   }
 
   // Publish the RDF after all bins are normalized.
-  rdfStore.copyFromBuffer(0, nonstd::span<const float32>(rdfCache.data(), rdfSize));
+  ioResult = rdfStore.copyFromBuffer(0, nonstd::span<const float32>(rdfCache.data(), rdfSize));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
 
   clusteringList.setLists(clusters);
 

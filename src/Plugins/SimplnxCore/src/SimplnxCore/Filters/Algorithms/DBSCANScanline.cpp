@@ -2375,11 +2375,24 @@ class HyperGridBitMap
 public:
   std::vector<std::vector<usize>> gridVoxels = {}; // Maps each occupied grid to its source tuple indices.
 
+  /**
+   * @brief Moves the constructor-time bulk-I/O result to the caller.
+   * @return The first coordinate-store error.
+   *
+   * A constructor cannot return Result, so RunAlgorithm retrieves this status explicitly.
+   */
+  Result<> takeInitializationResult()
+  {
+    return std::move(m_InitializationResult);
+  }
+
 protected:
   /**
    * @brief Creates empty resident fallback grid membership.
    */
   HyperGridBitMap() = default;
+
+  Result<> m_InitializationResult;
 };
 
 /**
@@ -2431,7 +2444,12 @@ public:
       }
       const usize endTup = std::min(startTup + k_ChunkTuples, numTuples);
       const usize count = endTup - startTup;
-      inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+      Result<> readResult = inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+      if(readResult.invalid())
+      {
+        m_InitializationResult = std::move(readResult);
+        return;
+      }
 
       for(usize local = 0; local < count; local++)
       {
@@ -2487,7 +2505,12 @@ public:
           }
           const usize endTup = std::min(startTup + k_ChunkTuples, numTuples);
           const usize count = endTup - startTup;
-          inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+          Result<> readResult = inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+          if(readResult.invalid())
+          {
+            m_InitializationResult = std::move(readResult);
+            return;
+          }
 
           for(usize local = 0; local < count; local++)
           {
@@ -2534,7 +2557,12 @@ public:
           }
           const usize endTup = std::min(startTup + k_ChunkTuples, numTuples);
           const usize count = endTup - startTup;
-          inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+          Result<> readResult = inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+          if(readResult.invalid())
+          {
+            m_InitializationResult = std::move(readResult);
+            return;
+          }
 
           for(usize local = 0; local < count; local++)
           {
@@ -2657,7 +2685,12 @@ public:
       }
       const usize endTup = std::min(startTup + k_ChunkTuples, numTuples);
       const usize count = endTup - startTup;
-      inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+      Result<> readResult = inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+      if(readResult.invalid())
+      {
+        m_InitializationResult = std::move(readResult);
+        return;
+      }
 
       for(usize local = 0; local < count; local++)
       {
@@ -2708,7 +2741,12 @@ public:
           }
           const usize endTup = std::min(startTup + k_ChunkTuples, numTuples);
           const usize count = endTup - startTup;
-          inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+          Result<> readResult = inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+          if(readResult.invalid())
+          {
+            m_InitializationResult = std::move(readResult);
+            return;
+          }
 
           for(usize local = 0; local < count; local++)
           {
@@ -2752,7 +2790,12 @@ public:
           }
           const usize endTup = std::min(startTup + k_ChunkTuples, numTuples);
           const usize count = endTup - startTup;
-          inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+          Result<> readResult = inputArray.copyIntoBuffer(startTup * numComps, nonstd::span<T>(chunkBuf.get(), count * numComps));
+          if(readResult.invalid())
+          {
+            m_InitializationResult = std::move(readResult);
+            return;
+          }
 
           for(usize local = 0; local < count; local++)
           {
@@ -3063,6 +3106,17 @@ public:
   }
 
   /**
+   * @brief Moves the fallback-grid construction result to the caller.
+   * @return The first coordinate-store bulk-read error.
+   *
+   * GDCF forwards the constructor status without exposing its grid implementation.
+   */
+  Result<> takeInitializationResult()
+  {
+    return hyperGridBitMap.takeInitializationResult();
+  }
+
+  /**
    * @brief Forms core clusters and assigns connected border grids.
    * @param minPoints Minimum points that make a grid core.
    * @param parseOrder Order for core-grid processing.
@@ -3133,7 +3187,12 @@ public:
           continue;
         }
 
-        if(canMerge(coreGridIds[i], gridId))
+        Result<bool> mergeResult = canMerge(coreGridIds[i], gridId);
+        if(mergeResult.invalid())
+        {
+          return ConvertResult(std::move(mergeResult));
+        }
+        if(mergeResult.value())
         {
           if(hyperGridBitMap.gridVoxels[gridId].size() < minPoints && clusterForest.clusterForestNodes[gridId].parent == gridId)
           {
@@ -3172,7 +3231,12 @@ public:
               continue;
             }
 
-            if(canMerge(i, gridId))
+            Result<bool> mergeResult = canMerge(i, gridId);
+            if(mergeResult.invalid())
+            {
+              return ConvertResult(std::move(mergeResult));
+            }
+            if(mergeResult.value())
             {
               usize activeParent = clusterForest.findClusterRoot(i);
               usize neighborGridParent = clusterForest.findClusterRoot(gridId);
@@ -3279,12 +3343,12 @@ private:
   /**
    * @brief Reads one resident fallback grid into a contiguous coordinate buffer.
    * @param gridId Grid whose member coordinates are read.
-   * @return Float32 coordinates for all grid members.
+   * @return Float32 coordinates or the first coordinate-store bulk-read error.
    *
    * The buffer lets canMerge reuse a grid's coordinates for every pairwise test.
    * It scales with one grid and is used only for in-memory fallback execution.
    */
-  std::vector<float32> readGridCellCoords(usize gridId) const
+  Result<std::vector<float32>> readGridCellCoords(usize gridId) const
   {
     const auto& indices = hyperGridBitMap.gridVoxels[gridId];
     const usize dims = static_cast<usize>(HGBPT::Dimensions);
@@ -3292,13 +3356,17 @@ private:
     auto tupleBuf = std::make_unique<T[]>(dims);
     for(usize i = 0; i < indices.size(); i++)
     {
-      m_InputDataStore.copyIntoBuffer(indices[i] * dims, nonstd::span<T>(tupleBuf.get(), dims));
+      Result<> readResult = m_InputDataStore.copyIntoBuffer(indices[i] * dims, nonstd::span<T>(tupleBuf.get(), dims));
+      if(readResult.invalid())
+      {
+        return ConvertInvalidResult<std::vector<float32>>(std::move(readResult));
+      }
       for(usize d = 0; d < dims; d++)
       {
         coords[i * dims + d] = static_cast<float32>(tupleBuf[d]);
       }
     }
-    return coords;
+    return {std::move(coords)};
   }
 
   /**
@@ -3364,29 +3432,44 @@ private:
     }
   }
 
-  /** @brief Tests all locally buffered point pairs until an epsilon-connected pair is found. */
-  bool canMerge(usize pGridId, usize qGridId) const
+  /**
+   * @brief Tests all locally buffered point pairs until an epsilon-connected pair is found.
+   * @param pGridId First occupied grid.
+   * @param qGridId Second occupied grid.
+   * @return True for a connected pair, false for no pair, or the first coordinate-store error.
+   */
+  Result<bool> canMerge(usize pGridId, usize qGridId) const
   {
     const usize dims = static_cast<usize>(HGBPT::Dimensions);
-    auto pCoords = readGridCellCoords(pGridId);
-    auto qCoords = readGridCellCoords(qGridId);
+    Result<std::vector<float32>> pCoordsResult = readGridCellCoords(pGridId);
+    if(pCoordsResult.invalid())
+    {
+      return ConvertInvalidResult<bool>(std::move(pCoordsResult));
+    }
+    Result<std::vector<float32>> qCoordsResult = readGridCellCoords(qGridId);
+    if(qCoordsResult.invalid())
+    {
+      return ConvertInvalidResult<bool>(std::move(qCoordsResult));
+    }
+    const std::vector<float32>& pCoords = pCoordsResult.value();
+    const std::vector<float32>& qCoords = qCoordsResult.value();
 
     for(usize p = 0; p < hyperGridBitMap.gridVoxels[pGridId].size(); p++)
     {
       if(m_ShouldCancel)
       {
-        return false;
+        return {false};
       }
       for(usize q = 0; q < hyperGridBitMap.gridVoxels[qGridId].size(); q++)
       {
         float64 dist = ClusterUtilities::GetDistance(pCoords, dims * p, qCoords, dims * q, dims, m_DistMetric);
         if(dist < m_Epsilon)
         {
-          return true;
+          return {true};
         }
       }
     }
-    return false;
+    return {false};
   }
 };
 
@@ -3406,6 +3489,12 @@ Result<> RunAlgorithm(const DBSCANInputValues* inputValues, const AbstractDataSt
                       const std::atomic_bool& shouldCancel)
 {
   AlgorithmT algorithm = AlgorithmT(shouldCancel, inputArray, inputValues->Epsilon, mask, inputValues->DistanceMetric);
+
+  Result<> initializationResult = algorithm.takeInitializationResult();
+  if(initializationResult.invalid())
+  {
+    return initializationResult;
+  }
 
   if(shouldCancel)
   {
@@ -3556,7 +3645,11 @@ Result<> DBSCANScanline::operator()()
   {
     return MakeErrorResult(-54084, "DBSCAN Feature Attribute Matrix tuple count exceeds the platform size range.");
   }
-  featureAttributeMatrix->resizeTuples(ShapeType{static_cast<usize>(maxCluster) + 1});
+  Result<> resizeResult = featureAttributeMatrix->resizeTuples(ShapeType{static_cast<usize>(maxCluster) + 1});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   return result;
 }

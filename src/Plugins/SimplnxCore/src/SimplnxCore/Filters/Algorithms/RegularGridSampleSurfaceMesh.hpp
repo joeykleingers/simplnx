@@ -62,10 +62,9 @@ public:
 
   /**
    * @brief Rasterizes all scheduled Z slices.
-   * @return Success after scheduled workers finish.
+   * @return The first input or output store error.
    *
-   * Input and output bulk-I/O errors are not inspected. Cancellation stops new
-   * worker scheduling, but scheduled workers finish and can write output slices.
+   * Cancellation stops new worker scheduling. Scheduled workers finish unless another worker reports an error.
    */
   Result<> operator()();
 
@@ -75,17 +74,17 @@ public:
    * @param zSlice Specifies the destination Z index.
    * @param sliceData Provides rasterized Feature IDs.
    * @param count Specifies values in the slice buffer.
+   * @return The output-store write result.
    * @pre operator() initialized the slice size and output path.
    *
-   * The method does not inspect the copyFromBuffer() result.
    */
   template <typename T>
-  void sendThreadSafeSliceUpdate(usize zSlice, const T* sliceData, usize count)
+  Result<> sendThreadSafeSliceUpdate(usize zSlice, const T* sliceData, usize count)
   {
     std::lock_guard<std::mutex> lock(m_Mutex);
     auto& featureIdsRef = m_DataStructure.getDataRefAs<DataArray<T>>(m_InputValues->FeatureIdsArrayPath).getDataStoreRef();
     usize offset = zSlice * m_CellsPerSlice;
-    featureIdsRef.copyFromBuffer(offset, nonstd::span<const T>(sliceData, count));
+    return featureIdsRef.copyFromBuffer(offset, nonstd::span<const T>(sliceData, count));
   }
 
 private:

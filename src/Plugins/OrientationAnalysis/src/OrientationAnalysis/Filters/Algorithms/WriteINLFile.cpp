@@ -161,7 +161,7 @@ Result<> WriteINLFile::operator()()
   {
     if(m_ShouldCancel)
     {
-      return {};
+      return MakeErrorResult(-1, "Filter cancelled");
     }
 
     const usize tupleCount = std::min(k_ChunkTuples, totalPoints - tupleOffset);
@@ -183,7 +183,7 @@ Result<> WriteINLFile::operator()()
   }
   if(m_ShouldCancel)
   {
-    return {};
+    return MakeErrorResult(-1, "Filter cancelled");
   }
 
   // Build the comment-prefixed INL header before the first output write.
@@ -230,11 +230,12 @@ Result<> WriteINLFile::operator()()
   std::ostringstream textBuffer;
   std::ostream& textStream = useDirectCellData ? static_cast<std::ostream&>(fout) : static_cast<std::ostream&>(textBuffer);
   textStream << std::fixed;
+  m_MessageHandler(IFilter::Message::Type::Info, "Writing INL cell data");
   for(usize tupleOffset = 0; tupleOffset < totalCells; tupleOffset += k_ChunkTuples)
   {
     if(m_ShouldCancel)
     {
-      return {};
+      return MakeErrorResult(-1, "Filter cancelled");
     }
 
     const usize tupleCount = std::min(k_ChunkTuples, totalCells - tupleOffset);

@@ -57,10 +57,10 @@ public:
 
   /**
    * @brief Writes the VTK header and all selected cell arrays.
-   * @return Merged source-read and stream-write errors, or success after cancellation.
+   * @return The first source-read, stream-write, or cancellation error, or success after completion.
    *
-   * The writer truncates the destination before processing. Cancellation or an
-   * error can leave a partial file. Later arrays are attempted after an error.
+   * The writer truncates its temporary destination before processing. Cancellation
+   * or an error can leave that temporary file incomplete.
    */
   Result<> operator()();
 

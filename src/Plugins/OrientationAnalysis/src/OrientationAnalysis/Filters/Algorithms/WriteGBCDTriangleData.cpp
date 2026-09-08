@@ -33,7 +33,10 @@ Result<> WriteGBCDTriangleData::operator()()
   // in arbitrary order. Memory scales with the feature count.
   const usize numEulerElements = eulerAngles.getSize();
   std::vector<float32> eulerCache(numEulerElements);
-  eulerAngles.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(eulerCache.data(), numEulerElements));
+  if(Result<> ioResult = eulerAngles.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(eulerCache.data(), numEulerElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   std::ofstream outStream(m_InputValues->OutputFile, std::ios_base::out | std::ios_base::binary);
   if(!outStream.is_open())
@@ -65,9 +68,18 @@ Result<> WriteGBCDTriangleData::operator()()
     }
     usize count = std::min(k_ChunkSize, numTriangles - chunkStart);
 
-    labelsStore.copyIntoBuffer(chunkStart * 2, nonstd::span<int32>(labelsBuf.data(), count * 2));
-    normalsStore.copyIntoBuffer(chunkStart * 3, nonstd::span<float64>(normalsBuf.data(), count * 3));
-    areasStore.copyIntoBuffer(chunkStart, nonstd::span<float64>(areasBuf.data(), count));
+    if(Result<> ioResult = labelsStore.copyIntoBuffer(chunkStart * 2, nonstd::span<int32>(labelsBuf.data(), count * 2)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = normalsStore.copyIntoBuffer(chunkStart * 3, nonstd::span<float64>(normalsBuf.data(), count * 3)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = areasStore.copyIntoBuffer(chunkStart, nonstd::span<float64>(areasBuf.data(), count)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
 
     writeBuf.clear();
     for(usize i = 0; i < count; i++)

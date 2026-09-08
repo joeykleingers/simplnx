@@ -53,7 +53,10 @@ Result<> ComputeIPFColorsScanline::operator()()
 
   // Cache the small ensemble array to avoid per-element OOC access.
   std::vector<uint32> crystalStructures(numPhases);
-  crystalStructuresArray.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), static_cast<usize>(numPhases)));
+  if(Result<> ioResult = crystalStructuresArray.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), static_cast<usize>(numPhases))); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   // EbsdLib expects a normalized double reference direction.
   FloatVec3 normRefDir = m_InputValues->referenceDirection;
@@ -101,16 +104,28 @@ Result<> ComputeIPFColorsScanline::operator()()
     const usize count = std::min(k_ChunkTuples, totalPoints - offset);
 
     // Euler buffers use three values per tuple.
-    eulersStore.copyIntoBuffer(offset * 3, nonstd::span<float32>(eulerBuf.get(), count * 3));
-    phasesStore.copyIntoBuffer(offset, nonstd::span<int32>(phasesBuf.get(), count));
+    if(Result<> ioResult = eulersStore.copyIntoBuffer(offset * 3, nonstd::span<float32>(eulerBuf.get(), count * 3)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = phasesStore.copyIntoBuffer(offset, nonstd::span<int32>(phasesBuf.get(), count)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
 
     if(hasBoolMask)
     {
-      dynamic_cast<const BoolArray*>(maskArray)->getDataStoreRef().copyIntoBuffer(offset, nonstd::span<bool>(boolMaskBuf.get(), count));
+      if(Result<> ioResult = dynamic_cast<const BoolArray*>(maskArray)->getDataStoreRef().copyIntoBuffer(offset, nonstd::span<bool>(boolMaskBuf.get(), count)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
     else if(hasUint8Mask)
     {
-      dynamic_cast<const UInt8Array*>(maskArray)->getDataStoreRef().copyIntoBuffer(offset, nonstd::span<uint8>(uint8MaskBuf.get(), count));
+      if(Result<> ioResult = dynamic_cast<const UInt8Array*>(maskArray)->getDataStoreRef().copyIntoBuffer(offset, nonstd::span<uint8>(uint8MaskBuf.get(), count)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
 
     for(usize i = 0; i < count; i++)
@@ -149,7 +164,10 @@ Result<> ComputeIPFColorsScanline::operator()()
       }
     }
 
-    ipfColorsStore.copyFromBuffer(offset * 3, nonstd::span<const uint8>(colorBuf.get(), count * 3));
+    if(Result<> ioResult = ipfColorsStore.copyFromBuffer(offset * 3, nonstd::span<const uint8>(colorBuf.get(), count * 3)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   if(phaseWarningCount > 0)

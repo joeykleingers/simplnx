@@ -3,6 +3,10 @@
 #include "simplnx/DataStructure/AbstractListStore.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/IO/DatasetIO.hpp"
 
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
+#include <exception>
 #include <memory>
 #include <vector>
 
@@ -22,9 +26,8 @@ public:
   using const_iterator = typename parent_type::const_iterator;
 
   /**
-   * @brief Constructs a ListStore using the specified tuple shape and list size.
-   * @param tupleShape
-   * @param listSize
+   * @brief Constructs a ListStore with empty lists for the tuple shape.
+   * @param tupleShape Initial tuple dimensions.
    */
   explicit ListStore(const ShapeType& tupleShape)
   : parent_type()
@@ -45,7 +48,8 @@ public:
   }
 
   /**
-   * @brief Copy constructor
+   * @brief Copies the list store.
+   * @param other Source store.
    */
   ListStore(const ListStore& other)
   : parent_type(other)
@@ -56,7 +60,8 @@ public:
   }
 
   /**
-   * @brief Move constructor
+   * @brief Moves the list store.
+   * @param copy Source store.
    */
   ListStore(ListStore&& copy) noexcept
   : parent_type(std::move(copy))
@@ -96,15 +101,27 @@ public:
   }
 
   /**
-   * @brief This method sets the shape of the dimensions to `tupleShape`.
-   * @param tupleShape The new shape of the data where the dimensions are "C" ordered
-   * from *slowest* to *fastest*.
+   * @brief Changes the tuple shape and retains lists in the shared prefix.
+   * @param tupleShape New tuple dimensions in slowest-to-fastest order.
+   * @return Valid on success. Allocation failure returns error -6035 and preserves the prior store.
+   *
+   * The Result contract prevents an allocation failure from escaping across the store boundary.
    */
-  void resizeTuples(const ShapeType& tupleShape) override
+  [[nodiscard]] Result<> resizeTuples(const ShapeType& tupleShape) override
   {
-    m_TupleShape = tupleShape;
-    m_NumTuples = std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<size_t>(1), std::multiplies<>());
-    m_Array.resize(m_NumTuples);
+    try
+    {
+      ShapeType newTupleShape = tupleShape;
+      const usize numTuples = std::accumulate(newTupleShape.cbegin(), newTupleShape.cend(), static_cast<usize>(1), std::multiplies<>());
+      m_Array.resize(numTuples);
+      m_TupleShape = std::move(newTupleShape);
+      m_NumTuples = numTuples;
+    } catch(const std::exception& exception)
+    {
+      return MakeErrorResult(-6035, fmt::format("ListStore resize to shape [{}] failed: {}", fmt::join(tupleShape, ", "), exception.what()));
+    }
+
+    return {};
   }
 
   /**
@@ -248,7 +265,7 @@ public:
   }
 
   /**
-   * @brief Returns a const reference to the vector_type value found at the specified index. This cannot be used to edit the vector_type value found at the specified index.
+   * @brief Returns a copy of the list at the specified index.
    * @param grainId
    * @return vector_type
    */
@@ -258,7 +275,7 @@ public:
   }
 
   /**
-   * @brief Returns a const reference to the vector_type value found at the specified index. This cannot be used to edit the vector_type value found at the specified index.
+   * @brief Returns a copy of the list at the specified index.
    * @param grainId
    * @return vector_type
    */

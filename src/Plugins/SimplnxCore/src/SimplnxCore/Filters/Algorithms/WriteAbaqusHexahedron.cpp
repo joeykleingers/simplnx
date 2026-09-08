@@ -839,6 +839,10 @@ Result<> WriteAbaqusHexahedron::operator()()
   // Commits are atomic per file but are not one transaction for the file set.
   for(auto& file : fileList)
   {
+    if(m_ShouldCancel)
+    {
+      return MakeErrorResult(-1, "Filter cancelled");
+    }
     Result<> commitResult = file.value().commit();
     if(commitResult.invalid())
     {

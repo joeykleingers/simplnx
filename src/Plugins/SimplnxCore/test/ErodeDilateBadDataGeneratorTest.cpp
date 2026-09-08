@@ -87,9 +87,9 @@ void BuildTestData(DataStructure& dataStructure, usize dimX, usize dimY, usize d
       }
     }
     const usize zOffset = z * sliceSize;
-    featureIdsStore.copyFromBuffer(zOffset, nonstd::span<const int32>(featureIdsBuf.data(), sliceSize));
-    eulerStore.copyFromBuffer(zOffset * 3, nonstd::span<const float32>(eulerBuf.data(), sliceSize * 3));
-    phasesStore.copyFromBuffer(zOffset, nonstd::span<const int32>(phasesBuf.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(featureIdsStore.copyFromBuffer(zOffset, nonstd::span<const int32>(featureIdsBuf.data(), sliceSize)));
+    SIMPLNX_RESULT_REQUIRE_VALID(eulerStore.copyFromBuffer(zOffset * 3, nonstd::span<const float32>(eulerBuf.data(), sliceSize * 3)));
+    SIMPLNX_RESULT_REQUIRE_VALID(phasesStore.copyFromBuffer(zOffset, nonstd::span<const int32>(phasesBuf.data(), sliceSize)));
   }
 }
 
@@ -101,7 +101,7 @@ usize CountBadVoxels(const DataStructure& dataStructure, usize dimX, usize dimY,
   usize count = 0;
   for(usize z = 0; z < dimZ; z++)
   {
-    featureIds.copyIntoBuffer(z * sliceSize, nonstd::span<int32>(buf.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(featureIds.copyIntoBuffer(z * sliceSize, nonstd::span<int32>(buf.data(), sliceSize)));
     for(usize i = 0; i < sliceSize; i++)
     {
       if(buf[i] == 0)

@@ -138,7 +138,10 @@ Result<> ReadAngData::copyRawEbsdData(ebsdlib::AngReader* reader) const
         phasePtr[i] = 1;
       }
     }
-    targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const int32>(phasePtr, totalCells));
+    if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const int32>(phasePtr, totalCells)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   // Condense the Euler Angles from 3 separate source arrays (Phi1, Phi, Phi2) into a
@@ -170,7 +173,10 @@ Result<> ReadAngData::copyRawEbsdData(ebsdlib::AngReader* reader) const
         eulerBuf[3 * i + 1] = fComp1[offset + i];
         eulerBuf[3 * i + 2] = fComp2[offset + i];
       }
-      eulerStore.copyFromBuffer(offset * 3, nonstd::span<const float32>(eulerBuf.data(), count * 3));
+      if(Result<> ioResult = eulerStore.copyFromBuffer(offset * 3, nonstd::span<const float32>(eulerBuf.data(), count * 3)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
   }
 
@@ -185,37 +191,55 @@ Result<> ReadAngData::copyRawEbsdData(ebsdlib::AngReader* reader) const
   {
     auto* srcPtr = reinterpret_cast<float32*>(reader->getPointerByName(ebsdlib::Ang::ImageQuality));
     auto& targetArray = m_DataStructure.getDataRefAs<Float32Array>(cellAttributeMatrixPath.createChildPath(ebsdlib::Ang::ImageQuality));
-    targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells));
+    if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   {
     auto* srcPtr = reinterpret_cast<float32*>(reader->getPointerByName(ebsdlib::Ang::ConfidenceIndex));
     auto& targetArray = m_DataStructure.getDataRefAs<Float32Array>(cellAttributeMatrixPath.createChildPath(ebsdlib::Ang::ConfidenceIndex));
-    targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells));
+    if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   {
     auto* srcPtr = reinterpret_cast<float32*>(reader->getPointerByName(ebsdlib::Ang::SEMSignal));
     auto& targetArray = m_DataStructure.getDataRefAs<Float32Array>(cellAttributeMatrixPath.createChildPath(ebsdlib::Ang::SEMSignal));
-    targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells));
+    if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   {
     auto* srcPtr = reinterpret_cast<float32*>(reader->getPointerByName(ebsdlib::Ang::Fit));
     auto& targetArray = m_DataStructure.getDataRefAs<Float32Array>(cellAttributeMatrixPath.createChildPath(ebsdlib::Ang::Fit));
-    targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells));
+    if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   {
     auto* srcPtr = reinterpret_cast<float32*>(reader->getPointerByName(ebsdlib::Ang::XPosition));
     auto& targetArray = m_DataStructure.getDataRefAs<Float32Array>(cellAttributeMatrixPath.createChildPath(ebsdlib::Ang::XPosition));
-    targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells));
+    if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   {
     auto* srcPtr = reinterpret_cast<float32*>(reader->getPointerByName(ebsdlib::Ang::YPosition));
     auto& targetArray = m_DataStructure.getDataRefAs<Float32Array>(cellAttributeMatrixPath.createChildPath(ebsdlib::Ang::YPosition));
-    targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells));
+    if(Result<> ioResult = targetArray.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(srcPtr, totalCells)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   return {};

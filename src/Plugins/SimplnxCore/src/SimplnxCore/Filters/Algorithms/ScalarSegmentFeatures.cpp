@@ -284,7 +284,11 @@ Result<> ScalarSegmentFeatures::operator()()
   // Final feature IDs include positive labels and the reserved zero tuple.
   ShapeType tDims = {static_cast<usize>(m_FoundFeatures + 1)};
   auto& cellFeaturesAM = m_DataStructure.getDataRefAs<AttributeMatrix>(m_InputValues->CellFeatureAttributeMatrixPath);
-  cellFeaturesAM.resizeTuples(tDims);
+  Result<> resizeResult = cellFeaturesAM.resizeTuples(tDims);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   // Positive features start active. Feature zero remains reserved background.
   auto* activeArray = m_DataStructure.getDataAs<UInt8Array>(m_InputValues->ActiveArrayPath);
@@ -294,7 +298,11 @@ Result<> ScalarSegmentFeatures::operator()()
   // A deterministic permutation improves adjacent-feature color contrast.
   if(m_InputValues->RandomizeFeatureIds)
   {
-    randomizeFeatureIds(m_FeatureIdsArray, m_FoundFeatures + 1);
+    Result<> randomizeResult = randomizeFeatureIds(m_FeatureIdsArray, m_FoundFeatures + 1);
+    if(randomizeResult.invalid())
+    {
+      return randomizeResult;
+    }
   }
 
   return {};

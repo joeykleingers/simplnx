@@ -26,7 +26,7 @@ MergeTwins::MergeTwins(DataStructure& dataStructure, const IFilter::MessageHandl
 MergeTwins::~MergeTwins() noexcept = default;
 
 // -----------------------------------------------------------------------------
-int MergeTwins::getSeed(int32 newFid)
+Result<int32> MergeTwins::getSeed(int32 newFid)
 {
   auto& phases = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath)->getDataStoreRef();
   auto& featureParentIds = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeatureParentIdsArrayPath)->getDataStoreRef();
@@ -60,9 +60,12 @@ int MergeTwins::getSeed(int32 newFid)
   {
     featureParentIds[seed] = newFid;
     ShapeType tDims = {newFid + 1ULL};
-    cellFeaturesAttMatrix.resizeTuples(tDims); // this will resize the active array as well
+    if(Result<> resizeResult = cellFeaturesAttMatrix.resizeTuples(tDims); resizeResult.invalid())
+    {
+      return ConvertInvalidResult<int32>(std::move(resizeResult));
+    }
   }
-  return seed;
+  return {seed};
 }
 
 // -----------------------------------------------------------------------------
@@ -105,7 +108,7 @@ bool MergeTwins::determineGrouping(int32 referenceFeature, int32 neighborFeature
   return false;
 }
 
-void MergeTwins::groupFeaturesExecute()
+Result<> MergeTwins::groupFeaturesExecute()
 {
   auto& conNeighborList = m_DataStructure.getDataRefAs<NeighborList<int32>>(m_InputValues->ContiguousNeighborListArrayPath);
   std::vector<int32_t> groupList;
@@ -119,12 +122,17 @@ void MergeTwins::groupFeaturesExecute()
   {
     if(m_ShouldCancel)
     {
-      return;
+      return {};
     }
 
     bool m_PatchGrouping = false;
     parentCount++;
-    featureSeed = getSeed(parentCount);
+    Result<int32> seedResult = getSeed(parentCount);
+    if(seedResult.invalid())
+    {
+      return ConvertResult(std::move(seedResult));
+    }
+    featureSeed = seedResult.value();
     if(featureSeed >= 0)
     {
       groupList.push_back(featureSeed);
@@ -168,6 +176,7 @@ void MergeTwins::groupFeaturesExecute()
     }
     groupList.clear();
   }
+  return {};
 }
 
 Result<> MergeTwins::operator()()
@@ -196,7 +205,10 @@ Result<> MergeTwins::operator()()
     for(usize offset = 0; offset < totalPoints; offset += k_FillChunk)
     {
       usize count = std::min(k_FillChunk, totalPoints - offset);
-      cellParentIdsStore.copyFromBuffer(offset, nonstd::span<const int32>(fillBuf.data(), count));
+      if(Result<> ioResult = cellParentIdsStore.copyFromBuffer(offset, nonstd::span<const int32>(fillBuf.data(), count)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
   }
 
@@ -210,10 +222,14 @@ Result<> MergeTwins::operator()()
       result = MakeWarningVoidResult(-23500, msg);
     }
   }
+  auto mergeWarnings = [&result](Result<> operationResult) { return MergeResults(std::move(result), std::move(operationResult)); };
 
   featureParentIds[0] = 0; // set feature 0 to be parent 0
 
-  groupFeaturesExecute();
+  if(Result<> groupingResult = groupFeaturesExecute(); groupingResult.invalid())
+  {
+    return mergeWarnings(std::move(groupingResult));
+  }
 
   auto& active = m_DataStructure.getDataAs<BoolArray>(m_InputValues->ActiveArrayPath)->getDataStoreRef();
   active.fill(true);
@@ -221,14 +237,17 @@ Result<> MergeTwins::operator()()
   usize totalFeatures = active.getNumberOfTuples();
   if(totalFeatures < 2)
   {
-    return MergeResults(
-        result, ConvertResult(MakeErrorResult<OutputActions>(-23501, "The number of grouped Features was 0 or 1 which means no grouped Features were detected. A grouping value may be set too high")));
+    return mergeWarnings(
+        ConvertResult(MakeErrorResult<OutputActions>(-23501, "The number of grouped Features was 0 or 1 which means no grouped Features were detected. A grouping value may be set too high")));
   }
 
   // The local feature-parent cache avoids random OOC lookup in the cell loop.
   const usize numFeatures = featureParentIds.getNumberOfTuples();
   std::vector<int32> featureParentIdsCache(numFeatures);
-  featureParentIds.copyIntoBuffer(0, nonstd::span<int32>(featureParentIdsCache.data(), numFeatures));
+  if(Result<> ioResult = featureParentIds.copyIntoBuffer(0, nonstd::span<int32>(featureParentIdsCache.data(), numFeatures)); ioResult.invalid())
+  {
+    return mergeWarnings(std::move(ioResult));
+  }
 
   // Chunked cells use the local feature-parent cache.
   int32 numParents = 0;
@@ -245,7 +264,10 @@ Result<> MergeTwins::operator()()
       }
 
       usize count = std::min(k_ChunkSize, totalPoints - offset);
-      featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(featureIdsBuf.data(), count));
+      if(Result<> ioResult = featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(featureIdsBuf.data(), count)); ioResult.invalid())
+      {
+        return mergeWarnings(std::move(ioResult));
+      }
 
       for(usize i = 0; i < count; i++)
       {
@@ -257,7 +279,10 @@ Result<> MergeTwins::operator()()
         }
       }
 
-      cellParentIdsStore.copyFromBuffer(offset, nonstd::span<const int32>(cellParentIdsBuf.data(), count));
+      if(Result<> ioResult = cellParentIdsStore.copyFromBuffer(offset, nonstd::span<const int32>(cellParentIdsBuf.data(), count)); ioResult.invalid())
+      {
+        return mergeWarnings(std::move(ioResult));
+      }
     }
   }
   numParents += 1;
@@ -268,7 +293,10 @@ Result<> MergeTwins::operator()()
   if(m_InputValues->RandomizeParentIds)
   { // Randomize Parent IDs
     m_MessageHandler({IFilter::Message::Type::Info, "Randomizing Parent Ids...."});
-    ClusterUtilities::RandomizeFeatureIds(featureParentIds, numParents);
+    if(Result<> randomizeResult = ClusterUtilities::RandomizeFeatureIds(featureParentIds, numParents); randomizeResult.invalid())
+    {
+      return mergeWarnings(std::move(randomizeResult));
+    }
   }
 
   return result;

@@ -253,7 +253,10 @@ Result<> GroupMicroTextureRegions::operator()()
   {
     return MakeErrorResult(-87000, fmt::format("The number of grouped Features was {} which means no grouped features were detected. A grouping value may be set too high", m_NumTuples));
   }
-  m_DataStructure.getDataRefAs<AttributeMatrix>(m_InputValues->NewCellFeatureAttributeMatrixName).resizeTuples(ShapeType{m_NumTuples});
+  if(Result<> resizeResult = m_DataStructure.getDataRefAs<AttributeMatrix>(m_InputValues->NewCellFeatureAttributeMatrixName).resizeTuples(ShapeType{m_NumTuples}); resizeResult.invalid())
+  {
+    return ConvertResult(std::move(resizeResult));
+  }
 
   if(m_InputValues->RandomizeParentIds)
   {

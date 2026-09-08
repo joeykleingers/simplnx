@@ -375,7 +375,7 @@ void DatasetTest(ReadHDF5DatasetFilter& filter, const std::list<ReadHDF5DatasetP
 
       // Bulk-read into local buffer to avoid per-element OOC overhead
       std::vector<T> buf(totalArrayValues);
-      da->getDataStoreRef().copyIntoBuffer(0, nonstd::span<T>(buf.data(), totalArrayValues));
+      SIMPLNX_RESULT_REQUIRE_VALID(da->getDataStoreRef().copyIntoBuffer(0, nonstd::span<T>(buf.data(), totalArrayValues)));
       for(usize i = 0; i < totalArrayValues; ++i)
       {
         T value = buf[i];

@@ -14,9 +14,12 @@
 #include "simplnx/Utilities/DataStoreUtilities.hpp"
 
 #include <array>
+#include <atomic>
 #include <catch2/catch.hpp>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 using namespace nx::core;
 using namespace nx::core::Constants;
@@ -90,16 +93,35 @@ void FillDataStructure(DataStructure& dataStructure)
   testStore[3] = 2185;
 }
 
-void ReplaceBackgroundForFillTest(DataStructure& dataStructure)
+/**
+ * @brief Creates the shared data fixture for RemoveFlaggedFeatures tests.
+ *
+ * The shared fixture keeps Direct and Scanline comparisons on identical input data.
+ * @return A populated in-memory DataStructure.
+ */
+DataStructure CreateFlaggedFeaturesFixture()
 {
-  auto& featureIds = dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath).getDataStoreRef();
-  for(usize index = 0; index < featureIds.getNumberOfTuples(); index++)
-  {
-    if(featureIds[index] == 0)
-    {
-      featureIds[index] = 1;
-    }
-  }
+  DataStructure dataStructure;
+  FillDataStructure(dataStructure);
+  return dataStructure;
+}
+
+/**
+ * @brief Creates the shared arguments for RemoveFlaggedFeatures fill-path tests.
+ *
+ * The shared arguments keep both algorithm paths on one filter contract.
+ * @return Arguments that select feature removal with filling enabled.
+ */
+Arguments MakeRemoveArgs()
+{
+  Arguments args;
+  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_Functionality_Key, std::make_any<ChoicesParameter::ValueType>(0));
+  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_FillRemovedFeatures_Key, std::make_any<bool>(true));
+  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_SelectedImageGeometryPath_Key, std::make_any<DataPath>(k_ImageGeomPath));
+  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_CellFeatureIdsArrayPath_Key, std::make_any<DataPath>(k_FeatureIdsPath));
+  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_FlaggedFeaturesArrayPath_Key, std::make_any<DataPath>(k_FlaggedFeaturesPath));
+  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_IgnoredDataArrayPaths_Key, std::make_any<MultiArraySelectionParameter::ValueType>(MultiArraySelectionParameter::ValueType{}));
+  return args;
 }
 
 template <bool RemoveV = true>
@@ -234,34 +256,82 @@ TEST_CASE("SimplnxCore::RemoveFlaggedFeatures: fill direct and scanline parity",
 {
   UnitTest::LoadPlugins();
   RemoveFlaggedFeaturesFilter filter;
-  Arguments args;
-  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_Functionality_Key, std::make_any<ChoicesParameter::ValueType>(0));
-  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_FillRemovedFeatures_Key, std::make_any<bool>(true));
-  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_SelectedImageGeometryPath_Key, std::make_any<DataPath>(k_ImageGeomPath));
-  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_CellFeatureIdsArrayPath_Key, std::make_any<DataPath>(k_FeatureIdsPath));
-  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_FlaggedFeaturesArrayPath_Key, std::make_any<DataPath>(k_FlaggedFeaturesPath));
-  args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_IgnoredDataArrayPaths_Key, std::make_any<MultiArraySelectionParameter::ValueType>(MultiArraySelectionParameter::ValueType{}));
+  Arguments args = MakeRemoveArgs();
 
-  DataStructure directData;
-  FillDataStructure(directData);
-  ReplaceBackgroundForFillTest(directData);
+  DataStructure directData = CreateFlaggedFeaturesFixture();
   {
     AlgorithmTestScope scope(AlgorithmTestScenario::InCoreAlgorithmOnInMemoryStore);
     auto result = scope.executeFilter(filter, directData, args);
     SIMPLNX_RESULT_REQUIRE_VALID(result.result);
   }
-  DataStructure scanlineData;
-  FillDataStructure(scanlineData);
-  ReplaceBackgroundForFillTest(scanlineData);
+  DataStructure scanlineData = CreateFlaggedFeaturesFixture();
   {
     AlgorithmTestScope scope(AlgorithmTestScenario::OutOfCoreAlgorithmOnInMemoryStore);
     auto result = scope.executeFilter(filter, scanlineData, args);
     SIMPLNX_RESULT_REQUIRE_VALID(result.result);
   }
 
+  REQUIRE_NOTHROW(directData.getDataRefAs<IDataArray>(k_FeatureIdsPath));
+  REQUIRE_NOTHROW(scanlineData.getDataRefAs<IDataArray>(k_FeatureIdsPath));
   CompareDataArrays<int32>(directData.getDataRefAs<IDataArray>(k_FeatureIdsPath), scanlineData.getDataRefAs<IDataArray>(k_FeatureIdsPath));
+  REQUIRE_NOTHROW(directData.getDataRefAs<IDataArray>(k_CellVectorPath));
+  REQUIRE_NOTHROW(scanlineData.getDataRefAs<IDataArray>(k_CellVectorPath));
   CompareDataArrays<int32>(directData.getDataRefAs<IDataArray>(k_CellVectorPath), scanlineData.getDataRefAs<IDataArray>(k_CellVectorPath));
+  REQUIRE_NOTHROW(directData.getDataRefAs<IDataArray>(k_CellBoolPath));
+  REQUIRE_NOTHROW(scanlineData.getDataRefAs<IDataArray>(k_CellBoolPath));
   CompareDataArrays<bool>(directData.getDataRefAs<IDataArray>(k_CellBoolPath), scanlineData.getDataRefAs<IDataArray>(k_CellBoolPath));
+}
+
+TEST_CASE("SimplnxCore::RemoveFlaggedFeatures: fill terminates with background zeros present", "[SimplnxCore][RemoveFlaggedFeatures]")
+{
+  UnitTest::LoadPlugins();
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  DYNAMIC_SECTION(scenario)
+  {
+    UnitTest::AlgorithmTestScope scope(scenario);
+
+    // The fixture contains background Feature IDs. Fill mode never turns a zero into another id.
+    DataStructure dataStructure = CreateFlaggedFeaturesFixture();
+    REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath));
+    const auto& idsBefore = dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath);
+    usize zerosBefore = 0;
+    for(usize i = 0; i < idsBefore.getNumberOfTuples(); ++i)
+    {
+      zerosBefore += idsBefore[i] == 0 ? 1 : 0;
+    }
+    REQUIRE(zerosBefore > 0);
+
+    RemoveFlaggedFeaturesFilter filter;
+    Arguments args = MakeRemoveArgs();
+    args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_FillRemovedFeatures_Key, std::make_any<bool>(true));
+
+    std::atomic_bool cancel = false;
+    // The watchdog cancels after 30 seconds so a nonterminating loop cannot block the test process.
+    std::thread watchdog([&]() {
+      for(int32 i = 0; i < 300 && !cancel.load(); ++i)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      cancel = true;
+    });
+    auto result = scope.executeFilter(filter, dataStructure, args, nullptr, IFilter::MessageHandler{}, cancel);
+    const bool timedOut = cancel.load();
+    cancel = true;
+    watchdog.join();
+    REQUIRE_FALSE(timedOut);
+    SIMPLNX_RESULT_REQUIRE_VALID(result.result);
+
+    REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath));
+    const auto& idsAfter = dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath);
+    usize zerosAfter = 0;
+    for(usize i = 0; i < idsAfter.getNumberOfTuples(); ++i)
+    {
+      zerosAfter += idsAfter[i] == 0 ? 1 : 0;
+      REQUIRE(idsAfter[i] >= 0);
+    }
+    // Background is a valid fill source, so removed voxels next to background become zero and the count can grow.
+    REQUIRE(zerosAfter >= zerosBefore);
+  }
 }
 
 TEST_CASE("SimplnxCore::RemoveFlaggedFeatures: Test Extract then Remove Algorithm", "[SimplnxCore][RemoveFlaggedFeatures]")

@@ -111,7 +111,7 @@ private:
  * individual values. Other YZ types batch as many as 64 plane buffers with one
  * Z-slice buffer to reduce repeated disk reads.
  *
- * Bulk-I/O results are discarded. Cancellation can leave prior slices changed.
+ * Cancellation or an error can leave prior slices changed.
  */
 struct IdentifySampleSliceBySliceFunctor
 {
@@ -292,14 +292,14 @@ struct IdentifySampleSliceBySliceFunctor
    * @param plane Selected plane orientation.
    * @param messageHandler Receives slice messages.
    * @param shouldCancel Signals cancellation between planes and BFS phases.
+   * @return The first mask-store bulk-I/O error.
    * @pre imageGeom and goodVoxelsPtr are not null.
    *
    * The non-Bool YZ path can retain 64 YZ planes and one XY Z-slice at the same
-   * time. Other paths retain one selected plane. The function ignores all
-   * copyIntoBuffer() and copyFromBuffer() results.
+   * time. Other paths retain one selected plane.
    */
   template <typename T>
-  void operator()(const ImageGeom* imageGeom, IDataArray* goodVoxelsPtr, bool fillHoles, Plane plane, const IFilter::MessageHandler& messageHandler, const std::atomic_bool& shouldCancel)
+  Result<> operator()(const ImageGeom* imageGeom, IDataArray* goodVoxelsPtr, bool fillHoles, Plane plane, const IFilter::MessageHandler& messageHandler, const std::atomic_bool& shouldCancel)
   {
     auto& goodVoxels = goodVoxelsPtr->template getIDataStoreRefAs<AbstractDataStore<T>>();
 
@@ -356,7 +356,7 @@ struct IdentifySampleSliceBySliceFunctor
         {
           if(shouldCancel)
           {
-            return;
+            return {};
           }
 
           const int64 batchEnd = std::min(batchStart + k_BatchSize, fixedDim);
@@ -372,7 +372,11 @@ struct IdentifySampleSliceBySliceFunctor
           // Read each Z-slice once and extract all batch columns.
           for(int64 z = 0; z < dimZ; z++)
           {
-            goodVoxels.copyIntoBuffer(static_cast<usize>(z) * zSliceElements, nonstd::span<T>(zSliceBuf.data(), zSliceElements));
+            Result<> ioResult = goodVoxels.copyIntoBuffer(static_cast<usize>(z) * zSliceElements, nonstd::span<T>(zSliceBuf.data(), zSliceElements));
+            if(ioResult.invalid())
+            {
+              return ioResult;
+            }
             for(int64 b = 0; b < batchCount; b++)
             {
               const int64 x = batchStart + b;
@@ -388,7 +392,7 @@ struct IdentifySampleSliceBySliceFunctor
           {
             if(shouldCancel)
             {
-              return;
+              return {};
             }
             processSlice(columnBuffers[static_cast<usize>(b)].get(), sliceSize, planeDim1, planeDim2, fillHoles, shouldCancel);
           }
@@ -396,7 +400,11 @@ struct IdentifySampleSliceBySliceFunctor
           // Read each Z-slice, insert all batch columns, and write it back.
           for(int64 z = 0; z < dimZ; z++)
           {
-            goodVoxels.copyIntoBuffer(static_cast<usize>(z) * zSliceElements, nonstd::span<T>(zSliceBuf.data(), zSliceElements));
+            Result<> ioResult = goodVoxels.copyIntoBuffer(static_cast<usize>(z) * zSliceElements, nonstd::span<T>(zSliceBuf.data(), zSliceElements));
+            if(ioResult.invalid())
+            {
+              return ioResult;
+            }
             for(int64 b = 0; b < batchCount; b++)
             {
               const int64 x = batchStart + b;
@@ -405,10 +413,14 @@ struct IdentifySampleSliceBySliceFunctor
                 zSliceBuf[static_cast<usize>(y * dimX + x)] = columnBuffers[static_cast<usize>(b)][static_cast<usize>(z * dimY + y)];
               }
             }
-            goodVoxels.copyFromBuffer(static_cast<usize>(z) * zSliceElements, nonstd::span<const T>(zSliceBuf.data(), zSliceElements));
+            ioResult = goodVoxels.copyFromBuffer(static_cast<usize>(z) * zSliceElements, nonstd::span<const T>(zSliceBuf.data(), zSliceElements));
+            if(ioResult.invalid())
+            {
+              return ioResult;
+            }
           }
         }
-        return;
+        return {};
       }
     }
 
@@ -419,7 +431,7 @@ struct IdentifySampleSliceBySliceFunctor
     {
       if(shouldCancel)
       {
-        return;
+        return {};
       }
       messageHandler(IFilter::Message::Type::Info, fmt::format("Slice {}", fixedIdx));
 
@@ -427,7 +439,11 @@ struct IdentifySampleSliceBySliceFunctor
       if(stride1 == 1 && stride2 == planeDim1)
       {
         // An XY plane is contiguous.
-        goodVoxels.copyIntoBuffer(static_cast<usize>(fixedIdx * fixedStride), nonstd::span<T>(sliceBuffer.get(), sliceSize));
+        Result<> ioResult = goodVoxels.copyIntoBuffer(static_cast<usize>(fixedIdx * fixedStride), nonstd::span<T>(sliceBuffer.get(), sliceSize));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
       else if(stride1 == 1)
       {
@@ -435,7 +451,11 @@ struct IdentifySampleSliceBySliceFunctor
         for(int64 p2 = 0; p2 < planeDim2; ++p2)
         {
           usize rowStart = static_cast<usize>(fixedIdx * fixedStride + p2 * stride2);
-          goodVoxels.copyIntoBuffer(rowStart, nonstd::span<T>(sliceBuffer.get() + p2 * planeDim1, static_cast<usize>(planeDim1)));
+          Result<> ioResult = goodVoxels.copyIntoBuffer(rowStart, nonstd::span<T>(sliceBuffer.get() + p2 * planeDim1, static_cast<usize>(planeDim1)));
+          if(ioResult.invalid())
+          {
+            return ioResult;
+          }
         }
       }
       else
@@ -456,7 +476,11 @@ struct IdentifySampleSliceBySliceFunctor
       if(stride1 == 1 && stride2 == planeDim1)
       {
         // An XY plane is contiguous.
-        goodVoxels.copyFromBuffer(static_cast<usize>(fixedIdx * fixedStride), nonstd::span<const T>(sliceBuffer.get(), sliceSize));
+        Result<> ioResult = goodVoxels.copyFromBuffer(static_cast<usize>(fixedIdx * fixedStride), nonstd::span<const T>(sliceBuffer.get(), sliceSize));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
       else if(stride1 == 1)
       {
@@ -464,7 +488,11 @@ struct IdentifySampleSliceBySliceFunctor
         for(int64 p2 = 0; p2 < planeDim2; ++p2)
         {
           usize rowStart = static_cast<usize>(fixedIdx * fixedStride + p2 * stride2);
-          goodVoxels.copyFromBuffer(rowStart, nonstd::span<const T>(sliceBuffer.get() + p2 * planeDim1, static_cast<usize>(planeDim1)));
+          Result<> ioResult = goodVoxels.copyFromBuffer(rowStart, nonstd::span<const T>(sliceBuffer.get() + p2 * planeDim1, static_cast<usize>(planeDim1)));
+          if(ioResult.invalid())
+          {
+            return ioResult;
+          }
         }
       }
       else
@@ -479,6 +507,7 @@ struct IdentifySampleSliceBySliceFunctor
         }
       }
     }
+    return {};
   }
 };
 

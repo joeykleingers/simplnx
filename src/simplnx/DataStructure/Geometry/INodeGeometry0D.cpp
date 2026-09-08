@@ -72,9 +72,14 @@ void INodeGeometry0D::setVertexListId(const std::optional<IdType>& vertices)
   m_VertexDataArrayId = vertices;
 }
 
-void INodeGeometry0D::resizeVertexList(usize size)
+Result<> INodeGeometry0D::resizeVertexList(usize size)
 {
-  getVerticesRef().getIDataStoreRef().resizeTuples({size});
+  Result<> resizeResult = getVerticesRef().getIDataStoreRef().resizeTuples({size});
+  if(resizeResult.invalid())
+  {
+    resizeResult.errors()[0].message = fmt::format("Geometry '{}' failed to resize its vertex list to {} tuples: {}", getName(), size, resizeResult.errors()[0].message);
+  }
+  return resizeResult;
 }
 
 usize INodeGeometry0D::getNumberOfVertices() const

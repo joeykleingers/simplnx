@@ -154,13 +154,19 @@ Result<> ComputeShapes::operator()()
 
   if(imageGeom.getNumXCells() > 1 && imageGeom.getNumYCells() > 1 && imageGeom.getNumZCells() > 1)
   {
-    findMoments();
+    if(Result<> result = findMoments(); result.invalid())
+    {
+      return ConvertResult(std::move(result));
+    }
     findAxes();
     findAxisEulers();
   }
   if(imageGeom.getNumXCells() == 1 || imageGeom.getNumYCells() == 1 || imageGeom.getNumZCells() == 1)
   {
-    findMoments2D();
+    if(Result<> result = findMoments2D(); result.invalid())
+    {
+      return ConvertResult(std::move(result));
+    }
     findAxes2D();
     findAxisEulers2D();
   }
@@ -169,7 +175,7 @@ Result<> ComputeShapes::operator()()
 }
 
 // -----------------------------------------------------------------------------
-void ComputeShapes::findMoments()
+Result<> ComputeShapes::findMoments()
 {
   const auto& imageGeom = m_DataStructure.getDataRefAs<ImageGeom>(m_InputValues->ImageGeometryPath);
 
@@ -207,7 +213,10 @@ void ComputeShapes::findMoments()
   float zdist1 = 0.0f, zdist2 = 0.0f, zdist3 = 0.0f, zdist4 = 0.0f, zdist5 = 0.0f, zdist6 = 0.0f, zdist7 = 0.0f, zdist8 = 0.0f;
   // The local centroid cache avoids random feature lookup in the voxel loop.
   std::vector<float32> localCentroids(numfeatures * 3);
-  centroids.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(localCentroids.data(), localCentroids.size()));
+  if(Result<> ioResult = centroids.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(localCentroids.data(), localCentroids.size())); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   // Local counts avoid per-voxel volume writes.
   std::vector<float32> featureVoxelCounts(numfeatures, 0.0f);
@@ -223,11 +232,14 @@ void ComputeShapes::findMoments()
   {
     if(m_ShouldCancel)
     {
-      return;
+      return {};
     }
 
     zStride = i * xPoints * yPoints;
-    featureIdsStore.copyIntoBuffer(zStride, nonstd::span<int32>(featureIdsSlice.data(), sliceSize));
+    if(Result<> ioResult = featureIdsStore.copyIntoBuffer(zStride, nonstd::span<int32>(featureIdsSlice.data(), sliceSize)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
     for(size_t j = 0; j < yPoints; j++)
     {
       yStride = j * xPoints;
@@ -317,7 +329,7 @@ void ComputeShapes::findMoments()
   {
     if(m_ShouldCancel)
     {
-      return;
+      return {};
     }
 
     // calculating the modified volume for the omega3 value
@@ -388,10 +400,12 @@ void ComputeShapes::findMoments()
     }
     omega3s[featureId] = static_cast<float>(omega3);
   }
+
+  return {};
 }
 
 // -----------------------------------------------------------------------------
-void ComputeShapes::findMoments2D()
+Result<> ComputeShapes::findMoments2D()
 {
 
   const auto& featureIds = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FeatureIdsArrayPath);
@@ -438,7 +452,10 @@ void ComputeShapes::findMoments2D()
   // Cache the feature-level centroids locally to keep the per-cell centroid reads in RAM rather than
   // routing each through the (out-of-core-capable) store. Sized by feature count.
   std::vector<float32> localCentroids(numfeatures * 3);
-  centroids.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(localCentroids.data(), localCentroids.size()));
+  if(Result<> ioResult = centroids.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(localCentroids.data(), localCentroids.size())); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   // Accumulate voxel counts locally, written back to the volumes array once after the scan.
   std::vector<float32> featureVoxelCounts(numfeatures, 0.0f);
@@ -452,11 +469,14 @@ void ComputeShapes::findMoments2D()
   {
     if(m_ShouldCancel)
     {
-      return;
+      return {};
     }
 
     yStride = yPoint * xPoints;
-    featureIdsStore.copyIntoBuffer(yStride, nonstd::span<int32>(featureIdsRow.data(), xPoints));
+    if(Result<> ioResult = featureIdsStore.copyIntoBuffer(yStride, nonstd::span<int32>(featureIdsRow.data(), xPoints)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
     for(size_t xPoint = 0; xPoint < xPoints; xPoint++)
     {
       int32_t gnum = featureIdsRow[xPoint];
@@ -496,7 +516,7 @@ void ComputeShapes::findMoments2D()
   {
     if(m_ShouldCancel)
     {
-      return;
+      return {};
     }
 
     // Eq. 12 Moment matrix. Omega 2
@@ -508,6 +528,8 @@ void ComputeShapes::findMoments2D()
     m_FeatureMoments[featureId * 6 + 1] = m_FeatureMoments[featureId * 6 + 1] * konst1;  // u02
     m_FeatureMoments[featureId * 6 + 2] = -m_FeatureMoments[featureId * 6 + 2] * konst1; // u11
   }
+
+  return {};
 }
 
 // -----------------------------------------------------------------------------

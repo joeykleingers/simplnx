@@ -46,11 +46,19 @@ Result<> ComputeBoundaryCellsScanline::operator()()
   std::vector<int32> nextSlice(sliceSize);
   std::vector<int8> outputSlice(sliceSize);
 
-  // The current API does not inspect these bulk-I/O Result values.
-  featureIdsStore.copyIntoBuffer(0, nonstd::span<int32>(curSlice.data(), sliceSize));
+  // Each bulk-I/O error stops the scan before a later slice changes.
+  Result<> ioResult = featureIdsStore.copyIntoBuffer(0, nonstd::span<int32>(curSlice.data(), sliceSize));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
   if(dimZ > 1)
   {
-    featureIdsStore.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+    ioResult = featureIdsStore.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
 
   for(int64 zIdx = 0; zIdx < dimZ; zIdx++)
@@ -152,7 +160,11 @@ Result<> ComputeBoundaryCellsScanline::operator()()
       }
     }
 
-    boundaryCellsStore.copyFromBuffer(static_cast<usize>(zIdx) * sliceSize, nonstd::span<const int8>(outputSlice.data(), sliceSize));
+    ioResult = boundaryCellsStore.copyFromBuffer(static_cast<usize>(zIdx) * sliceSize, nonstd::span<const int8>(outputSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
 
     // Rotate buffer ownership without copying slice values.
     std::swap(prevSlice, curSlice);
@@ -160,7 +172,11 @@ Result<> ComputeBoundaryCellsScanline::operator()()
 
     if(zIdx + 2 < dimZ)
     {
-      featureIdsStore.copyIntoBuffer(static_cast<usize>(zIdx + 2) * sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+      ioResult = featureIdsStore.copyIntoBuffer(static_cast<usize>(zIdx + 2) * sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
 

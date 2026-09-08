@@ -86,12 +86,12 @@ private:
    * @param numNeighbors Supplies one neighbor count per feature.
    * @param totalPoints Number of ImageGeom cells to process.
    * @param errorReturn Receives an all-removed or range error.
-   * @return Active flags indexed by original Feature ID. Returns empty after cancellation.
+   * @return Active flags, cancellation result, or the first bulk-I/O error.
    *
-   * A range error can occur after prior chunks changed. Bulk-I/O results are not
-   * inspected. The shared renumber mapping must match feature-array compaction.
+   * A range or storage error can occur after prior chunks changed. The shared
+   * renumber mapping must match feature-array compaction.
    */
-  std::vector<bool> removeFeaturesUnderNeighborThreshold(Int32AbstractDataStore& featureIds, const Int32AbstractDataStore& numNeighbors, usize totalPoints, Error& errorReturn);
+  Result<std::vector<bool>> removeFeaturesUnderNeighborThreshold(Int32AbstractDataStore& featureIds, const Int32AbstractDataStore& numNeighbors, usize totalPoints, Error& errorReturn);
 
   /**
    * @brief Fills negative Feature IDs from face-neighbor majority votes.

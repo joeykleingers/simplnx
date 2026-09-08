@@ -73,15 +73,24 @@ nx::core::Result<> LoadInfo(const nx::core::ReadH5EbsdInputValues* mInputValues,
 
   nx::core::DataPath xtalDataPath = cellEnsembleMatrixPath.createChildPath(ebsdlib::EnsembleData::CrystalStructures);
   auto& xtalData = mDataStructure.getDataRefAs<nx::core::UInt32Array>(xtalDataPath);
-  xtalData.getIDataStore()->resizeTuples(tDims);
+  if(nx::core::Result<> resizeResult = xtalData.getIDataStore()->resizeTuples(tDims); resizeResult.invalid())
+  {
+    return nx::core::ConvertResult(std::move(resizeResult));
+  }
 
   nx::core::DataPath latticeDataPath = cellEnsembleMatrixPath.createChildPath(ebsdlib::EnsembleData::LatticeConstants);
   auto& latticData = mDataStructure.getDataRefAs<nx::core::Float32Array>(latticeDataPath);
-  latticData.getIDataStore()->resizeTuples(tDims);
+  if(nx::core::Result<> resizeResult = latticData.getIDataStore()->resizeTuples(tDims); resizeResult.invalid())
+  {
+    return nx::core::ConvertResult(std::move(resizeResult));
+  }
 
   nx::core::DataPath matNamesDataath = cellEnsembleMatrixPath.createChildPath(ebsdlib::EnsembleData::MaterialName);
   auto& matNameData = mDataStructure.getDataRefAs<nx::core::StringArray>(matNamesDataath);
-  matNameData.resizeTuples(tDims);
+  if(nx::core::Result<> resizeResult = matNameData.resizeTuples(tDims); resizeResult.invalid())
+  {
+    return nx::core::ConvertResult(std::move(resizeResult));
+  }
 
   // Index zero represents cells without a valid phase.
   xtalData[0] = ebsdlib::CrystalStructure::UnknownCrystalStructure;
@@ -125,13 +134,12 @@ nx::core::Result<> LoadInfo(const nx::core::ReadH5EbsdInputValues* mInputValues,
  * @param selectedArrayNames Names selected for import.
  * @param cellAttributeMatrixPath Parent path for destination arrays.
  * @param totalPoints Volume tuple count.
+ * @return Success or the first destination store write error.
  * @pre Reader pointers and destination ranges contain totalPoints times each array's component count.
- *
- * The current implementation does not inspect copyFromBuffer() Result values.
  */
 template <typename H5EbsdReaderType, typename T>
-void CopyData(nx::core::DataStructure& dataStructure, H5EbsdReaderType* ebsdReader, const std::vector<std::string>& arrayNames, std::set<std::string> selectedArrayNames,
-              const nx::core::DataPath& cellAttributeMatrixPath, usize totalPoints)
+nx::core::Result<> CopyData(nx::core::DataStructure& dataStructure, H5EbsdReaderType* ebsdReader, const std::vector<std::string>& arrayNames, std::set<std::string> selectedArrayNames,
+                            const nx::core::DataPath& cellAttributeMatrixPath, usize totalPoints)
 {
   using DataArrayType = nx::core::DataArray<T>;
   for(const auto& arrayName : arrayNames)
@@ -142,9 +150,13 @@ void CopyData(nx::core::DataStructure& dataStructure, H5EbsdReaderType* ebsdRead
       nx::core::DataPath dataPath = cellAttributeMatrixPath.createChildPath(arrayName);
       auto& destination = dataStructure.getDataRefAs<DataArrayType>(dataPath);
       // Use one destination transfer because EbsdLib already owns the full source array.
-      destination.getDataStoreRef().copyFromBuffer(0, nonstd::span<const T>(source, totalPoints * destination.getNumberOfComponents()));
+      if(nx::core::Result<> ioResult = destination.getDataStoreRef().copyFromBuffer(0, nonstd::span<const T>(source, totalPoints * destination.getNumberOfComponents())); ioResult.invalid())
+      {
+        return nx::core::ConvertResult(std::move(ioResult));
+      }
     }
   }
+  return {};
 }
 
 /**
@@ -159,12 +171,12 @@ void CopyData(nx::core::DataStructure& dataStructure, H5EbsdReaderType* ebsdRead
  * @param dcDims Selected volume dimensions.
  * @param floatArrayNames Candidate float arrays.
  * @param intArrayNames Candidate integer arrays.
- * @return Phase or EbsdLib load errors.
+ * @return Phase, EbsdLib load, or destination store errors.
  * @pre Dimension products fit usize and destination arrays match the selected volume.
  * @pre Cell phase IDs index the crystal-structure array when Oxford correction applies.
  *
- * EbsdLib materializes selected source arrays. The current destination bulk
- * writes do not propagate their Result values.
+ * EbsdLib materializes selected source arrays. Destination writes stop after
+ * the first store error.
  */
 template <typename H5EbsdReaderType, typename PhaseType>
 nx::core::Result<> LoadEbsdData(const nx::core::ReadH5EbsdInputValues* mInputValues, nx::core::DataStructure& dataStructure, const std::vector<std::string>& eulerNames,
@@ -227,7 +239,10 @@ nx::core::Result<> LoadEbsdData(const nx::core::ReadH5EbsdInputValues* mInputVal
   if(selectedArrayNames.find(eulerNames[3]) != selectedArrayNames.end())
   {
     phaseDataArrayPtr = dataStructure.getDataAs<nx::core::Int32Array>(phaseDataPath);
-    phaseDataArrayPtr->getDataStoreRef().copyFromBuffer(0, nonstd::span<const int32>(phasePtr, totalPoints));
+    if(nx::core::Result<> ioResult = phaseDataArrayPtr->getDataStoreRef().copyFromBuffer(0, nonstd::span<const int32>(phasePtr, totalPoints)); ioResult.invalid())
+    {
+      return nx::core::ConvertResult(std::move(ioResult));
+    }
   }
 
   if(selectedArrayNames.find(ebsdlib::CellData::EulerAngles) != selectedArrayNames.end())
@@ -256,10 +271,16 @@ nx::core::Result<> LoadEbsdData(const nx::core::ReadH5EbsdInputValues* mInputVal
     if(applyHexCorrection)
     {
       phaseCache = std::make_unique<int32[]>(totalPoints);
-      phaseDataArrayPtr->getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phaseCache.get(), totalPoints));
+      if(nx::core::Result<> ioResult = phaseDataArrayPtr->getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phaseCache.get(), totalPoints)); ioResult.invalid())
+      {
+        return nx::core::ConvertResult(std::move(ioResult));
+      }
       usize numXtal = xtalData.getSize();
       xtalCache = std::make_unique<uint32[]>(numXtal);
-      xtalData.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(xtalCache.get(), numXtal));
+      if(nx::core::Result<> ioResult = xtalData.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(xtalCache.get(), numXtal)); ioResult.invalid())
+      {
+        return nx::core::ConvertResult(std::move(ioResult));
+      }
     }
 
     auto& eulerStore = eulerData.getDataStoreRef();
@@ -277,13 +298,23 @@ nx::core::Result<> LoadEbsdData(const nx::core::ReadH5EbsdInputValues* mInputVal
           eulerBuf[i * 3 + 2] += (30.0F * degToRad);
         }
       }
-      eulerStore.copyFromBuffer(startTup * 3, nonstd::span<const float32>(eulerBuf.get(), count * 3));
+      if(nx::core::Result<> ioResult = eulerStore.copyFromBuffer(startTup * 3, nonstd::span<const float32>(eulerBuf.get(), count * 3)); ioResult.invalid())
+      {
+        return nx::core::ConvertResult(std::move(ioResult));
+      }
     }
   }
 
   // Copy the remaining selected EbsdLib buffers to their destination arrays.
-  ::CopyData<H5EbsdReaderType, float32>(dataStructure, ebsdReader.get(), floatArrayNames, selectedArrayNames, cellAttributeMatrixPath, totalPoints);
-  ::CopyData<H5EbsdReaderType, int>(dataStructure, ebsdReader.get(), intArrayNames, selectedArrayNames, cellAttributeMatrixPath, totalPoints);
+  if(nx::core::Result<> copyResult = ::CopyData<H5EbsdReaderType, float32>(dataStructure, ebsdReader.get(), floatArrayNames, selectedArrayNames, cellAttributeMatrixPath, totalPoints);
+     copyResult.invalid())
+  {
+    return nx::core::ConvertResult(std::move(copyResult));
+  }
+  if(nx::core::Result<> copyResult = ::CopyData<H5EbsdReaderType, int>(dataStructure, ebsdReader.get(), intArrayNames, selectedArrayNames, cellAttributeMatrixPath, totalPoints); copyResult.invalid())
+  {
+    return nx::core::ConvertResult(std::move(copyResult));
+  }
 
   return {};
 }

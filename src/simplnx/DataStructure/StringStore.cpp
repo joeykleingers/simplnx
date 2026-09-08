@@ -1,5 +1,9 @@
 #include "StringStore.hpp"
 
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
+#include <exception>
 #include <numeric>
 
 namespace nx::core
@@ -32,11 +36,20 @@ const ShapeType& StringStore::getTupleShape() const
   return m_TupleShape;
 }
 
-void StringStore::resizeTuples(const ShapeType& tupleShape)
+Result<> StringStore::resizeTuples(const ShapeType& tupleShape)
 {
-  m_TupleShape = tupleShape;
-  m_NumTuples = std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<size_t>(1), std::multiplies<>());
-  m_Data.resize(m_NumTuples);
+  try
+  {
+    ShapeType newTupleShape = tupleShape;
+    const usize numTuples = std::accumulate(newTupleShape.cbegin(), newTupleShape.cend(), static_cast<usize>(1), std::multiplies<>());
+    m_Data.resize(numTuples);
+    m_TupleShape = std::move(newTupleShape);
+    m_NumTuples = numTuples;
+  } catch(const std::exception& exception)
+  {
+    return MakeErrorResult(-6035, fmt::format("StringStore resize to shape [{}] failed: {}", fmt::join(tupleShape, ", "), exception.what()));
+  }
+  return {};
 }
 
 usize StringStore::size() const

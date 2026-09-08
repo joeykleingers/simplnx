@@ -23,22 +23,35 @@ constexpr usize k_ChunkTuples = 65536;
  * @struct MaskChunkFunctor
  * @brief Normalizes one Bool or UInt8 mask chunk to Boolean flags.
  *
- * Consumers re-read the mask instead of keeping a cell-sized flag array. The
- * bulk-read Result is ignored.
+ * Consumers re-read the mask instead of keeping a cell-sized flag array.
  */
 struct MaskChunkFunctor
 {
+  /**
+   * @brief Reads and normalizes one mask chunk.
+   * @tparam T Specifies the mask value type.
+   * @param maskIArray Supplies mask values.
+   * @param chunkStart First mask tuple.
+   * @param count Number of mask tuples.
+   * @param outFlags Receives normalized flags.
+   * @return The mask-store bulk-read result.
+   */
   template <typename T>
-  void operator()(const IDataArray* maskIArray, usize chunkStart, usize count, nonstd::span<bool> outFlags)
+  Result<> operator()(const IDataArray* maskIArray, usize chunkStart, usize count, nonstd::span<bool> outFlags)
   {
     const auto& maskStore = maskIArray->template getIDataStoreRefAs<AbstractDataStore<T>>();
     auto buffer = std::make_unique<T[]>(count);
-    maskStore.copyIntoBuffer(chunkStart, nonstd::span<T>(buffer.get(), count));
+    Result<> readResult = maskStore.copyIntoBuffer(chunkStart, nonstd::span<T>(buffer.get(), count));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       // Nonzero UInt8 values match MaskCompareUtilities mask semantics.
       outFlags[i] = static_cast<bool>(buffer[i]);
     }
+    return {};
   }
 };
 
@@ -46,14 +59,20 @@ struct MaskChunkFunctor
  * @struct CopyDataFunctor
  * @brief Compacts one included cell array into vertex tuple order.
  *
- * Source and output values use bounded bulk transfers. Masked copying re-reads
- * each mask chunk. The function does not check cancellation, and it ignores all
- * transfer Result values.
+ * Source and output values use bounded bulk transfers. Masked copying re-reads each mask chunk.
  */
 struct CopyDataFunctor
 {
+  /**
+   * @brief Compacts one typed array.
+   * @tparam T Specifies the array value type.
+   * @param srcIArray Supplies source tuples.
+   * @param destIArray Receives compacted tuples.
+   * @param maskIArray Selects tuples, or null to copy all tuples.
+   * @return The first source, mask, or destination store error.
+   */
   template <typename T>
-  void operator()(const IDataArray* srcIArray, IDataArray* destIArray, const IDataArray* maskIArray)
+  Result<> operator()(const IDataArray* srcIArray, IDataArray* destIArray, const IDataArray* maskIArray)
   {
     const auto& srcStore = srcIArray->template getIDataStoreRefAs<AbstractDataStore<T>>();
     auto& destStore = destIArray->template getIDataStoreRefAs<AbstractDataStore<T>>();
@@ -69,10 +88,18 @@ struct CopyDataFunctor
       for(usize start = 0; start < srcTuples; start += k_ChunkTuples)
       {
         const usize count = std::min(k_ChunkTuples, srcTuples - start);
-        srcStore.copyIntoBuffer(start * numComps, nonstd::span<T>(buffer.get(), count * numComps));
-        destStore.copyFromBuffer(start * numComps, nonstd::span<const T>(buffer.get(), count * numComps));
+        Result<> ioResult = srcStore.copyIntoBuffer(start * numComps, nonstd::span<T>(buffer.get(), count * numComps));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
+        ioResult = destStore.copyFromBuffer(start * numComps, nonstd::span<const T>(buffer.get(), count * numComps));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
-      return;
+      return {};
     }
 
     // Compact selected tuples in source order and flush full output chunks.
@@ -82,21 +109,34 @@ struct CopyDataFunctor
     usize outTuples = 0;
     usize destOffset = 0;
 
-    auto flushOut = [&]() {
+    auto flushOut = [&]() -> Result<> {
       if(outTuples == 0)
       {
-        return;
+        return {};
       }
-      destStore.copyFromBuffer(destOffset * numComps, nonstd::span<const T>(outBuffer.get(), outTuples * numComps));
+      Result<> writeResult = destStore.copyFromBuffer(destOffset * numComps, nonstd::span<const T>(outBuffer.get(), outTuples * numComps));
+      if(writeResult.invalid())
+      {
+        return writeResult;
+      }
       destOffset += outTuples;
       outTuples = 0;
+      return {};
     };
 
     for(usize chunkStart = 0; chunkStart < srcTuples; chunkStart += k_ChunkTuples)
     {
       const usize chunkCount = std::min(k_ChunkTuples, srcTuples - chunkStart);
-      ExecuteDataFunction(MaskChunkFunctor{}, maskIArray->getDataType(), maskIArray, chunkStart, chunkCount, nonstd::span<bool>(flagBuffer.get(), chunkCount));
-      srcStore.copyIntoBuffer(chunkStart * numComps, nonstd::span<T>(inBuffer.get(), chunkCount * numComps));
+      Result<> ioResult = ExecuteDataFunction(MaskChunkFunctor{}, maskIArray->getDataType(), maskIArray, chunkStart, chunkCount, nonstd::span<bool>(flagBuffer.get(), chunkCount));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
+      ioResult = srcStore.copyIntoBuffer(chunkStart * numComps, nonstd::span<T>(inBuffer.get(), chunkCount * numComps));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
 
       for(usize i = 0; i < chunkCount; i++)
       {
@@ -110,11 +150,15 @@ struct CopyDataFunctor
         outTuples++;
         if(outTuples == k_ChunkTuples)
         {
-          flushOut();
+          ioResult = flushOut();
+          if(ioResult.invalid())
+          {
+            return ioResult;
+          }
         }
       }
     }
-    flushOut();
+    return flushOut();
   }
 };
 } // namespace
@@ -201,7 +245,11 @@ Result<> ExtractVertexGeometry::operator()()
         return {};
       }
       const usize count = std::min(k_ChunkTuples, totalCells - chunkStart);
-      ExecuteDataFunction(MaskChunkFunctor{}, maskIDataArray->getDataType(), maskIDataArray, chunkStart, count, nonstd::span<bool>(flagBuffer.get(), count));
+      Result<> maskResult = ExecuteDataFunction(MaskChunkFunctor{}, maskIDataArray->getDataType(), maskIDataArray, chunkStart, count, nonstd::span<bool>(flagBuffer.get(), count));
+      if(maskResult.invalid())
+      {
+        return maskResult;
+      }
       for(usize i = 0; i < count; i++)
       {
         if(flagBuffer[i])
@@ -210,7 +258,11 @@ Result<> ExtractVertexGeometry::operator()()
         }
       }
     }
-    vertexGeometry.resizeVertexList(vertexCount);
+    Result<> resizeResult = vertexGeometry.resizeVertexList(vertexCount);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   }
 
   if(m_ShouldCancel)
@@ -236,7 +288,11 @@ Result<> ExtractVertexGeometry::operator()()
         return {};
       }
       const usize count = std::min(k_ChunkTuples, totalCells - chunkStart);
-      ExecuteDataFunction(MaskChunkFunctor{}, maskIDataArray->getDataType(), maskIDataArray, chunkStart, count, nonstd::span<bool>(flagBuffer.get(), count));
+      Result<> maskResult = ExecuteDataFunction(MaskChunkFunctor{}, maskIDataArray->getDataType(), maskIDataArray, chunkStart, count, nonstd::span<bool>(flagBuffer.get(), count));
+      if(maskResult.invalid())
+      {
+        return maskResult;
+      }
       for(usize i = 0; i < count; i++)
       {
         if(flagBuffer[i])
@@ -261,7 +317,11 @@ Result<> ExtractVertexGeometry::operator()()
 
   // Resize all preflight-created vertex arrays to the selected tuple count.
   AttributeMatrix& vertexAttrMatrix = vertexGeometry.getVertexAttributeMatrixRef();
-  vertexAttrMatrix.resizeTuples({vertexCount});
+  Result<> resizeResult = vertexAttrMatrix.resizeTuples({vertexCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   for(const auto& dataArrayPath : m_InputValues->IncludedDataArrayPaths)
   {
@@ -273,7 +333,11 @@ Result<> ExtractVertexGeometry::operator()()
     const auto* srcIDataArray = m_DataStructure.getDataAs<IDataArray>(dataArrayPath);
     DataPath destDataArrayPath = vertexAttributeMatrixDataPath.createChildPath(srcIDataArray->getName());
     auto* destDataArray = m_DataStructure.getDataAs<IDataArray>(destDataArrayPath);
-    ExecuteDataFunction(CopyDataFunctor{}, srcIDataArray->getDataType(), srcIDataArray, destDataArray, maskIDataArray);
+    Result<> copyResult = ExecuteDataFunction(CopyDataFunctor{}, srcIDataArray->getDataType(), srcIDataArray, destDataArray, maskIDataArray);
+    if(copyResult.invalid())
+    {
+      return copyResult;
+    }
   }
 
   return {};

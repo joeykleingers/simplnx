@@ -398,22 +398,34 @@ Result<> ComputeGBCDMetricBased::operator()()
   // triangle face labels — leaving them in OOC DataStores would cause thrashing.
   const usize numEulerElements = eulerAngles.getSize();
   std::vector<float32> eulerCache(numEulerElements);
-  eulerAngles.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(eulerCache.data(), numEulerElements));
+  if(Result<> ioResult = eulerAngles.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(eulerCache.data(), numEulerElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const usize numPhaseElements = phases.getSize();
   std::vector<int32> phasesCache(numPhaseElements);
-  phases.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phasesCache.data(), numPhaseElements));
+  if(Result<> ioResult = phases.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phasesCache.data(), numPhaseElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   // Bulk-read ensemble-level crystal structures (tiny, typically < 10 entries)
   const usize numCrystalStructures = crystalStructures.getSize();
   std::vector<uint32> crystalStructuresCache(numCrystalStructures);
-  crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures));
+  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   // Bulk-read feature-face labels for the distinct boundary count loop below.
   // This is O(feature_faces) which is much smaller than O(mesh_triangles).
   const usize numFeatureFaceElements = featureFaceLabels.getSize();
   std::vector<int32> featureFaceLabelsCache(numFeatureFaceElements);
-  featureFaceLabels.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(featureFaceLabelsCache.data(), numFeatureFaceElements));
+  if(Result<> ioResult = featureFaceLabels.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(featureFaceLabelsCache.data(), numFeatureFaceElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   // ------------------- before computing the distribution, we must find normalization factors -----
   float64 ballVolume = k_BallVolumesM3M[m_InputValues->ChosenLimitDists];
@@ -523,8 +535,14 @@ Result<> ComputeGBCDMetricBased::operator()()
     {
       std::vector<int32> labelsBuf(currentChunkSize * 2);
       std::vector<float64> areasBuf(currentChunkSize);
-      faceLabels.getDataStoreRef().copyIntoBuffer(i * 2, nonstd::span<int32>(labelsBuf.data(), currentChunkSize * 2));
-      faceAreas.getDataStoreRef().copyIntoBuffer(i, nonstd::span<float64>(areasBuf.data(), currentChunkSize));
+      if(Result<> ioResult = faceLabels.getDataStoreRef().copyIntoBuffer(i * 2, nonstd::span<int32>(labelsBuf.data(), currentChunkSize * 2)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
+      if(Result<> ioResult = faceAreas.getDataStoreRef().copyIntoBuffer(i, nonstd::span<float64>(areasBuf.data(), currentChunkSize)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
 
       for(usize j = 0; j < currentChunkSize; j++)
       {

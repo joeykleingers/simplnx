@@ -613,7 +613,7 @@ namespace nx::core
  *
  * Input values are supplied through a four-slice ring buffer. That window is
  * large enough for classification and gradient stencils. Input memory is independent
- * of volume depth. Output stores use per-value writes without Result reporting.
+ * of volume depth. Each pass reports input and output storage failures.
  */
 template <typename T>
 class FlyingEdgesAlgorithm
@@ -658,7 +658,7 @@ public:
    * @brief Finds the trimmed X interval with cut edges for each grid row.
    * @return Input bulk-read error or success.
    */
-  Result<> pass1()
+  [[nodiscard]] Result<> pass1()
   {
     // Derive row trims from X, Y, and Z cuts without a volume-sized edge-case array.
     for(usize k = 0; k != m_NZ; ++k)
@@ -706,7 +706,7 @@ public:
    *
    * Counts are retained at row/grid-edge scale for the prefix pass.
    */
-  Result<> pass2()
+  [[nodiscard]] Result<> pass2()
   {
     // Classify each trimmed cube row and count its triangles and edge cuts.
     for(usize k = 0; k != m_NZ - 1; ++k)
@@ -789,8 +789,9 @@ public:
   }
   /**
    * @brief Prefix-sums counts into output offsets and resizes output arrays.
+   * @return Error from the first output resize that fails.
    */
-  void pass3()
+  [[nodiscard]] Result<> pass3()
   {
     // Convert row triangle counts to deterministic starting offsets.
     usize tmp;
@@ -863,16 +864,29 @@ public:
         }}
     */
 
-    m_TriangleGeom.resizeFaceList(triAccum);
-    m_TriangleGeom.resizeVertexList(pointAccum);
-    m_NormalsStore.resizeTuples({pointAccum});
+    auto faceResizeResult = m_TriangleGeom.resizeFaceList(triAccum);
+    if(faceResizeResult.invalid())
+    {
+      return faceResizeResult;
+    }
+    auto vertexResizeResult = m_TriangleGeom.resizeVertexList(pointAccum);
+    if(vertexResizeResult.invalid())
+    {
+      return vertexResizeResult;
+    }
+    auto normalsResizeResult = m_NormalsStore.resizeTuples({pointAccum});
+    if(normalsResizeResult.invalid())
+    {
+      return normalsResizeResult;
+    }
+    return {};
   }
   /**
    * @brief Pass 4 revisits active cubes, interpolates vertices/normals, and
    * writes connectivity at the deterministic offsets established by pass 3.
    * @return Input bulk-read error or success.
    */
-  Result<> pass4()
+  [[nodiscard]] Result<> pass4()
   {
     // Each cube writes its owned edges. Boundary cubes also write exterior neighbor edges.
     for(usize k = 0; k != m_NZ - 1; ++k)

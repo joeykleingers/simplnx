@@ -17,8 +17,19 @@ namespace
 {
 constexpr usize k_ChunkTuples = 65536;
 
+/**
+ * @brief Copies one parsed Channel 5 array through bounded store writes.
+ * @tparam T Array value type.
+ * @param numElements Number of values to copy.
+ * @param dataStructure Contains the destination array.
+ * @param reader Owns the parsed source values.
+ * @param name Identifies the reader field.
+ * @param dataArrayPath Identifies the destination array.
+ * @param shouldCancel Signals cancellation between chunks.
+ * @return True after all chunks copy, false after cancellation, or the first store write error.
+ */
 template <typename T>
-bool CopyRawData(usize numElements, DataStructure& dataStructure, ebsdlib::CprReader& reader, const std::string& name, const DataPath& dataArrayPath, const std::atomic_bool& shouldCancel)
+Result<bool> CopyRawData(usize numElements, DataStructure& dataStructure, ebsdlib::CprReader& reader, const std::string& name, const DataPath& dataArrayPath, const std::atomic_bool& shouldCancel)
 {
   auto& dataStore = dataStructure.getDataRefAs<DataArray<T>>(dataArrayPath).getDataStoreRef();
   const auto* rawData = reinterpret_cast<const T*>(reader.getPointerByName(name));
@@ -29,14 +40,17 @@ bool CopyRawData(usize numElements, DataStructure& dataStructure, ebsdlib::CprRe
   {
     if(shouldCancel)
     {
-      return false;
+      return {false};
     }
 
     const usize count = std::min(k_ChunkTuples, numElements - offset);
-    dataStore.copyFromBuffer(offset, nonstd::span<const T>(rawData + offset, count));
+    if(Result<> ioResult = dataStore.copyFromBuffer(offset, nonstd::span<const T>(rawData + offset, count)); ioResult.invalid())
+    {
+      return ConvertInvalidResult<bool>(std::move(ioResult));
+    }
   }
 
-  return true;
+  return {true};
 }
 
 } // namespace
@@ -78,9 +92,7 @@ Result<> ReadChannel5Data::operator()()
     return {};
   }
 
-  copyRawEbsdData(&reader);
-
-  return {};
+  return copyRawEbsdData(&reader);
 }
 
 // -----------------------------------------------------------------------------
@@ -132,7 +144,7 @@ std::pair<int32, std::string> ReadChannel5Data::loadMaterialInfo(ebsdlib::CprRea
 }
 
 // -----------------------------------------------------------------------------
-void ReadChannel5Data::copyRawEbsdData(ebsdlib::CprReader* reader) const
+Result<> ReadChannel5Data::copyRawEbsdData(ebsdlib::CprReader* reader) const
 {
   const DataPath cellAttributeMatrixPath = m_InputValues->DataContainerName.createChildPath(m_InputValues->CellAttributeMatrixName);
 
@@ -144,7 +156,7 @@ void ReadChannel5Data::copyRawEbsdData(ebsdlib::CprReader* reader) const
   {
     if(m_ShouldCancel)
     {
-      return;
+      return {};
     }
 
     const std::string fieldName = parser.FieldDefinition.FieldName;
@@ -152,23 +164,38 @@ void ReadChannel5Data::copyRawEbsdData(ebsdlib::CprReader* reader) const
 
     if(parser.FieldDefinition.numericType == ebsdlib::NumericTypes::Type::Int32)
     {
-      if(!CopyRawData<int32>(totalCells, m_DataStructure, *reader, fieldName, dataArrayPath, m_ShouldCancel))
+      Result<bool> copyResult = CopyRawData<int32>(totalCells, m_DataStructure, *reader, fieldName, dataArrayPath, m_ShouldCancel);
+      if(copyResult.invalid())
       {
-        return;
+        return ConvertResult(std::move(copyResult));
+      }
+      if(!copyResult.value())
+      {
+        return {};
       }
     }
     else if(parser.FieldDefinition.numericType == ebsdlib::NumericTypes::Type::Float)
     {
-      if(!CopyRawData<float32>(totalCells, m_DataStructure, *reader, fieldName, dataArrayPath, m_ShouldCancel))
+      Result<bool> copyResult = CopyRawData<float32>(totalCells, m_DataStructure, *reader, fieldName, dataArrayPath, m_ShouldCancel);
+      if(copyResult.invalid())
       {
-        return;
+        return ConvertResult(std::move(copyResult));
+      }
+      if(!copyResult.value())
+      {
+        return {};
       }
     }
     else if(parser.FieldDefinition.numericType == ebsdlib::NumericTypes::Type::UInt8)
     {
-      if(!CopyRawData<uint8>(totalCells, m_DataStructure, *reader, fieldName, dataArrayPath, m_ShouldCancel))
+      Result<bool> copyResult = CopyRawData<uint8>(totalCells, m_DataStructure, *reader, fieldName, dataArrayPath, m_ShouldCancel);
+      if(copyResult.invalid())
       {
-        return;
+        return ConvertResult(std::move(copyResult));
+      }
+      if(!copyResult.value())
+      {
+        return {};
       }
     }
   }
@@ -184,7 +211,7 @@ void ReadChannel5Data::copyRawEbsdData(ebsdlib::CprReader* reader) const
     {
       if(m_ShouldCancel)
       {
-        return;
+        return {};
       }
 
       const usize count = std::min(k_ChunkTuples, totalCells - offset);
@@ -192,7 +219,10 @@ void ReadChannel5Data::copyRawEbsdData(ebsdlib::CprReader* reader) const
       {
         phaseBuffer[i] = phasePtr[offset + i];
       }
-      phaseStore.copyFromBuffer(offset, nonstd::span<const int32>(phaseBuffer.get(), count));
+      if(Result<> ioResult = phaseStore.copyFromBuffer(offset, nonstd::span<const int32>(phaseBuffer.get(), count)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
   }
 
@@ -210,7 +240,7 @@ void ReadChannel5Data::copyRawEbsdData(ebsdlib::CprReader* reader) const
     {
       if(m_ShouldCancel)
       {
-        return;
+        return {};
       }
 
       const usize count = std::min(k_ChunkTuples, totalCells - offset);
@@ -220,7 +250,11 @@ void ReadChannel5Data::copyRawEbsdData(ebsdlib::CprReader* reader) const
         eulerBuffer[3 * i + 1] = fComp1Ptr[offset + i];
         eulerBuffer[3 * i + 2] = fComp2Ptr[offset + i];
       }
-      eulerStore.copyFromBuffer(offset * 3, nonstd::span<const float32>(eulerBuffer.get(), count * 3));
+      if(Result<> ioResult = eulerStore.copyFromBuffer(offset * 3, nonstd::span<const float32>(eulerBuffer.get(), count * 3)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
   }
+  return {};
 }

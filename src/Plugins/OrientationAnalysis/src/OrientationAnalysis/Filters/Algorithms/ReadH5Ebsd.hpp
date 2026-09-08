@@ -57,9 +57,8 @@ struct ORIENTATIONANALYSIS_EXPORT ReadH5EbsdInputValues
  * bounded-memory operation.
  *
  * The current import and conversion loops do not inspect cancellation. The flag
- * is passed only to optional downstream rotation filters. Several bulk-I/O
- * Result values are also not inspected, so operator() does not report those
- * transfer failures.
+ * is passed only to optional downstream rotation filters. Bulk-I/O and resize
+ * failures propagate from the import helpers.
  */
 class ReadH5Ebsd
 {
@@ -82,7 +81,7 @@ public:
 
   /**
    * @brief Imports selected volume data and applies requested transforms.
-   * @return File, manufacturer, EbsdLib, or rotation-filter errors.
+   * @return File, manufacturer, EbsdLib, store, or rotation-filter errors.
    * @pre Slice bounds and selected destination arrays match the source volume.
    * @pre Cell phase IDs index the imported crystal-structure array.
    * @pre Application::Instance() exists when a sample transform is requested.

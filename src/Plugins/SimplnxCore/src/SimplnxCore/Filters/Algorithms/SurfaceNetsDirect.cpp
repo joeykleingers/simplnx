@@ -150,6 +150,11 @@ Result<> SurfaceNetsDirect::operator()()
 
   // MMSurfaceNet classifies the complete padded grid through direct Feature ID reads.
   MMSurfaceNet surfaceNet(triangleGeomPtr->getVerticesRef().getDataStoreRef(), m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeatureIdsArrayPath), gridDimensions.data(), voxelSize.data());
+  Result<> initializationResult = surfaceNet.takeInitializationResult();
+  if(initializationResult.invalid())
+  {
+    return initializationResult;
+  }
   if(!surfaceNet.getCellMap()->valid())
   {
     return MakeErrorResult(-843870, fmt::format("Could not allocate SurfaceNets internal data structures for grid geometry at path '{}'.", m_InputValues->GridGeomDataPath.toString()));
@@ -177,10 +182,18 @@ Result<> SurfaceNetsDirect::operator()()
   std::array<int, 3> arraySize2 = {0, 0, 0};
   cellMapPtr->getArraySize(arraySize2.data());
 
-  triangleGeom.getVertexAttributeMatrix()->resizeTuples({static_cast<usize>(nodeCount)});
+  Result<> resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({static_cast<usize>(nodeCount)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   auto& nodeTypes = m_DataStructure.getDataAs<Int8Array>(m_InputValues->NodeTypesDataPath)->getDataStoreRef();
-  nodeTypes.resizeTuples({static_cast<usize>(nodeCount)});
+  resizeResult = nodeTypes.resizeTuples({static_cast<usize>(nodeCount)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   // Transform local cell positions and assign junction-count node types.
   Point3Df position = {0.0f, 0.0f, 0.0f};
@@ -250,11 +263,23 @@ Result<> SurfaceNetsDirect::operator()()
     }
   }
 
-  triangleGeom.resizeFaceList(triangleCount);
-  triangleGeom.getFaceAttributeMatrix()->resizeTuples({triangleCount});
+  resizeResult = triangleGeom.resizeFaceList(triangleCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getFaceAttributeMatrix()->resizeTuples({triangleCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   auto& faceLabels = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FaceLabelsDataPath)->getDataStoreRef();
-  faceLabels.resizeTuples({triangleCount});
+  resizeResult = faceLabels.resizeTuples({triangleCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   // Match each selected cell array with its created two-sided face array.
   std::vector<std::shared_ptr<AbstractTupleTransfer>> tupleTransferFunctions;
@@ -501,9 +526,21 @@ Result<> SurfaceNetsDirect::operator()()
       {
         facesRef[i] = static_cast<IGeometry::MeshIndexType>(newVertexIndex[static_cast<usize>(facesRef[i])]);
       }
-      triangleGeom.resizeVertexList(survivingVertexCount);
-      triangleGeom.getVertexAttributeMatrix()->resizeTuples({survivingVertexCount});
-      nodeTypes.resizeTuples({survivingVertexCount});
+      resizeResult = triangleGeom.resizeVertexList(survivingVertexCount);
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
+      resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({survivingVertexCount});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
+      resizeResult = nodeTypes.resizeTuples({survivingVertexCount});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
     }
   }
 

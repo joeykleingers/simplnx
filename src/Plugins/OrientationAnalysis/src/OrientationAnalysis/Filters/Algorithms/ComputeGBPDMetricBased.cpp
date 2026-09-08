@@ -316,15 +316,24 @@ Result<> ComputeGBPDMetricBased::operator()()
   // Feature and ensemble caches prevent random per-triangle OOC access.
   const usize numEulerElements = eulerAngles.getSize();
   std::vector<float32> eulerCache(numEulerElements);
-  eulerAngles.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(eulerCache.data(), numEulerElements));
+  if(Result<> ioResult = eulerAngles.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(eulerCache.data(), numEulerElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const usize numPhaseElements = phases.getSize();
   std::vector<int32> phasesCache(numPhaseElements);
-  phases.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phasesCache.data(), numPhaseElements));
+  if(Result<> ioResult = phases.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phasesCache.data(), numPhaseElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const usize numCrystalStructures = crystalStructures.getSize();
   std::vector<uint32> crystalStructuresCache(numCrystalStructures);
-  crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures));
+  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const float64 limitDist = m_InputValues->LimitDist * Constants::k_PiOver180D;
 

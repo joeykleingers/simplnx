@@ -73,7 +73,7 @@ struct ORIENTATIONANALYSIS_EXPORT WritePoleFigureInputValues
  *
  * Mask access remains per tuple through MaskCompareUtilities. An out-of-core mask
  * can cause repeated element access during both scans of every phase. The current
- * algorithm does not inspect cancellation or bulk-I/O Result values.
+ * algorithm does not inspect cancellation. Bulk-I/O failures stop execution.
  *
  * The ImageFormat setting is retained by the input interface, but disk output is
  * currently always PNG. Output geometry and intensity arrays receive bulk writes.
@@ -136,13 +136,10 @@ public:
 
   /**
    * @brief Generates requested intensity, geometry, and PNG outputs.
-   * @return Directory, mask, array-creation, or PNG writer errors that the current implementation inspects.
+   * @return Directory, mask, array-creation, store, resize, or PNG writer errors.
    * @pre Cell phases, Euler angles, and an optional mask have equal tuple counts.
    * @pre Euler tuples have three components and phase IDs index ensemble arrays.
    * @pre Image, Lambert, color, and marker settings satisfy EbsdLib requirements.
-   *
-   * Some dynamic intensity-array creation failures and all bulk-I/O failures are
-   * not returned by the current implementation.
    */
   Result<> operator()();
 

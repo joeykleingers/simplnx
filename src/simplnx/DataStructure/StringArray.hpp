@@ -206,9 +206,12 @@ public:
   /**
    * @brief Changes tuple dimensions.
    * @param tupleShape Specifies tuple dimensions.
+   * @return The string-store resize result. Error -6035 reports a resize failure.
    * @pre The array has a non-null store.
+   *
+   * The result exposes storage failures to callers instead of discarding them.
    */
-  void resizeTuples(const ShapeType& tupleShape) override;
+  [[nodiscard]] Result<> resizeTuples(const ShapeType& tupleShape) override;
 
   /**
    * @brief Replaces the shared string store.

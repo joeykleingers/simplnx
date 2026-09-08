@@ -96,7 +96,7 @@ inline void BuildScalarTestData(DataStructure& ds, const ShapeType& cellShape, D
         }
       }
     }
-    store.copyFromBuffer(z * sliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(store.copyFromBuffer(z * sliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceSize)));
   }
 }
 
@@ -213,8 +213,8 @@ inline void BuildOrientationTestData(DataStructure& ds, const ShapeType& cellSha
         quatsSliceBuffer[bufIdx + 3] = q[3];
       }
     }
-    quatsStore.copyFromBuffer(z * sliceSize * 4, nonstd::span<const float32>(quatsSliceBuffer.data(), sliceSize * 4));
-    phasesStore.copyFromBuffer(z * sliceSize, nonstd::span<const int32>(phasesSliceBuffer.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(quatsStore.copyFromBuffer(z * sliceSize * 4, nonstd::span<const float32>(quatsSliceBuffer.data(), sliceSize * 4)));
+    SIMPLNX_RESULT_REQUIRE_VALID(phasesStore.copyFromBuffer(z * sliceSize, nonstd::span<const int32>(phasesSliceBuffer.data(), sliceSize)));
   }
 
   // The ensemble arrays provide the crystal structure for phase 1.
@@ -270,7 +270,7 @@ inline void BuildSphericalMask(DataStructure& ds, const ShapeType& cellShape, Da
         sliceBuffer[y * dimX + x] = (dx * dx + dy * dy + dz * dz < radius * radius) ? 1 : 0;
       }
     }
-    maskStore.copyFromBuffer(z * sliceSize, nonstd::span<const uint8>(sliceBuffer.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(maskStore.copyFromBuffer(z * sliceSize, nonstd::span<const uint8>(sliceBuffer.data(), sliceSize)));
   }
 }
 

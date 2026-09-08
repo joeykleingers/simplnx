@@ -59,8 +59,16 @@ Result<> ReadStlFile::operator()()
 
   auto& triangleGeom = m_DataStructure.getDataRefAs<TriangleGeom>(m_InputValues->geometryPath);
 
-  triangleGeom.resizeFaceList(triCount);
-  triangleGeom.resizeVertexList(static_cast<usize>(triCount) * 3);
+  Result<> resizeResult = triangleGeom.resizeFaceList(triCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.resizeVertexList(static_cast<usize>(triCount) * 3);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   using SharedTriList = AbstractDataStore<IGeometry::MeshIndexArrayType::value_type>;
   using SharedVertList = AbstractDataStore<IGeometry::SharedVertexList::value_type>;

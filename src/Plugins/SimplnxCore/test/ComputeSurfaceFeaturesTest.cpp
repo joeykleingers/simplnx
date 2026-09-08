@@ -161,7 +161,7 @@ void BuildBlockFeatureIds(DataStructure& ds)
         sliceBuffer[iy * k_BenchDim + ix] = blockId;
       }
     }
-    fidsRef.copyFromBuffer(iz * sliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(fidsRef.copyFromBuffer(iz * sliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceSize)));
   }
 
   AttributeMatrix::Create(ds, Constants::k_CellFeatureData, {static_cast<usize>(k_NumBlockFeatures + 1)}, imageGeom->getId());

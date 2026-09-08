@@ -98,7 +98,7 @@ uint64 HashStore(const AbstractDataStore<T>& store)
   for(usize offset = 0; offset < store.getSize(); offset += buffer.size())
   {
     const usize count = std::min(buffer.size(), store.getSize() - offset);
-    store.copyIntoBuffer(offset, nonstd::span<T>(buffer.data(), count));
+    SIMPLNX_RESULT_REQUIRE_VALID(store.copyIntoBuffer(offset, nonstd::span<T>(buffer.data(), count)));
     for(usize index = 0; index < count; index++)
     {
       uint32 bits = 0;

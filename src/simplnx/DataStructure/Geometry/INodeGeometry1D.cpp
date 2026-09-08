@@ -72,9 +72,14 @@ void INodeGeometry1D::setEdgeListId(const std::optional<IdType>& edgeList)
   m_EdgeDataArrayId = edgeList;
 }
 
-void INodeGeometry1D::resizeEdgeList(usize size)
+Result<> INodeGeometry1D::resizeEdgeList(usize size)
 {
-  getEdgesRef().getIDataStoreRef().resizeTuples({size});
+  Result<> resizeResult = getEdgesRef().getIDataStoreRef().resizeTuples({size});
+  if(resizeResult.invalid())
+  {
+    resizeResult.errors()[0].message = fmt::format("Geometry '{}' failed to resize its edge list to {} tuples: {}", getName(), size, resizeResult.errors()[0].message);
+  }
+  return resizeResult;
 }
 
 usize INodeGeometry1D::getNumberOfCells() const

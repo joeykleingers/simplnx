@@ -74,7 +74,10 @@ Result<> EBSDSegmentFeatures::operator()()
   // Feature tuple zero remains reserved for background cells.
   ShapeType tDims = {static_cast<usize>(m_FoundFeatures + 1)};
   auto& cellFeaturesAM = m_DataStructure.getDataRefAs<AttributeMatrix>(m_InputValues->CellFeatureAttributeMatrixPath);
-  cellFeaturesAM.resizeTuples(tDims);
+  if(Result<> resizeResult = cellFeaturesAM.resizeTuples(tDims); resizeResult.invalid())
+  {
+    return ConvertResult(std::move(resizeResult));
+  }
 
   auto* activeArray = m_DataStructure.getDataAs<UInt8Array>(m_InputValues->ActiveArrayPath);
   activeArray->getDataStore()->fill(1);
@@ -83,7 +86,10 @@ Result<> EBSDSegmentFeatures::operator()()
   // Random IDs improve visual distinction between adjacent features.
   if(m_InputValues->RandomizeFeatureIds)
   {
-    randomizeFeatureIds(m_FeatureIdsArray, m_FoundFeatures + 1);
+    if(Result<> randomizeResult = randomizeFeatureIds(m_FeatureIdsArray, m_FoundFeatures + 1); randomizeResult.invalid())
+    {
+      return ConvertResult(std::move(randomizeResult));
+    }
   }
 
   return {};

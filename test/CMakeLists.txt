@@ -40,6 +40,7 @@ set(SIMPLNX_TEST_SRCS
   EmptyStringStoreTest.cpp
   ExtentTest.cpp
   FilePathGeneratorTest.cpp
+  FilterTest.cpp
   GeometryTest.cpp
   GeometryTestUtilities.hpp
   H5Test.cpp

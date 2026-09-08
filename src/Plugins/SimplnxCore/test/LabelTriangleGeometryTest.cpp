@@ -52,7 +52,7 @@ TEST_CASE("SimplnxCore::LabelTriangleGeometryFilter: Valid Filter Execution", "[
     // This is in here because the exemplar face attribute matrix is not sized correctly. This will
     // correct that value allowing the test to proceed normally.
     auto& exemplarContourTriGeom = dataStructure.getDataRefAs<TriangleGeom>(k_TriangleGeomPath);
-    exemplarContourTriGeom.getVertexAttributeMatrix()->resizeTuples({144});
+    SIMPLNX_RESULT_REQUIRE_VALID(exemplarContourTriGeom.getVertexAttributeMatrix()->resizeTuples({144}));
 
     // Execute the filter and check the result
     auto executeResult = filter.execute(dataStructure, args);

@@ -322,6 +322,10 @@ Result<> EbsdToH5Ebsd::operator()()
     }
   }
 
+  if(m_ShouldCancel)
+  {
+    return MakeErrorResult(-1, "Filter cancelled");
+  }
   Result<> commitResult = atomicFile.commit();
   if(commitResult.invalid())
   {

@@ -72,9 +72,14 @@ void INodeGeometry3D::setPolyhedraList(const SharedFaceList& polyhedra)
   m_PolyhedronListId = polyhedra.getId();
 }
 
-void INodeGeometry3D::resizePolyhedraList(usize size)
+Result<> INodeGeometry3D::resizePolyhedraList(usize size)
 {
-  getPolyhedraRef().getIDataStoreRef().resizeTuples({size});
+  Result<> resizeResult = getPolyhedraRef().getIDataStoreRef().resizeTuples({size});
+  if(resizeResult.invalid())
+  {
+    resizeResult.errors()[0].message = fmt::format("Geometry '{}' failed to resize its polyhedra list to {} tuples: {}", getName(), size, resizeResult.errors()[0].message);
+  }
+  return resizeResult;
 }
 
 usize INodeGeometry3D::getNumberOfPolyhedra() const

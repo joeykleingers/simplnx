@@ -333,7 +333,10 @@ Result<> ComputeTwinBoundaries::operator()()
   const auto& crystalStructuresStore = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath)->getDataStoreRef();
   const usize numCrystalStructures = crystalStructuresStore.getNumberOfTuples();
   std::vector<uint32> crystalStructures(numCrystalStructures);
-  crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), numCrystalStructures));
+  if(Result<> ioResult = crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), numCrystalStructures)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   bool allPhasesCubic = true;
   bool noPhasesCubic = true;
@@ -360,25 +363,37 @@ Result<> ComputeTwinBoundaries::operator()()
   const auto& featurePhasesStore = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath)->getDataStoreRef();
   const usize numFeatures = featurePhasesStore.getNumberOfTuples();
   std::vector<int32> featurePhases(numFeatures);
-  featurePhasesStore.copyIntoBuffer(0, nonstd::span<int32>(featurePhases.data(), numFeatures));
+  if(Result<> ioResult = featurePhasesStore.copyIntoBuffer(0, nonstd::span<int32>(featurePhases.data(), numFeatures)); ioResult.invalid())
+  {
+    return MergeResults(std::move(result), std::move(ioResult));
+  }
 
   const auto& avgQuatsStore = m_DataStructure.getDataAs<Float32Array>(m_InputValues->AvgQuatsArrayPath)->getDataStoreRef();
   std::vector<float32> avgQuats(numFeatures * 4);
-  avgQuatsStore.copyIntoBuffer(0, nonstd::span<float32>(avgQuats.data(), numFeatures * 4));
+  if(Result<> ioResult = avgQuatsStore.copyIntoBuffer(0, nonstd::span<float32>(avgQuats.data(), numFeatures * 4)); ioResult.invalid())
+  {
+    return MergeResults(std::move(result), std::move(ioResult));
+  }
 
   // Face buffers keep workers outside DataStore access.
   const auto& faceLabelsStore = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FaceLabelsArrayPath)->getDataStoreRef();
   const usize numFaces = faceLabelsStore.getNumberOfTuples();
 
   std::vector<int32> faceLabels(numFaces * 2);
-  faceLabelsStore.copyIntoBuffer(0, nonstd::span<int32>(faceLabels.data(), numFaces * 2));
+  if(Result<> ioResult = faceLabelsStore.copyIntoBuffer(0, nonstd::span<int32>(faceLabels.data(), numFaces * 2)); ioResult.invalid())
+  {
+    return MergeResults(std::move(result), std::move(ioResult));
+  }
 
   std::vector<float64> faceNormals;
   if(m_InputValues->FindCoherence)
   {
     const auto& faceNormalsStore = m_DataStructure.getDataAs<Float64Array>(m_InputValues->FaceNormalsArrayPath)->getDataStoreRef();
     faceNormals.resize(numFaces * 3);
-    faceNormalsStore.copyIntoBuffer(0, nonstd::span<float64>(faceNormals.data(), numFaces * 3));
+    if(Result<> ioResult = faceNormalsStore.copyIntoBuffer(0, nonstd::span<float64>(faceNormals.data(), numFaces * 3)); ioResult.invalid())
+    {
+      return MergeResults(std::move(result), std::move(ioResult));
+    }
   }
 
   std::vector<uint8> twinBoundariesOut(numFaces, 0);
@@ -426,7 +441,10 @@ Result<> ComputeTwinBoundaries::operator()()
   if(m_InputValues->FindCoherence)
   {
     auto& incoherenceStore = m_DataStructure.getDataAs<Float32Array>(m_InputValues->TwinBoundaryIncoherenceArrayPath)->getDataStoreRef();
-    incoherenceStore.copyFromBuffer(0, nonstd::span<const float32>(twinBoundaryIncoherenceOut.data(), numFaces));
+    if(Result<> ioResult = incoherenceStore.copyFromBuffer(0, nonstd::span<const float32>(twinBoundaryIncoherenceOut.data(), numFaces)); ioResult.invalid())
+    {
+      return MergeResults(std::move(result), std::move(ioResult));
+    }
   }
 
   if(m_InputValues->FindCoherence && hasNaN.load())

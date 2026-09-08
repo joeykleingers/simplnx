@@ -44,7 +44,7 @@ std::vector<int32> CreateRandomizedIdsList(usize totalFeatures)
 
 namespace nx::core::ClusterUtilities
 {
-void RandomizeFeatureIds(Int32AbstractDataStore& featureIdsStore, usize totalFeatures)
+Result<> RandomizeFeatureIds(Int32AbstractDataStore& featureIdsStore, usize totalFeatures)
 {
   std::vector<int32> randomIds = CreateRandomizedIdsList(totalFeatures);
 
@@ -55,16 +55,25 @@ void RandomizeFeatureIds(Int32AbstractDataStore& featureIdsStore, usize totalFea
   for(usize offset = 0; offset < totalPoints; offset += k_ChunkSize)
   {
     usize count = std::min(k_ChunkSize, totalPoints - offset);
-    featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(chunkBuf.data(), count));
+    auto readResult = featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(chunkBuf.data(), count));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       chunkBuf[i] = randomIds[chunkBuf[i]];
     }
-    featureIdsStore.copyFromBuffer(offset, nonstd::span<const int32>(chunkBuf.data(), count));
+    auto writeResult = featureIdsStore.copyFromBuffer(offset, nonstd::span<const int32>(chunkBuf.data(), count));
+    if(writeResult.invalid())
+    {
+      return writeResult;
+    }
   }
+  return {};
 }
 
-void RandomizeFeatureIds(Int32AbstractDataStore& featureIdsStore, usize totalFeatures, std::vector<IArray*>& featureIArrays)
+Result<> RandomizeFeatureIds(Int32AbstractDataStore& featureIdsStore, usize totalFeatures, std::vector<IArray*>& featureIArrays)
 {
   std::vector<int32> randomIds = CreateRandomizedIdsList(totalFeatures);
 
@@ -75,12 +84,20 @@ void RandomizeFeatureIds(Int32AbstractDataStore& featureIdsStore, usize totalFea
   for(usize offset = 0; offset < totalPoints; offset += k_ChunkSize)
   {
     usize count = std::min(k_ChunkSize, totalPoints - offset);
-    featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(chunkBuf.data(), count));
+    auto readResult = featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(chunkBuf.data(), count));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       chunkBuf[i] = randomIds[chunkBuf[i]];
     }
-    featureIdsStore.copyFromBuffer(offset, nonstd::span<const int32>(chunkBuf.data(), count));
+    auto writeResult = featureIdsStore.copyFromBuffer(offset, nonstd::span<const int32>(chunkBuf.data(), count));
+    if(writeResult.invalid())
+    {
+      return writeResult;
+    }
   }
 
   if(!featureIArrays.empty())
@@ -104,5 +121,6 @@ void RandomizeFeatureIds(Int32AbstractDataStore& featureIdsStore, usize totalFea
       }
     }
   }
+  return {};
 }
 } // namespace nx::core::ClusterUtilities

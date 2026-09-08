@@ -53,8 +53,8 @@ struct SIMPLNXCORE_EXPORT WriteStlFileInputValues
  * Grouped modes build resident triangle-index buckets before parallel file writes.
  * Source geometry and label stores use direct per-value access.
  *
- * Each file uses an AtomicFile. Multi-file commits occur sequentially and are
- * not atomic as a group. Some stdio and overflow-commit failures are not returned.
+ * Each file uses an AtomicFile. Multi-file commits occur sequentially and are not
+ * atomic as a group. Some stdio failures are not returned.
  */
 class SIMPLNXCORE_EXPORT WriteStlFile
 {
@@ -80,7 +80,7 @@ public:
 
   /**
    * @brief Writes the selected single or grouped STL outputs.
-   * @return Setup, worker, or reported commit errors, or success after cancellation.
+   * @return The first setup, worker, cancellation, or commit error, or success after completion.
    *
    * Cancellation before commit preserves existing destination files. A later
    * multi-file commit failure can leave earlier files published.

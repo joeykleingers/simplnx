@@ -37,16 +37,25 @@ struct ExecuteFlyingEdgesFunctor
     {
       return result;
     }
-    flyingEdges.pass3();
+    if(Result<> result = flyingEdges.pass3(); result.invalid())
+    {
+      return result;
+    }
 
     // Pass 3 resizes normals. Keep the parent AttributeMatrix consistent.
-    normAM.resizeTuples(normals.getTupleShape());
+    if(Result<> result = normAM.resizeTuples(normals.getTupleShape()); result.invalid())
+    {
+      return result;
+    }
 
     if(Result<> result = flyingEdges.pass4(); result.invalid())
     {
       return result;
     }
-    triangleGeom.getFaceAttributeMatrix()->resizeTuples({triangleGeom.getNumberOfFaces()});
+    if(Result<> result = triangleGeom.getFaceAttributeMatrix()->resizeTuples({triangleGeom.getNumberOfFaces()}); result.invalid())
+    {
+      return result;
+    }
     return {};
   }
 };

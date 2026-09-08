@@ -55,7 +55,11 @@ Result<> ErodeDilateBadData::operator()()
     std::vector<int32> sliceBuf(sliceSize);
     for(int64 z = 0; z < dims[2]; z++)
     {
-      featureIds.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(sliceBuf.data(), sliceSize));
+      Result<> readResult = featureIds.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(sliceBuf.data(), sliceSize));
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
       for(usize i = 0; i < sliceSize; i++)
       {
         if(sliceBuf[i] > static_cast<int32>(numFeatures))
@@ -81,7 +85,7 @@ Result<> ErodeDilateBadData::operator()()
     fis.resize(sliceSize);
   }
 
-  auto readFeatureIdSlice = [&](int64 z, usize slot) { featureIds.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(featureIdSlices[slot].data(), sliceSize)); };
+  auto readFeatureIdSlice = [&](int64 z, usize slot) { return featureIds.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(featureIdSlices[slot].data(), sliceSize)); };
 
   // Maps face-neighbor index (0=-Z, 1=-Y, 2=-X, 3=+X, 4=+Y, 5=+Z) to the
   // rolling-window slot that holds the neighbor's Z-slice.
@@ -104,11 +108,16 @@ Result<> ErodeDilateBadData::operator()()
 
   // Commits one Z-slice of marks across all sibling arrays.
   // SliceBufferedTransferOneZ handles the bulk read/copy/write internally.
-  auto transferSlice = [&](usize z, const std::vector<int64>& sliceMarks) {
+  auto transferSlice = [&](usize z, const std::vector<int64>& sliceMarks) -> Result<> {
     for(const auto& voxelArray : voxelArrays)
     {
-      SliceBufferedTransferOneZ(*voxelArray, sliceMarks, sliceSize, z, dimZ);
+      Result<> transferResult = SliceBufferedTransferOneZ(*voxelArray, sliceMarks, sliceSize, z, dimZ);
+      if(transferResult.invalid())
+      {
+        return transferResult;
+      }
     }
+    return {};
   };
 
   // ---- Main iteration loop ----
@@ -124,10 +133,18 @@ Result<> ErodeDilateBadData::operator()()
     }
 
     // Initialize FeatureId rolling window: z=0 -> slot 1, z=1 -> slot 2
-    readFeatureIdSlice(0, 1);
+    Result<> ioResult = readFeatureIdSlice(0, 1);
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     if(dims[2] > 1)
     {
-      readFeatureIdSlice(1, 2);
+      ioResult = readFeatureIdSlice(1, 2);
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
 
     // ---- Z-slice scan loop ----
@@ -142,7 +159,11 @@ Result<> ErodeDilateBadData::operator()()
         std::swap(featureIdSlices[1], featureIdSlices[2]);
         if(zIdx + 1 < dims[2])
         {
-          readFeatureIdSlice(zIdx + 1, 2);
+          ioResult = readFeatureIdSlice(zIdx + 1, 2);
+          if(ioResult.invalid())
+          {
+            return ioResult;
+          }
         }
       }
 
@@ -249,7 +270,11 @@ Result<> ErodeDilateBadData::operator()()
       // Commit z-1 after those marks are complete.
       if(zIdx > 0)
       {
-        transferSlice(static_cast<usize>(zIdx - 1), marks[0]);
+        ioResult = transferSlice(static_cast<usize>(zIdx - 1), marks[0]);
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
 
       // Rotate current and next marks into the previous and current slots.
@@ -261,7 +286,11 @@ Result<> ErodeDilateBadData::operator()()
     // The last slice remains in the previous slot after rotation.
     if(dims[2] > 0)
     {
-      transferSlice(static_cast<usize>(dims[2] - 1), marks[0]);
+      ioResult = transferSlice(static_cast<usize>(dims[2] - 1), marks[0]);
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
 

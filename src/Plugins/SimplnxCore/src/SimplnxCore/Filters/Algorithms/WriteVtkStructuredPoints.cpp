@@ -86,7 +86,7 @@ Result<> WriteArrayPreamble(std::ofstream& outputStream, const DataArray<T>& dat
  * @param outputPath Identifies the destination file.
  * @param arrayPath Identifies the source array for diagnostics.
  * @param shouldCancel Stops before later chunks when true.
- * @return Stream error, or success after completion or cancellation.
+ * @return Stream-write or cancellation error, or success after completion.
  *
  * Little-endian values use a bounded byte-swap buffer. Source values remain unchanged.
  */
@@ -106,7 +106,7 @@ Result<> WriteBinaryDirect(std::ofstream& outputStream, const DataStore<T>& data
   {
     if(shouldCancel)
     {
-      return {};
+      return MakeErrorResult(-1, "Filter cancelled");
     }
 
     const usize count = std::min(chunkCapacity, totalValues - offset);
@@ -160,7 +160,7 @@ Result<> ReadChunk(const AbstractDataStore<T>& dataStore, usize offset, nonstd::
  * @param outputPath Identifies the destination file.
  * @param arrayPath Identifies the source array for diagnostics.
  * @param shouldCancel Stops before later chunks when true.
- * @return Source-read or stream-write error, or success after cancellation.
+ * @return Source-read, stream-write, or cancellation error, or success after completion.
  */
 template <typename T>
 Result<> WriteBinaryBulk(std::ofstream& outputStream, const AbstractDataStore<T>& dataStore, const fs::path& outputPath, const DataPath& arrayPath, const std::atomic_bool& shouldCancel)
@@ -173,7 +173,7 @@ Result<> WriteBinaryBulk(std::ofstream& outputStream, const AbstractDataStore<T>
   {
     if(shouldCancel)
     {
-      return {};
+      return MakeErrorResult(-1, "Filter cancelled");
     }
 
     const usize count = std::min(chunkCapacity, totalValues - offset);
@@ -248,7 +248,7 @@ void WriteAsciiValues(std::ofstream& outputStream, const T* values, usize count,
  * @param outputPath Identifies the destination file.
  * @param arrayPath Identifies the source array for diagnostics.
  * @param shouldCancel Stops before later chunks when true.
- * @return Stream error, or success after completion or cancellation.
+ * @return Stream-write or cancellation error, or success after completion.
  */
 template <typename T>
 Result<> WriteAsciiDirect(std::ofstream& outputStream, const DataStore<T>& dataStore, const fs::path& outputPath, const DataPath& arrayPath, const std::atomic_bool& shouldCancel)
@@ -262,7 +262,7 @@ Result<> WriteAsciiDirect(std::ofstream& outputStream, const DataStore<T>& dataS
   {
     if(shouldCancel)
     {
-      return {};
+      return MakeErrorResult(-1, "Filter cancelled");
     }
 
     const usize count = std::min(k_ChunkCapacity, totalValues - offset);
@@ -286,7 +286,7 @@ Result<> WriteAsciiDirect(std::ofstream& outputStream, const DataStore<T>& dataS
  * @param outputPath Identifies the destination file.
  * @param arrayPath Identifies the source array for diagnostics.
  * @param shouldCancel Stops before later chunks when true.
- * @return Source-read or stream-write error, or success after cancellation.
+ * @return Source-read, stream-write, or cancellation error, or success after completion.
  */
 template <typename T>
 Result<> WriteAsciiBulk(std::ofstream& outputStream, const AbstractDataStore<T>& dataStore, const fs::path& outputPath, const DataPath& arrayPath, const std::atomic_bool& shouldCancel)
@@ -300,7 +300,7 @@ Result<> WriteAsciiBulk(std::ofstream& outputStream, const AbstractDataStore<T>&
   {
     if(shouldCancel)
     {
-      return {};
+      return MakeErrorResult(-1, "Filter cancelled");
     }
 
     const usize count = std::min(k_ChunkCapacity, totalValues - offset);
@@ -337,7 +337,7 @@ struct WriteVtkDataDirectFunctor
    * @param outputPath Identifies the destination file.
    * @param arrayPath Identifies the source array.
    * @param shouldCancel Stops before later chunks when true.
-   * @return Source-read or stream-write error, or success after cancellation.
+   * @return Source-read, stream-write, or cancellation error, or success after completion.
    */
   template <typename T>
   Result<> operator()(std::ofstream& outputStream, IDataArray& iDataArray, bool binary, const fs::path& outputPath, const DataPath& arrayPath, const std::atomic_bool& shouldCancel) const
@@ -375,7 +375,7 @@ struct WriteVtkDataScanlineFunctor
    * @param outputPath Identifies the destination file.
    * @param arrayPath Identifies the source array.
    * @param shouldCancel Stops before later chunks when true.
-   * @return Source-read or stream-write error, or success after cancellation.
+   * @return Source-read, stream-write, or cancellation error, or success after completion.
    */
   template <typename T>
   Result<> operator()(std::ofstream& outputStream, IDataArray& iDataArray, bool binary, const fs::path& outputPath, const DataPath& arrayPath, const std::atomic_bool& shouldCancel) const
@@ -420,7 +420,7 @@ public:
 
   /**
    * @brief Dispatches the source scalar type.
-   * @return Source-read or stream-write error, or success after cancellation.
+   * @return Source-read, stream-write, or cancellation error, or success after completion.
    */
   Result<> operator()()
   {
@@ -464,7 +464,7 @@ public:
 
   /**
    * @brief Dispatches the source scalar type.
-   * @return Source-read or stream-write error, or success after cancellation.
+   * @return Source-read, stream-write, or cancellation error, or success after completion.
    */
   Result<> operator()()
   {
@@ -523,14 +523,16 @@ Result<> WriteVtkStructuredPoints::operator()()
     return MakeErrorResult(k_WriteError, fmt::format("Failed to write the VTK header to file '{}'. Check that the destination has sufficient free space and is writable.", vtkOutPath.string()));
   }
 
-  Result<> result;
   for(const auto& arrayPath : m_InputValues->SelectedDataArrayPaths)
   {
     m_MessageHandler({IFilter::Message::Type::Info, fmt::format("Writing {}", arrayPath.toString())});
     auto& dataArray = m_DataStructure.getDataRefAs<IDataArray>(arrayPath);
     auto writeResult = DispatchAlgorithm<WriteVtkDataDirect, WriteVtkDataScanline>({&dataArray}, outStrm, dataArray, m_InputValues->WriteBinaryFile, vtkOutPath, arrayPath, m_ShouldCancel);
-    result = MergeResults(result, std::move(writeResult));
+    if(writeResult.invalid())
+    {
+      return writeResult;
+    }
   }
 
-  return result;
+  return {};
 }

@@ -41,9 +41,8 @@ struct SIMPLNXCORE_EXPORT RequireMinimumSizeFeaturesInputValues
  * array ahead of Feature IDs, so canceled output must be discarded.
  *
  * Resident scratch is feature-scale active and renumber state, one fixed Feature
- * ID chunk, and rolling slices for one cell array. The marking pass discards its
- * bulk-I/O results. The final feature-compaction return value is also discarded.
- * Either condition can make this method return success with partial output.
+ * ID chunk, and rolling slices for one cell array. The method returns the first
+ * marking, transfer, or feature-compaction error.
  */
 class SIMPLNXCORE_EXPORT RequireMinimumSizeFeatures
 {
@@ -100,15 +99,14 @@ protected:
    * @param applyToSinglePhase True to restrict removal to phaseNumber.
    * @param minAllowedFeatureSize Minimum retained cell count.
    * @param errorReturn Receives the all-removed error.
-   * @return Active flags indexed by original Feature ID. Returns empty after cancellation.
+   * @return Active flags, cancellation result, or the first bulk-I/O error.
    * @pre featurePhases is not null when applyToSinglePhase is true.
    * @pre Nonnegative Feature IDs index the returned active flags.
    *
-   * Bulk-I/O results are not inspected. Cancellation or a storage failure can
-   * leave earlier Feature ID chunks compacted.
+   * Cancellation or a storage failure can leave earlier Feature ID chunks compacted.
    */
-  std::vector<bool> removeSmallFeatures(Int32AbstractDataStore& featureIdsStoreRef, const Int32AbstractDataStore& featureNumCellsStoreRef, const Int32AbstractDataStore* featurePhases,
-                                        int32_t phaseNumber, bool applyToSinglePhase, int64 minAllowedFeatureSize, Error& errorReturn);
+  Result<std::vector<bool>> removeSmallFeatures(Int32AbstractDataStore& featureIdsStoreRef, const Int32AbstractDataStore& featureNumCellsStoreRef, const Int32AbstractDataStore* featurePhases,
+                                                int32_t phaseNumber, bool applyToSinglePhase, int64 minAllowedFeatureSize, Error& errorReturn);
 
 private:
   DataStructure& m_DataStructure;

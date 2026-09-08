@@ -348,9 +348,7 @@ Result<> RectGridGeom::findElementSizes(bool recalculate)
   }
 
   // Copy each bounds array once and calculate axis spacings in memory. This
-  // avoids per-voxel virtual and cache access for out-of-core stores. The
-  // current implementation does not inspect bulk-I/O Results from these reads
-  // or the slice writes below.
+  // avoids per-voxel virtual and cache access for out-of-core stores.
   const usize dimX = m_Dimensions[0];
   const usize dimY = m_Dimensions[1];
   const usize dimZ = m_Dimensions[2];
@@ -358,9 +356,24 @@ Result<> RectGridGeom::findElementSizes(bool recalculate)
   std::vector<float32> xBndsBuf(dimX + 1);
   std::vector<float32> yBndsBuf(dimY + 1);
   std::vector<float32> zBndsBuf(dimZ + 1);
-  xBnds->getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(xBndsBuf.data(), xBndsBuf.size()));
-  yBnds->getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(yBndsBuf.data(), yBndsBuf.size()));
-  zBnds->getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(zBndsBuf.data(), zBndsBuf.size()));
+  Result<> readResult = xBnds->getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(xBndsBuf.data(), xBndsBuf.size()));
+  if(readResult.invalid())
+  {
+    m_ElementSizesId.reset();
+    return readResult;
+  }
+  readResult = yBnds->getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(yBndsBuf.data(), yBndsBuf.size()));
+  if(readResult.invalid())
+  {
+    m_ElementSizesId.reset();
+    return readResult;
+  }
+  readResult = zBnds->getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(zBndsBuf.data(), zBndsBuf.size()));
+  if(readResult.invalid())
+  {
+    m_ElementSizesId.reset();
+    return readResult;
+  }
 
   std::vector<float32> xRes(dimX);
   std::vector<float32> yRes(dimY);
@@ -408,7 +421,12 @@ Result<> RectGridGeom::findElementSizes(bool recalculate)
         sliceBuf[y * dimX + x] = xRes[x] * yzRes;
       }
     }
-    sizeStoreRef.copyFromBuffer(z * sliceSize, nonstd::span<const float32>(sliceBuf.data(), sliceSize));
+    Result<> writeResult = sizeStoreRef.copyFromBuffer(z * sliceSize, nonstd::span<const float32>(sliceBuf.data(), sliceSize));
+    if(writeResult.invalid())
+    {
+      m_ElementSizesId.reset();
+      return writeResult;
+    }
   }
 
   m_ElementSizesId = sizeArray->getId();

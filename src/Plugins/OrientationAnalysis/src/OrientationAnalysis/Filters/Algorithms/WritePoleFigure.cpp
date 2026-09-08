@@ -187,7 +187,12 @@ public:
     }
   }
 
-  int writeLambertData(ebsdlib::ModifiedLambertProjection::Pointer lambert) const
+  /**
+   * @brief Writes offline Lambert-projection diagnostics.
+   * @param lambert Supplies the northern and southern Lambert squares.
+   * @return HDF5 status or the first temporary-geometry resize error.
+   */
+  Result<int32> writeLambertData(ebsdlib::ModifiedLambertProjection::Pointer lambert) const
   {
     int err = -1;
 
@@ -276,7 +281,7 @@ public:
     Result result = ArrayCreationUtilities::CreateArray<IGeometry::MeshIndexType>(dataStructure, faceTupleShape, {3ULL}, sharedFaceListPath, IDataAction::Mode::Execute);
     if(result.invalid())
     {
-      return -1;
+      return ConvertInvalidResult<int32>(std::move(result));
       // return MergeResults(result, MakeErrorResult(-5509, fmt::format("{}CreateGeometry2DAction: Could not allocate SharedTriList '{}'", prefix, trianglesPath.toString())));
     }
     auto& sharedFaceListRef = dataStructure.getDataRefAs<IGeometry::MeshIndexArrayType>(sharedFaceListPath);
@@ -289,7 +294,7 @@ public:
     result = ArrayCreationUtilities::CreateArray<float32>(dataStructure, vertexTupleShape, {3}, vertexPath, IDataAction::Mode::Execute);
     if(result.invalid())
     {
-      return -2;
+      return ConvertInvalidResult<int32>(std::move(result));
       // return MergeResults(result, MakeErrorResult(-5510, fmt::format("{}CreateGeometry2DAction: Could not allocate SharedVertList '{}'", prefix, vertexPath.toString())));
     }
     auto* vertexArray = dataStructure.getDataAs<Float32Array>(vertexPath);
@@ -298,19 +303,25 @@ public:
       throw std::runtime_error(fmt::format("DataPath does not point to a DataArray. DataPath: '{}'", vertexPath.toString()));
     }
     triangleGeom.setVertices(*vertexArray);
-    triangleGeom.resizeVertexList(numPts);
+    if(Result<> resizeResult = triangleGeom.resizeVertexList(numPts); resizeResult.invalid())
+    {
+      return ConvertInvalidResult<int32>(std::move(resizeResult));
+    }
 
     auto* vertexAttributeMatrix = AttributeMatrix::Create(dataStructure, "VertexData", {numPts}, triangleGeom.getId());
     if(vertexAttributeMatrix == nullptr)
     {
-      return -3;
+      return MakeErrorResult<int32>(-3, fmt::format("Failed to create the temporary vertex Attribute Matrix with shape ({} tuples) for Lambert diagnostics.", numPts));
       // return MakeErrorResult(-5512, fmt::format("CreateGeometry2DAction: Failed to create attribute matrix: '{}'", prefix, vertexDataPath.toString()));
     }
     triangleGeom.setVertexAttributeMatrix(*vertexAttributeMatrix);
 
     if(nullptr != triangleGeom.getVertexAttributeMatrix())
     {
-      triangleGeom.getVertexAttributeMatrix()->resizeTuples({numPts});
+      if(Result<> resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({numPts}); resizeResult.invalid())
+      {
+        return ConvertInvalidResult<int32>(std::move(resizeResult));
+      }
     }
     auto vertexCoordsPtr = triangleGeom.getVerticesRef();
 
@@ -329,7 +340,10 @@ public:
     nx::delaunator::Delaunator d(coords);
 
     usize numTriangles = d.triangles.size();
-    triangleGeom.resizeFaceList(numTriangles / 3);
+    if(Result<> resizeResult = triangleGeom.resizeFaceList(numTriangles / 3); resizeResult.invalid())
+    {
+      return ConvertInvalidResult<int32>(std::move(resizeResult));
+    }
     auto sharedTriListPtr = triangleGeom.getFacesRef();
     // usize triangleIndex = 0;
     for(usize i = 0; i < numTriangles; i += 3)
@@ -344,7 +358,7 @@ public:
     auto* faceAttributeMatrix = AttributeMatrix::Create(dataStructure, "Face Data", {numTriangles / 3}, triangleGeom.getId());
     if(faceAttributeMatrix == nullptr)
     {
-      return -4;
+      return MakeErrorResult<int32>(-4, fmt::format("Failed to create the temporary face Attribute Matrix with shape ({} tuples) for Lambert diagnostics.", numTriangles / 3));
       // return MakeErrorResult(-5511, fmt::format("{}CreateGeometry2DAction: Failed to create attribute matrix: '{}'", prefix, faceDataPath.toString()));
     }
     triangleGeom.setFaceAttributeMatrix(*faceAttributeMatrix);
@@ -400,7 +414,7 @@ public:
       err = H5Support::H5Lite::writePointerDataset(groupId, "Interpolated Values", 1, dims.data(), outputValues.data());
     }
 
-    return err;
+    return {err};
   }
 
 private:
@@ -544,7 +558,10 @@ Result<> WritePoleFigure::operator()()
   auto& imageGeom = m_DataStructure.getDataRefAs<ImageGeom>(m_InputValues->OutputImageGeometryPath);
   auto cellAttrMatPath = imageGeom.getCellDataPath();
   imageGeom.setDimensions({static_cast<usize>(m_InputValues->ImageSize), static_cast<usize>(m_InputValues->ImageSize), 1});
-  imageGeom.getCellData()->resizeTuples(tupleShape);
+  if(Result<> resizeResult = imageGeom.getCellData()->resizeTuples(tupleShape); resizeResult.invalid())
+  {
+    return ConvertResult(std::move(resizeResult));
+  }
 
   // Phase and Euler page buffers total one MiB. MaskCompareUtilities does not
   // use this page and can still perform per-tuple store access.
@@ -562,7 +579,10 @@ Result<> WritePoleFigure::operator()()
     for(usize chunkStart = 0; chunkStart < numPoints; chunkStart += k_StreamChunkTuples)
     {
       const usize chunkLen = std::min(k_StreamChunkTuples, numPoints - chunkStart);
-      phases.getDataStoreRef().copyIntoBuffer(chunkStart, nonstd::span<int32>(phaseChunk.data(), chunkLen));
+      if(Result<> ioResult = phases.getDataStoreRef().copyIntoBuffer(chunkStart, nonstd::span<int32>(phaseChunk.data(), chunkLen)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
       for(usize i = 0; i < chunkLen; ++i)
       {
         if(phaseChunk[i] == static_cast<int32>(phase))
@@ -585,8 +605,14 @@ Result<> WritePoleFigure::operator()()
     for(usize chunkStart = 0; chunkStart < numPoints; chunkStart += k_StreamChunkTuples)
     {
       const usize chunkLen = std::min(k_StreamChunkTuples, numPoints - chunkStart);
-      phases.getDataStoreRef().copyIntoBuffer(chunkStart, nonstd::span<int32>(phaseChunk.data(), chunkLen));
-      eulerAngles.getDataStoreRef().copyIntoBuffer(chunkStart * 3, nonstd::span<float32>(eulerChunk.data(), chunkLen * 3));
+      if(Result<> ioResult = phases.getDataStoreRef().copyIntoBuffer(chunkStart, nonstd::span<int32>(phaseChunk.data(), chunkLen)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
+      if(Result<> ioResult = eulerAngles.getDataStoreRef().copyIntoBuffer(chunkStart * 3, nonstd::span<float32>(eulerChunk.data(), chunkLen * 3)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
       for(usize i = 0; i < chunkLen; ++i)
       {
         if(phaseChunk[i] == static_cast<int32>(phase))
@@ -668,18 +694,29 @@ Result<> WritePoleFigure::operator()()
       {
         DataPath amPath = m_InputValues->IntensityGeometryDataPath.createChildPath(write_pole_figure::k_ImageAttrMatName);
         // Preflight creates phase-one arrays. Later phases create their arrays here.
-        // The current implementation does not inspect these creation Results.
         if(phase > 1)
         {
           const std::vector<size_t> intensityImageDims = {static_cast<usize>(config.imageDim), static_cast<usize>(config.imageDim), 1ULL};
           DataPath arrayDataPath = amPath.createChildPath(fmt::format("Phase_{}_{}", phase, m_InputValues->IntensityPlot1Name));
-          Result<> result = ArrayCreationUtilities::CreateArray<float64>(m_DataStructure, intensityImageDims, {1ULL}, arrayDataPath, IDataAction::Mode::Execute);
+          Result<> creationResult = ArrayCreationUtilities::CreateArray<float64>(m_DataStructure, intensityImageDims, {1ULL}, arrayDataPath, IDataAction::Mode::Execute);
+          if(creationResult.invalid())
+          {
+            return ConvertResult(std::move(creationResult));
+          }
 
           arrayDataPath = amPath.createChildPath(fmt::format("Phase_{}_{}", phase, m_InputValues->IntensityPlot2Name));
-          result = ArrayCreationUtilities::CreateArray<float64>(m_DataStructure, intensityImageDims, {1ULL}, arrayDataPath, IDataAction::Mode::Execute);
+          creationResult = ArrayCreationUtilities::CreateArray<float64>(m_DataStructure, intensityImageDims, {1ULL}, arrayDataPath, IDataAction::Mode::Execute);
+          if(creationResult.invalid())
+          {
+            return ConvertResult(std::move(creationResult));
+          }
 
           arrayDataPath = amPath.createChildPath(fmt::format("Phase_{}_{}", phase, m_InputValues->IntensityPlot3Name));
-          result = ArrayCreationUtilities::CreateArray<float64>(m_DataStructure, intensityImageDims, {1ULL}, arrayDataPath, IDataAction::Mode::Execute);
+          creationResult = ArrayCreationUtilities::CreateArray<float64>(m_DataStructure, intensityImageDims, {1ULL}, arrayDataPath, IDataAction::Mode::Execute);
+          if(creationResult.invalid())
+          {
+            return ConvertResult(std::move(creationResult));
+          }
         }
 
         auto intensityPlot1Array = m_DataStructure.getDataRefAs<Float64Array>(amPath.createChildPath(fmt::format("Phase_{}_{}", phase, m_InputValues->IntensityPlot1Name)));
@@ -692,26 +729,37 @@ Result<> WritePoleFigure::operator()()
           intensityImages[imageIndex] = flipAndMirrorPoleFigure<double>(intensityImages[imageIndex].get(), config);
         }
 
-        // Each intensity image uses one destination transfer. The current
-        // implementation does not inspect the transfer Result.
+        // Each intensity image uses one destination transfer.
         {
           const usize plotElems = static_cast<usize>(intensityImages[0]->getNumberOfTuples()) * intensityImages[0]->getNumberOfComponents();
-          intensityPlot1Array.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(intensityImages[0]->getPointer(0), plotElems));
+          if(Result<> ioResult = intensityPlot1Array.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(intensityImages[0]->getPointer(0), plotElems)); ioResult.invalid())
+          {
+            return ConvertResult(std::move(ioResult));
+          }
         }
         {
           const usize plotElems = static_cast<usize>(intensityImages[1]->getNumberOfTuples()) * intensityImages[1]->getNumberOfComponents();
-          intensityPlot2Array.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(intensityImages[1]->getPointer(0), plotElems));
+          if(Result<> ioResult = intensityPlot2Array.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(intensityImages[1]->getPointer(0), plotElems)); ioResult.invalid())
+          {
+            return ConvertResult(std::move(ioResult));
+          }
         }
         {
           const usize plotElems = static_cast<usize>(intensityImages[2]->getNumberOfTuples()) * intensityImages[2]->getNumberOfComponents();
-          intensityPlot3Array.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(intensityImages[2]->getPointer(0), plotElems));
+          if(Result<> ioResult = intensityPlot3Array.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(intensityImages[2]->getPointer(0), plotElems)); ioResult.invalid())
+          {
+            return ConvertResult(std::move(ioResult));
+          }
         }
 
         DataPath metaDataPath = m_InputValues->IntensityGeometryDataPath.createChildPath(write_pole_figure::k_MetaDataName);
         auto metaDataArrayRef = m_DataStructure.getDataRefAs<StringArray>(metaDataPath);
         if(metaDataArrayRef.getNumberOfTuples() != numPhases)
         {
-          metaDataArrayRef.resizeTuples(std::vector<usize>{numPhases});
+          if(Result<> resizeResult = metaDataArrayRef.resizeTuples(std::vector<usize>{numPhases}); resizeResult.invalid())
+          {
+            return ConvertResult(std::move(resizeResult));
+          }
         }
 
         std::vector<std::string> laueNames = ebsdlib::LaueOps::GetLaueNames();
@@ -764,7 +812,10 @@ Result<> WritePoleFigure::operator()()
       {
         // Match the output geometry to the composite page.
         imageGeom.setDimensions({static_cast<usize>(pageWidth), static_cast<usize>(pageHeight), 1});
-        imageGeom.getCellData()->resizeTuples({1, static_cast<usize>(pageHeight), static_cast<usize>(pageWidth)});
+        if(Result<> resizeResult = imageGeom.getCellData()->resizeTuples({1, static_cast<usize>(pageHeight), static_cast<usize>(pageWidth)}); resizeResult.invalid())
+        {
+          return ConvertResult(std::move(resizeResult));
+        }
         tupleShape[0] = 1;
         tupleShape[1] = pageHeight;
         tupleShape[2] = pageWidth;
@@ -775,8 +826,7 @@ Result<> WritePoleFigure::operator()()
           return arrayCreationResult;
         }
 
-        // Pack RGB components from the RGBA composite and use one destination
-        // transfer. The current implementation does not inspect its Result.
+        // Pack RGB components from the RGBA composite and use one destination transfer.
         auto& imageData = m_DataStructure.getDataRefAs<UInt8Array>(imageArrayPath);
         imageData.fill(0);
         const usize tupleCount = static_cast<usize>(pageHeight) * pageWidth;
@@ -788,7 +838,10 @@ Result<> WritePoleFigure::operator()()
           rgbBuf[t * 3 + 1] = rgbaPtr[t * 4 + 1];
           rgbBuf[t * 3 + 2] = rgbaPtr[t * 4 + 2];
         }
-        imageData.getDataStoreRef().copyFromBuffer(0, nonstd::span<const uint8>(rgbBuf.data(), rgbBuf.size()));
+        if(Result<> ioResult = imageData.getDataStoreRef().copyFromBuffer(0, nonstd::span<const uint8>(rgbBuf.data(), rgbBuf.size())); ioResult.invalid())
+        {
+          return ConvertResult(std::move(ioResult));
+        }
       }
 
       if(m_InputValues->WriteImageToDisk)

@@ -227,9 +227,9 @@ usize StringArray::getNumberOfComponents() const
   return 1;
 }
 
-void StringArray::resizeTuples(const ShapeType& tupleShape)
+Result<> StringArray::resizeTuples(const ShapeType& tupleShape)
 {
-  m_Strings->resizeTuples(tupleShape);
+  return m_Strings->resizeTuples(tupleShape);
 }
 
 void StringArray::swapTuples(usize index0, usize index1)

@@ -575,16 +575,16 @@ void BuildTestData(DataStructure& dataStructure, usize dimX, usize dimY, usize d
       }
     }
     const usize zOffset = z * sliceSize;
-    quatsStore.copyFromBuffer(zOffset * 4, nonstd::span<const float32>(quatsBuf.data(), sliceSize * 4));
-    phasesStore.copyFromBuffer(zOffset, nonstd::span<const int32>(phasesBuf.data(), sliceSize));
-    ciStore.copyFromBuffer(zOffset, nonstd::span<const float32>(ciBuf.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(quatsStore.copyFromBuffer(zOffset * 4, nonstd::span<const float32>(quatsBuf.data(), sliceSize * 4)));
+    SIMPLNX_RESULT_REQUIRE_VALID(phasesStore.copyFromBuffer(zOffset, nonstd::span<const int32>(phasesBuf.data(), sliceSize)));
+    SIMPLNX_RESULT_REQUIRE_VALID(ciStore.copyFromBuffer(zOffset, nonstd::span<const float32>(ciBuf.data(), sliceSize)));
   }
 
   auto* ensembleAM = AttributeMatrix::Create(dataStructure, "Ensemble Data", {2}, imageGeom->getId());
   auto crystalStructuresDataStore = DataStoreUtilities::CreateDataStore<uint32>(dataStructure, k_CrystalStructuresPath, {2}, {1}, IDataAction::Mode::Execute);
   auto* crystalStructuresArray = DataArray<uint32>::Create(dataStructure, "CrystalStructures", crystalStructuresDataStore, ensembleAM->getId());
   std::array<uint32, 2> csData = {999, 1};
-  crystalStructuresArray->getDataStoreRef().copyFromBuffer(0, nonstd::span<const uint32>(csData.data(), 2));
+  SIMPLNX_RESULT_REQUIRE_VALID(crystalStructuresArray->getDataStoreRef().copyFromBuffer(0, nonstd::span<const uint32>(csData.data(), 2)));
 }
 } // namespace NOCOocTest
 

@@ -481,9 +481,21 @@ Result<> SurfaceNetsScanline::operator()()
   }
   try
   {
-    verticesStore.resizeTuples(ShapeType{numVertices});
-    triangleGeom.getVertexAttributeMatrix()->resizeTuples({numVertices});
-    nodeTypes.resizeTuples({numVertices});
+    Result<> resizeResult = verticesStore.resizeTuples(ShapeType{numVertices});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({numVertices});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = nodeTypes.resizeTuples({numVertices});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   } catch(const std::bad_alloc&)
   {
     return MakeErrorResult(-56333, "SurfaceNets could not resize its vertex outputs.");
@@ -810,9 +822,21 @@ Result<> SurfaceNetsScanline::operator()()
       }
     }
     numVertices = survivingVertexCount;
-    verticesStore.resizeTuples(ShapeType{numVertices});
-    triangleGeom.getVertexAttributeMatrix()->resizeTuples({numVertices});
-    nodeTypes.resizeTuples({numVertices});
+    Result<> resizeResult = verticesStore.resizeTuples(ShapeType{numVertices});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({numVertices});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = nodeTypes.resizeTuples({numVertices});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   }
 
   auto recordFlushResult = m_SurfaceCellCache->flush(m_ShouldCancel);
@@ -892,9 +916,21 @@ Result<> SurfaceNetsScanline::operator()()
   auto& faceLabels = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FaceLabelsDataPath)->getDataStoreRef();
   try
   {
-    triangleGeom.resizeFaceList(triangleCount);
-    triangleGeom.getFaceAttributeMatrix()->resizeTuples({triangleCount});
-    faceLabels.resizeTuples({triangleCount});
+    Result<> resizeResult = triangleGeom.resizeFaceList(triangleCount);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = triangleGeom.getFaceAttributeMatrix()->resizeTuples({triangleCount});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = faceLabels.resizeTuples({triangleCount});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   } catch(const std::bad_alloc&)
   {
     return MakeErrorResult(-56334, "SurfaceNets could not resize its face outputs.");

@@ -120,8 +120,9 @@ private:
   /**
    * @brief Transfers parsed cell data through bounded bulk I/O.
    * @param reader Provides parsed Channel 5 data.
+   * @return Success, cancellation, or the first store write error.
    */
-  void copyRawEbsdData(ebsdlib::CprReader* reader) const;
+  Result<> copyRawEbsdData(ebsdlib::CprReader* reader) const;
 };
 
 } // namespace nx::core

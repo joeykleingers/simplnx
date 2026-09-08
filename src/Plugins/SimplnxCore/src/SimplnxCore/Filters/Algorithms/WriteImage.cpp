@@ -155,7 +155,12 @@ struct ExtractSliceFunctor
   {
     const auto& dataStore = dataArray.template getIDataStoreRefAs<AbstractDataStore<T>>();
     const Extent sliceExtent = CreateSliceExtent(planeIndex, sliceIndex, dimX, dimY, dimZ);
-    const std::vector<T> sliceValues = dataStore.readExtent(sliceExtent);
+    Result<std::vector<T>> sliceResult = dataStore.readExtent(sliceExtent);
+    if(sliceResult.invalid())
+    {
+      return ConvertResult(std::move(sliceResult));
+    }
+    const std::vector<T>& sliceValues = sliceResult.value();
     const usize expectedElements = static_cast<usize>(sliceExtent.totalElements()) * nComp;
     if(sliceValues.size() != expectedElements)
     {
@@ -194,13 +199,18 @@ Result<std::vector<uint8>> ReadMaskSlice(const IDataArray* maskArray, const Exte
   if(maskArray->getDataType() == DataType::boolean)
   {
     const auto& maskStore = maskArray->getIDataStoreRefAs<AbstractDataStore<bool>>();
-    const std::vector<bool> boolMask = maskStore.readExtent(extent);
+    Result<std::vector<bool>> maskResult = maskStore.readExtent(extent);
+    if(maskResult.invalid())
+    {
+      return ConvertInvalidResult<std::vector<uint8>>(std::move(maskResult));
+    }
+    const std::vector<bool>& boolMask = maskResult.value();
     std::vector<uint8> mask(boolMask.size());
     std::transform(boolMask.cbegin(), boolMask.cend(), mask.begin(), [](bool value) { return value ? uint8{1} : uint8{0}; });
     return {std::move(mask)};
   }
   const auto& maskStore = maskArray->getIDataStoreRefAs<AbstractDataStore<uint8>>();
-  return {maskStore.readExtent(extent)};
+  return maskStore.readExtent(extent);
 }
 
 /**
@@ -287,7 +297,12 @@ struct ColorizeVolumeFunctor
       }
 
       const Extent sliceExtent = CreateSliceExtent(planeIndex, slice, dimX, dimY, dimZ);
-      const std::vector<T> sliceValues = dataStore.readExtent(sliceExtent);
+      Result<std::vector<T>> sliceResult = dataStore.readExtent(sliceExtent);
+      if(sliceResult.invalid())
+      {
+        return ConvertResult(std::move(sliceResult));
+      }
+      const std::vector<T>& sliceValues = sliceResult.value();
       const usize pixelCount = sliceW * sliceH;
       if(sliceValues.size() != pixelCount)
       {
@@ -466,6 +481,10 @@ Result<> WriteImage::operator()()
     if(writeResult.invalid())
     {
       return writeResult;
+    }
+    if(m_ShouldCancel)
+    {
+      return MakeErrorResult(-1, "Filter cancelled");
     }
     return atomicFile.commit();
   };

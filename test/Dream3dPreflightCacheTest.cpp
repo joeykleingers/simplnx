@@ -177,7 +177,7 @@ TEST_CASE("Dream3dPreflightCache: handouts are isolated from master and each oth
   REQUIRE(stringsA->isPlaceholder());
   REQUIRE(stringsB->isPlaceholder());
   REQUIRE(stringsC->isPlaceholder());
-  stringsA->resizeTuples(ShapeType{5});
+  REQUIRE(stringsA->resizeTuples(ShapeType{5}).valid());
   REQUIRE(stringsA->getNumberOfTuples() == 5);
   REQUIRE(stringsB->getNumberOfTuples() == 2);
   REQUIRE(stringsC->getNumberOfTuples() == 2);

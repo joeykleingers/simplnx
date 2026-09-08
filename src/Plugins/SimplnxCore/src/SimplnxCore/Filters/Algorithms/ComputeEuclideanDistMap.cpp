@@ -6,6 +6,7 @@
 #include "simplnx/DataStructure/DataStore.hpp"
 #include "simplnx/DataStructure/Geometry/ImageGeom.hpp"
 #include "simplnx/Utilities/AlgorithmDispatch.hpp"
+#include "simplnx/Utilities/DataArrayUtilities.hpp"
 #include "simplnx/Utilities/NeighborUtilities.hpp"
 #include "simplnx/Utilities/ParallelTaskAlgorithm.hpp"
 
@@ -23,13 +24,11 @@ namespace
  * @param featureIds Supplies cell Feature IDs.
  * @param bufferSize Requests the scan buffer size.
  * @param shouldCancel Signals cancellation between scan blocks.
- * @return True if a blocked cell exists. Returns false if none exists. Returns
- * nullopt after cancellation.
+ * @return Blocked-cell state, cancellation sentinel, or the first bulk-read error.
  *
  * Concrete DataStore input uses a contiguous view. Other stores use bulk reads.
- * Current bulk-I/O Result values are not inspected.
  */
-std::optional<bool> ContainsBlockedCells(const Int32AbstractDataStore& featureIds, usize bufferSize, const std::atomic_bool& shouldCancel)
+Result<std::optional<bool>> ContainsBlockedCells(const Int32AbstractDataStore& featureIds, usize bufferSize, const std::atomic_bool& shouldCancel)
 {
   const usize scanBlockSize = std::max<usize>(bufferSize, 1);
   if(const auto* contiguousStore = dynamic_cast<const DataStore<int32>*>(&featureIds); contiguousStore != nullptr)
@@ -39,16 +38,16 @@ std::optional<bool> ContainsBlockedCells(const Int32AbstractDataStore& featureId
     {
       if(shouldCancel)
       {
-        return std::nullopt;
+        return {std::optional<bool>{}};
       }
 
       const usize count = std::min(scanBlockSize, featureIdSpan.size() - offset);
       if(std::any_of(featureIdSpan.begin() + offset, featureIdSpan.begin() + offset + count, [](int32 featureId) { return featureId <= 0; }))
       {
-        return true;
+        return {std::optional<bool>{true}};
       }
     }
-    return false;
+    return {std::optional<bool>{false}};
   }
 
   std::vector<int32> buffer(scanBlockSize);
@@ -56,17 +55,21 @@ std::optional<bool> ContainsBlockedCells(const Int32AbstractDataStore& featureId
   {
     if(shouldCancel)
     {
-      return std::nullopt;
+      return {std::optional<bool>{}};
     }
 
     const usize count = std::min(buffer.size(), featureIds.getSize() - offset);
-    featureIds.copyIntoBuffer(offset, nonstd::span<int32>(buffer.data(), count));
+    Result<> readResult = featureIds.copyIntoBuffer(offset, nonstd::span<int32>(buffer.data(), count));
+    if(readResult.invalid())
+    {
+      return ConvertInvalidResult<std::optional<bool>>(std::move(readResult));
+    }
     if(std::any_of(buffer.begin(), buffer.begin() + count, [](int32 featureId) { return featureId <= 0; }))
     {
-      return true;
+      return {std::optional<bool>{true}};
     }
   }
-  return false;
+  return {std::optional<bool>{false}};
 }
 
 /**
@@ -77,7 +80,7 @@ std::optional<bool> ContainsBlockedCells(const Int32AbstractDataStore& featureId
  *
  * The worker uses local source and output buffers during propagation. Tasks write distinct map
  * components in nearest-neighbor storage. This specialization does not establish generic DataArray
- * or DataStore thread safety. The final bulk write does not inspect its Result value.
+ * or DataStore thread safety.
  */
 template <typename T, ComputeEuclideanDistMap::MapType MapType = ComputeEuclideanDistMap::MapType::FeatureBoundary>
 class ComputeDistanceMapImpl
@@ -102,11 +105,12 @@ public:
    * @param totalVoxels Identifies the number of image cells.
    * @param dims Supplies image dimensions.
    * @param spacing Supplies image spacing.
+   * @param taskResult Stores the first output-store error.
    * @pre All pointers reference storage for totalVoxels values.
    * @pre All arguments outlive the worker execution.
    */
   ComputeDistanceMapImpl(const ComputeEuclideanDistMapInputValues& inputValues, std::vector<int64>& nearestNeighbors, const int32* featureIds, T* distBuf, AbstractDataStore<T>* outputStore,
-                         usize totalVoxels, SizeVec3 dims, FloatVec3 spacing)
+                         usize totalVoxels, SizeVec3 dims, FloatVec3 spacing, CopyFromArray::ParallelTaskResult& taskResult)
   : m_InputValues(inputValues)
   , m_NearestNeighbors(nearestNeighbors)
   , m_FeatureIds(featureIds)
@@ -115,6 +119,7 @@ public:
   , m_TotalVoxels(totalVoxels)
   , m_Dims(dims)
   , m_Spacing(spacing)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -126,11 +131,16 @@ public:
   /**
    * @brief Propagates one map and writes its final distances.
    *
-   * This worker does not inspect cancellation. It runs to completion after its
-   * task starts.
+   * The worker tests the shared task result before it starts and at the top of every propagation
+   * round. It returns without publishing results when another task has already reported an error.
+   * The test stays at round granularity so the per-voxel inner loops carry no atomic load.
    */
   void operator()() const
   {
+    if(m_TaskResult.shouldAbort())
+    {
+      return;
+    }
     auto xpoints = static_cast<int64_t>(m_Dims[0]);
     auto ypoints = static_cast<int64_t>(m_Dims[1]);
     auto zpoints = static_cast<int64_t>(m_Dims[2]);
@@ -175,6 +185,10 @@ public:
     char mask[6] = {0, 0, 0, 0, 0, 0};
     while(count > 0 && changed > 0)
     {
+      if(m_TaskResult.shouldAbort())
+      {
+        return;
+      }
       count = 0;
       changed = 0;
       Distance++;
@@ -286,8 +300,15 @@ public:
       m_DistBuf[a] = static_cast<T>(voxel_Distance[a]);
     }
 
-    m_OutputStore->copyFromBuffer(0, nonstd::span<const T>(m_DistBuf, m_TotalVoxels));
+    Result<> writeResult = m_OutputStore->copyFromBuffer(0, nonstd::span<const T>(m_DistBuf, m_TotalVoxels));
+    if(writeResult.invalid())
+    {
+      m_TaskResult.store(std::move(writeResult));
+    }
   }
+
+private:
+  CopyFromArray::ParallelTaskResult& m_TaskResult;
 };
 } // namespace
 
@@ -309,18 +330,18 @@ ComputeEuclideanDistMap::~ComputeEuclideanDistMap() noexcept = default;
  * @param inputValues Selects map types and identifies required objects.
  * @param shouldCancel Signals cancellation during seed discovery.
  * @param messageHandler Preserves the common algorithm call signature.
+ * @return The first source or output bulk-I/O error.
  * @pre Requested output maps have the Feature ID tuple count.
  *
  * The function bulk-copies complete source and output arrays before worker tasks run. Workers then
  * use local buffers and publish each map with one final bulk write. The normal dispatcher reserves
  * this memory-heavy path for its measured resident exception.
  *
- * This function ignores bulk-I/O Result values. Cancellation during seed discovery returns without
- * starting worker tasks. Output maps are filled with -1 before seed discovery. Cancellation can
- * leave those initialized maps. Worker tasks do not inspect cancellation. This function does not use messageHandler.
+ * Cancellation during seed discovery returns without starting worker tasks. Output maps are filled
+ * with -1 before seed discovery. Worker tasks publish the first output error through shared state.
  */
 template <typename T>
-void FindDistanceMap(DataStructure& dataStructure, const ComputeEuclideanDistMapInputValues* inputValues, const std::atomic_bool& shouldCancel, const IFilter::MessageHandler& messageHandler)
+Result<> FindDistanceMap(DataStructure& dataStructure, const ComputeEuclideanDistMapInputValues* inputValues, const std::atomic_bool& shouldCancel, const IFilter::MessageHandler& messageHandler)
 {
   using DataArrayType = DataArray<T>;
   using DataStoreType = AbstractDataStore<T>;
@@ -330,7 +351,11 @@ void FindDistanceMap(DataStructure& dataStructure, const ComputeEuclideanDistMap
 
   // Direct propagation needs contiguous resident Feature IDs.
   std::vector<int32> featureIdsBuf(totalVoxels);
-  featureIdsStoreRef.copyIntoBuffer(0, nonstd::span<int32>(featureIdsBuf.data(), totalVoxels));
+  Result<> ioResult = featureIdsStoreRef.copyIntoBuffer(0, nonstd::span<int32>(featureIdsBuf.data(), totalVoxels));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
 
   DataStoreType* gbManhattanDistancesStore = nullptr;
   if(inputValues->DoBoundaries)
@@ -358,19 +383,31 @@ void FindDistanceMap(DataStructure& dataStructure, const ComputeEuclideanDistMap
   if(inputValues->DoBoundaries)
   {
     gbDistBuf.resize(totalVoxels);
-    gbManhattanDistancesStore->copyIntoBuffer(0, nonstd::span<T>(gbDistBuf.data(), totalVoxels));
+    ioResult = gbManhattanDistancesStore->copyIntoBuffer(0, nonstd::span<T>(gbDistBuf.data(), totalVoxels));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
   std::vector<T> tjDistBuf;
   if(inputValues->DoTripleLines)
   {
     tjDistBuf.resize(totalVoxels);
-    tjManhattanDistancesStore->copyIntoBuffer(0, nonstd::span<T>(tjDistBuf.data(), totalVoxels));
+    ioResult = tjManhattanDistancesStore->copyIntoBuffer(0, nonstd::span<T>(tjDistBuf.data(), totalVoxels));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
   std::vector<T> qpDistBuf;
   if(inputValues->DoQuadPoints)
   {
     qpDistBuf.resize(totalVoxels);
-    qpManhattanDistancesStore->copyIntoBuffer(0, nonstd::span<T>(qpDistBuf.data(), totalVoxels));
+    ioResult = qpManhattanDistancesStore->copyIntoBuffer(0, nonstd::span<T>(qpDistBuf.data(), totalVoxels));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
 
   // Each map category stores one nearest-seed index per voxel.
@@ -398,7 +435,7 @@ void FindDistanceMap(DataStructure& dataStructure, const ComputeEuclideanDistMap
   {
     if(shouldCancel)
     {
-      return;
+      return {};
     }
     feature = featureIdsBuf[voxelIndex];
     if(feature > 0)
@@ -471,25 +508,28 @@ void FindDistanceMap(DataStructure& dataStructure, const ComputeEuclideanDistMap
   FloatVec3 spacing = selectedImageGeom.getSpacing();
 
   // Each task owns one output buffer and reads the shared Feature ID buffer.
+  // Declared before the task runner so the runner's destructor joins every worker while this holder is still alive.
+  CopyFromArray::ParallelTaskResult taskResult;
   ParallelTaskAlgorithm taskRunner;
   if(inputValues->DoBoundaries)
   {
     taskRunner.execute(ComputeDistanceMapImpl<T, ComputeEuclideanDistMap::MapType::FeatureBoundary>(*inputValues, nearestNeighbors, featureIdsBuf.data(), gbDistBuf.data(), gbManhattanDistancesStore,
-                                                                                                    totalVoxels, udims, spacing));
+                                                                                                    totalVoxels, udims, spacing, taskResult));
   }
 
   if(inputValues->DoTripleLines)
   {
     taskRunner.execute(ComputeDistanceMapImpl<T, ComputeEuclideanDistMap::MapType::TripleJunction>(*inputValues, nearestNeighbors, featureIdsBuf.data(), tjDistBuf.data(), tjManhattanDistancesStore,
-                                                                                                   totalVoxels, udims, spacing));
+                                                                                                   totalVoxels, udims, spacing, taskResult));
   }
 
   if(inputValues->DoQuadPoints)
   {
     taskRunner.execute(ComputeDistanceMapImpl<T, ComputeEuclideanDistMap::MapType::QuadPoint>(*inputValues, nearestNeighbors, featureIdsBuf.data(), qpDistBuf.data(), qpManhattanDistancesStore,
-                                                                                              totalVoxels, udims, spacing));
+                                                                                              totalVoxels, udims, spacing, taskResult));
   }
   taskRunner.wait();
+  return taskResult.takeResult();
 }
 
 const std::atomic_bool& ComputeEuclideanDistMap::getCancel()
@@ -526,7 +566,12 @@ Result<> ComputeEuclideanDistMap::operator()()
 
     const auto& imageGeom = m_DataStructure.getDataRefAs<ImageGeom>(m_InputValues->InputImageGeometry);
     const SizeVec3 dims = imageGeom.getDimensions();
-    const std::optional<bool> hasBlockedCells = ContainsBlockedCells(featureIdsArray->getDataStoreRef(), dims[0] * dims[1], m_ShouldCancel);
+    Result<std::optional<bool>> hasBlockedCellsResult = ContainsBlockedCells(featureIdsArray->getDataStoreRef(), dims[0] * dims[1], m_ShouldCancel);
+    if(hasBlockedCellsResult.invalid())
+    {
+      return ConvertResult(std::move(hasBlockedCellsResult));
+    }
+    const std::optional<bool>& hasBlockedCells = hasBlockedCellsResult.value();
     if(!hasBlockedCells.has_value())
     {
       return {};
@@ -541,12 +586,7 @@ Result<> ComputeEuclideanDistMap::operator()()
 
   if(m_InputValues->CalcManhattanDist)
   {
-    FindDistanceMap<int32>(m_DataStructure, m_InputValues, m_ShouldCancel, m_MessageHandler);
+    return FindDistanceMap<int32>(m_DataStructure, m_InputValues, m_ShouldCancel, m_MessageHandler);
   }
-  else
-  {
-    FindDistanceMap<float32>(m_DataStructure, m_InputValues, m_ShouldCancel, m_MessageHandler);
-  }
-
-  return {};
+  return FindDistanceMap<float32>(m_DataStructure, m_InputValues, m_ShouldCancel, m_MessageHandler);
 }

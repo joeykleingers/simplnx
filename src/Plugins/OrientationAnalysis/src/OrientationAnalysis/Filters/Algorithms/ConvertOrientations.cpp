@@ -58,18 +58,22 @@ constexpr std::array<std::string_view, 8> k_TypeNames = {"Euler", "Orientation M
       while(tupleIdx < r.max())                                                                                                                                                                        \
       {                                                                                                                                                                                                \
         /* Poll for cancellation once per chunk (not per tuple) so a large out-of-core conversion can be interrupted. */                                                                               \
-        if(m_ShouldCancel != nullptr && m_ShouldCancel->load())                                                                                                                                        \
+        if((m_ShouldCancel != nullptr && m_ShouldCancel->load()) || m_Filter->shouldAbort())                                                                                                           \
         {                                                                                                                                                                                              \
           return;                                                                                                                                                                                      \
         }                                                                                                                                                                                              \
         const usize chunkTuples = std::min(k_ChunkSize, r.max() - tupleIdx);                                                                                                                           \
         const usize inElemCount = chunkTuples * inNumComps;                                                                                                                                            \
         const usize outElemCount = chunkTuples * outNumComps;                                                                                                                                          \
-        m_Input.copyIntoBuffer(tupleIdx* inNumComps, nonstd::span<T>(inBuffer.get(), inElemCount));                                                                                                    \
+        if(Result<> ioResult = m_Input.copyIntoBuffer(tupleIdx * inNumComps, nonstd::span<T>(inBuffer.get(), inElemCount)); ioResult.invalid())                                                        \
+        {                                                                                                                                                                                              \
+          m_Filter->storeResult(std::move(ioResult));                                                                                                                                                  \
+          return;                                                                                                                                                                                      \
+        }                                                                                                                                                                                              \
         InputType inputInstance;                                                                                                                                                                       \
         for(usize t = 0; t < chunkTuples; ++t)                                                                                                                                                         \
         {                                                                                                                                                                                              \
-          if(m_ShouldCancel != nullptr && m_ShouldCancel->load())                                                                                                                                      \
+          if((m_ShouldCancel != nullptr && m_ShouldCancel->load()) || m_Filter->shouldAbort())                                                                                                         \
           {                                                                                                                                                                                            \
             return;                                                                                                                                                                                    \
           }                                                                                                                                                                                            \
@@ -85,7 +89,11 @@ constexpr std::array<std::string_view, 8> k_TypeNames = {"Euler", "Orientation M
             outBuffer[outOff + c] = outputInstance[c];                                                                                                                                                 \
           }                                                                                                                                                                                            \
         }                                                                                                                                                                                              \
-        m_Output.copyFromBuffer(tupleIdx* outNumComps, nonstd::span<const K>(outBuffer.get(), outElemCount));                                                                                          \
+        if(Result<> ioResult = m_Output.copyFromBuffer(tupleIdx * outNumComps, nonstd::span<const K>(outBuffer.get(), outElemCount)); ioResult.invalid())                                              \
+        {                                                                                                                                                                                              \
+          m_Filter->storeResult(std::move(ioResult));                                                                                                                                                  \
+          return;                                                                                                                                                                                      \
+        }                                                                                                                                                                                              \
         tupleIdx += chunkTuples;                                                                                                                                                                       \
       }                                                                                                                                                                                                \
       m_Filter->sendThreadSafeProgressMessage(r.max() - r.min());                                                                                                                                      \
@@ -140,6 +148,16 @@ void ConvertOrientations::sendThreadSafeProgressMessage(usize counter)
   m_InitialPoint = now;
 }
 
+bool ConvertOrientations::shouldAbort() const noexcept
+{
+  return m_ParallelResult.shouldAbort();
+}
+
+void ConvertOrientations::storeResult(Result<> result)
+{
+  m_ParallelResult.store(std::move(result));
+}
+
 Result<> ConvertOrientations::operator()()
 {
   DataPath outputDataPath = m_InputValues->InputOrientationArrayPath.replaceName(m_InputValues->OutputOrientationArrayName);
@@ -185,7 +203,7 @@ Result<> ConvertOrientations::operator()()
     case ebsdlib::orientations::Type::Unknown:
       break;
     }
-    return {};
+    return m_ParallelResult.takeResult();
   }
 
   if(m_InputValues->OutputType == ebsdlib::orientations::Type::OrientationMatrix)
@@ -219,7 +237,7 @@ Result<> ConvertOrientations::operator()()
     case ebsdlib::orientations::Type::Unknown:
       break;
     }
-    return {};
+    return m_ParallelResult.takeResult();
   }
 
   if(m_InputValues->OutputType == ebsdlib::orientations::Type::Quaternion)
@@ -253,7 +271,7 @@ Result<> ConvertOrientations::operator()()
     case ebsdlib::orientations::Type::Unknown:
       break;
     }
-    return {};
+    return m_ParallelResult.takeResult();
   }
 
   if(m_InputValues->OutputType == ebsdlib::orientations::Type::AxisAngle)
@@ -287,7 +305,7 @@ Result<> ConvertOrientations::operator()()
     case ebsdlib::orientations::Type::Unknown:
       break;
     }
-    return {};
+    return m_ParallelResult.takeResult();
   }
 
   if(m_InputValues->OutputType == ebsdlib::orientations::Type::Rodrigues)
@@ -321,7 +339,7 @@ Result<> ConvertOrientations::operator()()
     case ebsdlib::orientations::Type::Unknown:
       break;
     }
-    return {};
+    return m_ParallelResult.takeResult();
   }
 
   if(m_InputValues->OutputType == ebsdlib::orientations::Type::Homochoric)
@@ -355,7 +373,7 @@ Result<> ConvertOrientations::operator()()
     case ebsdlib::orientations::Type::Unknown:
       break;
     }
-    return {};
+    return m_ParallelResult.takeResult();
   }
 
   if(m_InputValues->OutputType == ebsdlib::orientations::Type::Cubochoric)
@@ -389,7 +407,7 @@ Result<> ConvertOrientations::operator()()
     case ebsdlib::orientations::Type::Unknown:
       break;
     }
-    return {};
+    return m_ParallelResult.takeResult();
   }
 
   if(m_InputValues->OutputType == ebsdlib::orientations::Type::Stereographic)
@@ -423,7 +441,7 @@ Result<> ConvertOrientations::operator()()
     case ebsdlib::orientations::Type::Unknown:
       break;
     }
-    return {};
+    return m_ParallelResult.takeResult();
   }
 
   return {};

@@ -29,7 +29,10 @@ Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
   const auto& crystalStructuresStore = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath)->getDataStoreRef();
   const usize numPhases = crystalStructuresStore.getNumberOfTuples();
   std::vector<uint32> crystalStructures(numPhases);
-  crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), numPhases));
+  if(Result<> ioResult = crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), numPhases)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   bool allPhasesHexagonal = true;
   bool noPhasesHexagonal = true;
@@ -56,13 +59,19 @@ Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
   const auto& featurePhasesStore = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath)->getDataStoreRef();
   const usize totalFeatures = featurePhasesStore.getNumberOfTuples();
   std::vector<int32> featurePhases(totalFeatures);
-  featurePhasesStore.copyIntoBuffer(0, nonstd::span<int32>(featurePhases.data(), totalFeatures));
+  if(Result<> ioResult = featurePhasesStore.copyIntoBuffer(0, nonstd::span<int32>(featurePhases.data(), totalFeatures)); ioResult.invalid())
+  {
+    return MergeResults(std::move(result), std::move(ioResult));
+  }
 
   const auto& avgQuatsStore = m_DataStructure.getDataAs<Float32Array>(m_InputValues->AvgQuatsArrayPath)->getDataStoreRef();
   const usize numQuatComps = avgQuatsStore.getNumberOfComponents();
   const usize quatSize = totalFeatures * numQuatComps;
   std::vector<float32> featureAvgQuat(quatSize);
-  avgQuatsStore.copyIntoBuffer(0, nonstd::span<float32>(featureAvgQuat.data(), quatSize));
+  if(Result<> ioResult = avgQuatsStore.copyIntoBuffer(0, nonstd::span<float32>(featureAvgQuat.data(), quatSize)); ioResult.invalid())
+  {
+    return MergeResults(std::move(result), std::move(ioResult));
+  }
 
   auto& neighborList = m_DataStructure.getDataRefAs<NeighborList<int32>>(m_InputValues->NeighborListArrayPath);
   auto& cAxisMisalignmentList = m_DataStructure.getDataRefAs<NeighborList<float32>>(m_InputValues->CAxisMisalignmentListArrayName);
@@ -159,7 +168,10 @@ Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
 
   if(m_InputValues->FindAvgMisals)
   {
-    avgCAxisMisalignmentPtr->getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(avgCAxisBuf.data(), totalFeatures));
+    if(Result<> ioResult = avgCAxisMisalignmentPtr->getDataStoreRef().copyFromBuffer(0, nonstd::span<const float32>(avgCAxisBuf.data(), totalFeatures)); ioResult.invalid())
+    {
+      return MergeResults(std::move(result), std::move(ioResult));
+    }
   }
 
   return result;

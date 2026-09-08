@@ -237,17 +237,41 @@ Result<> QuickSurfaceMeshDirect::operator()()
 
   // Count first so generation writes final-size geometry and attribute arrays.
   ShapeType tupleShape = {triangleCount};
-  triangleGeom.resizeFaceList(triangleCount);
-  triangleGeom.resizeVertexList(nodeCount);
-  triangleGeom.getFaceAttributeMatrix()->resizeTuples(tupleShape);
-  triangleGeom.getVertexAttributeMatrix()->resizeTuples({nodeCount});
+  Result<> resizeResult = triangleGeom.resizeFaceList(triangleCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.resizeVertexList(nodeCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getFaceAttributeMatrix()->resizeTuples(tupleShape);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({nodeCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   for(const auto& dataPath : m_InputValues->CreatedDataArrayPaths)
   {
     Result<> result = nx::core::ResizeAndReplaceDataArray(m_DataStructure, dataPath, tupleShape, nx::core::IDataAction::Mode::Execute);
+    if(result.invalid())
+    {
+      return result;
+    }
   }
 
-  createNodesAndTriangles(nodeIds, nodeCount, triangleCount);
+  Result<> createResult = createNodesAndTriangles(nodeIds, nodeCount, triangleCount);
+  if(createResult.invalid())
+  {
+    return createResult;
+  }
   if(m_ShouldCancel)
   {
     return {};
@@ -807,11 +831,11 @@ void QuickSurfaceMeshDirect::determineActiveNodes(std::vector<MeshIndexType>& no
   }
 }
 
-void QuickSurfaceMeshDirect::createNodesAndTriangles(std::vector<MeshIndexType>& m_NodeIds, MeshIndexType nodeCount, MeshIndexType triangleCount)
+Result<> QuickSurfaceMeshDirect::createNodesAndTriangles(std::vector<MeshIndexType>& m_NodeIds, MeshIndexType nodeCount, MeshIndexType triangleCount)
 {
   if(m_ShouldCancel)
   {
-    return;
+    return {};
   }
   m_MessageHandler(IFilter::Message::Type::Info, "Creating mesh");
 
@@ -853,15 +877,35 @@ void QuickSurfaceMeshDirect::createNodesAndTriangles(std::vector<MeshIndexType>&
   auto* triangleGeom = m_DataStructure.getDataAs<TriangleGeom>(m_InputValues->TriangleGeometryPath);
 
   ShapeType tDims = {nodeCount};
-  triangleGeom->resizeVertexList(nodeCount);
-  triangleGeom->resizeFaceList(triangleCount);
-  triangleGeom->getFaceAttributeMatrix()->resizeTuples({triangleCount});
-  triangleGeom->getVertexAttributeMatrix()->resizeTuples(tDims);
+  Result<> resizeResult = triangleGeom->resizeVertexList(nodeCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom->resizeFaceList(triangleCount);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom->getFaceAttributeMatrix()->resizeTuples({triangleCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom->getVertexAttributeMatrix()->resizeTuples(tDims);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   auto& faceLabelsStore = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FaceLabelsDataPath)->getDataStoreRef();
 
   auto& nodeTypes = m_DataStructure.getDataAs<Int8Array>(m_InputValues->NodeTypesDataPath)->getDataStoreRef();
-  nodeTypes.resizeTuples({nodeCount});
+  resizeResult = nodeTypes.resizeTuples({nodeCount});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   VertexStore& vertex = triangleGeom->getVertices()->getDataStoreRef();
   TriStore& triangle = triangleGeom->getFaces()->getDataStoreRef();
@@ -888,7 +932,7 @@ void QuickSurfaceMeshDirect::createNodesAndTriangles(std::vector<MeshIndexType>&
     // Check once per Z plane to keep the face loop free of atomic reads.
     if(m_ShouldCancel)
     {
-      return;
+      return {};
     }
     for(MeshIndexType j = 0; j < yP; j++)
     {
@@ -1397,7 +1441,7 @@ void QuickSurfaceMeshDirect::createNodesAndTriangles(std::vector<MeshIndexType>&
     // Check each node because classification follows the full face-generation pass.
     if(m_ShouldCancel)
     {
-      return;
+      return {};
     }
 
     auto& ownerList = ownerLists[i];
@@ -1412,4 +1456,5 @@ void QuickSurfaceMeshDirect::createNodesAndTriangles(std::vector<MeshIndexType>&
       m_NodeTypes[i] += 10;
     }
   }
+  return {};
 }

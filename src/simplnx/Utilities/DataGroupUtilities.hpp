@@ -49,15 +49,23 @@ SIMPLNX_EXPORT FeatureRenumbering ComputeFeatureRenumbering(const std::vector<bo
  * @param shouldCancel Supplies the cancellation flag.
  * @param cellFeatureIdsRenumbered True when the caller already applied
  * ComputeFeatureRenumbering to cellFeatureIds.
- * @return True on completion. False if validation fails or cancellation occurs.
+ * @return An invalid Result carrying k_MissingFeatureGroupError (-46000) when featureDataGroupPath
+ * names no group, k_FeatureTupleCountMismatchError (-46001) when currentFeatureCount differs from
+ * activeObjects.size(), or the first failed store operation. A valid empty Result on completion and
+ * on cancellation.
  * @pre The feature group has a one-dimensional tuple shape.
  *
  * The function compacts feature arrays and resizes the feature attribute matrix.
  * It skips the full cell-ID pass when cellFeatureIdsRenumbered is true. It does
  * not remove invalidated neighbor lists. The calling filter schedules their removal.
+ *
+ * Cancellation stops the work in progress and reports success so that a user Cancel is never
+ * reported as a data-integrity error. The caller must test its own cancellation flag after this
+ * call to distinguish a cancelled run from a completed one.
  */
-SIMPLNX_EXPORT bool RemoveInactiveObjects(DataStructure& dataStructure, const DataPath& featureDataGroupPath, const std::vector<bool>& activeObjects, Int32AbstractDataStore& cellFeatureIds,
-                                          size_t currentFeatureCount, const IFilter::MessageHandler& messageHandler, const std::atomic_bool& shouldCancel, bool cellFeatureIdsRenumbered = false);
+[[nodiscard]] SIMPLNX_EXPORT Result<> RemoveInactiveObjects(DataStructure& dataStructure, const DataPath& featureDataGroupPath, const std::vector<bool>& activeObjects,
+                                                            Int32AbstractDataStore& cellFeatureIds, size_t currentFeatureCount, const IFilter::MessageHandler& messageHandler,
+                                                            const std::atomic_bool& shouldCancel, bool cellFeatureIdsRenumbered = false);
 
 /**
  * @brief Gets sibling data arrays and excludes selected paths.

@@ -2997,17 +2997,41 @@ Result<> finalizeMesh(DataStructure& dataStructure, const M3CSurfaceMeshingInput
   };
 
   auto& triangleGeom = dataStructure.getDataRefAs<TriangleGeom>(inputValues->TriangleGeometryPath);
-  triangleGeom.resizeVertexList(static_cast<usize>(nNodes));
-  triangleGeom.resizeFaceList(static_cast<usize>(nTriangleFinal));
-  triangleGeom.getVertexAttributeMatrix()->resizeTuples({static_cast<usize>(nNodes)});
-  triangleGeom.getFaceAttributeMatrix()->resizeTuples({static_cast<usize>(nTriangleFinal)});
+  Result<> resizeResult = triangleGeom.resizeVertexList(static_cast<usize>(nNodes));
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.resizeFaceList(static_cast<usize>(nTriangleFinal));
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({static_cast<usize>(nNodes)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getFaceAttributeMatrix()->resizeTuples({static_cast<usize>(nTriangleFinal)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   auto& vertexStore = triangleGeom.getVertices()->getDataStoreRef();
   auto& triStore = triangleGeom.getFaces()->getDataStoreRef();
   auto& faceLabels = dataStructure.getDataRefAs<Int32Array>(inputValues->FaceLabelsDataPath).getDataStoreRef();
   auto& nodeTypesOut = dataStructure.getDataRefAs<Int8Array>(inputValues->NodeTypesDataPath).getDataStoreRef();
-  faceLabels.resizeTuples({static_cast<usize>(nTriangleFinal)});
-  nodeTypesOut.resizeTuples({static_cast<usize>(nNodes)});
+  resizeResult = faceLabels.resizeTuples({static_cast<usize>(nTriangleFinal)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = nodeTypesOut.resizeTuples({static_cast<usize>(nNodes)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   // Emit real candidates in ascending order. This order preserves the legacy
   // compact node numbering without a candidate-to-node map.
@@ -3786,15 +3810,39 @@ Result<> M3CSurfaceMeshing::runOutOfCore(const std::vector<const IArray*>& dispa
   }
 
   auto& triangleGeom = m_DataStructure.getDataRefAs<TriangleGeom>(m_InputValues->TriangleGeometryPath);
-  triangleGeom.resizeVertexList(static_cast<usize>(nodeTotal));
-  triangleGeom.resizeFaceList(static_cast<usize>(triangleTotal));
-  triangleGeom.getVertexAttributeMatrix()->resizeTuples({static_cast<usize>(nodeTotal)});
-  triangleGeom.getFaceAttributeMatrix()->resizeTuples({static_cast<usize>(triangleTotal)});
+  Result<> resizeResult = triangleGeom.resizeVertexList(static_cast<usize>(nodeTotal));
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.resizeFaceList(static_cast<usize>(triangleTotal));
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getVertexAttributeMatrix()->resizeTuples({static_cast<usize>(nodeTotal)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = triangleGeom.getFaceAttributeMatrix()->resizeTuples({static_cast<usize>(triangleTotal)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& faceStore = triangleGeom.getFaces()->getDataStoreRef();
   auto& faceLabelsStore = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FaceLabelsDataPath).getDataStoreRef();
   auto& nodeTypesStore = m_DataStructure.getDataRefAs<Int8Array>(m_InputValues->NodeTypesDataPath).getDataStoreRef();
-  faceLabelsStore.resizeTuples({static_cast<usize>(triangleTotal)});
-  nodeTypesStore.resizeTuples({static_cast<usize>(nodeTotal)});
+  resizeResult = faceLabelsStore.resizeTuples({static_cast<usize>(triangleTotal)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = nodeTypesStore.resizeTuples({static_cast<usize>(nodeTotal)});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   std::vector<std::shared_ptr<AbstractTupleTransfer>> transfers;
   for(usize index = 0; index < m_InputValues->SelectedCellDataArrayPaths.size(); index++)

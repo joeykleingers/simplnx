@@ -61,7 +61,11 @@ Result<> ErodeDilateCoordinationNumber::operator()()
     std::vector<int32> sliceBuf(sliceSize);
     for(int64 z = 0; z < dims[2]; z++)
     {
-      featureIdsStore.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(sliceBuf.data(), sliceSize));
+      Result<> readResult = featureIdsStore.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(sliceBuf.data(), sliceSize));
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
       for(usize i = 0; i < sliceSize; i++)
       {
         if(sliceBuf[i] > static_cast<int32>(numFeatures))
@@ -86,7 +90,7 @@ Result<> ErodeDilateCoordinationNumber::operator()()
     fis.resize(sliceSize);
   }
 
-  auto readFeatureIdSlice = [&](int64 z, usize slot) { featureIdsStore.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(featureIdSlices[slot].data(), sliceSize)); };
+  auto readFeatureIdSlice = [&](int64 z, usize slot) { return featureIdsStore.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(featureIdSlices[slot].data(), sliceSize)); };
 
   // Maps face-neighbor index to rolling-window slot:
   // -Z -> slot 0, -Y/-X/+X/+Y -> slot 1 (same Z), +Z -> slot 2
@@ -115,7 +119,7 @@ Result<> ErodeDilateCoordinationNumber::operator()()
   // number meets or exceeds the user's threshold. This filtering step is what
   // distinguishes this algorithm from simple erosion/dilation: low-coordination
   // boundary voxels are left alone.
-  auto transferSlice = [&](usize z, const std::vector<int64>& marks, const std::vector<int32>& coord) {
+  auto transferSlice = [&](usize z, const std::vector<int64>& marks, const std::vector<int32>& coord) -> Result<> {
     std::vector<int64> filteredMarks(sliceSize, -1);
     for(usize i = 0; i < sliceSize; i++)
     {
@@ -127,8 +131,13 @@ Result<> ErodeDilateCoordinationNumber::operator()()
     }
     for(const auto& voxelArray : voxelArrays)
     {
-      SliceBufferedTransferOneZ(*voxelArray, filteredMarks, sliceSize, z, dimZ);
+      Result<> transferResult = SliceBufferedTransferOneZ(*voxelArray, filteredMarks, sliceSize, z, dimZ);
+      if(transferResult.invalid())
+      {
+        return transferResult;
+      }
     }
+    return {};
   };
 
   // ---- Main pass loop ----
@@ -153,10 +162,18 @@ Result<> ErodeDilateCoordinationNumber::operator()()
     }
 
     // Re-initialize rolling window from the (potentially modified) store
-    readFeatureIdSlice(0, 1);
+    Result<> ioResult = readFeatureIdSlice(0, 1);
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     if(dims[2] > 1)
     {
-      readFeatureIdSlice(1, 2);
+      ioResult = readFeatureIdSlice(1, 2);
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
 
     // ---- Z-slice scan loop ----
@@ -169,7 +186,11 @@ Result<> ErodeDilateCoordinationNumber::operator()()
         std::swap(featureIdSlices[1], featureIdSlices[2]);
         if(zIdx + 1 < dims[2])
         {
-          readFeatureIdSlice(zIdx + 1, 2);
+          ioResult = readFeatureIdSlice(zIdx + 1, 2);
+          if(ioResult.invalid())
+          {
+            return ioResult;
+          }
         }
       }
 
@@ -244,7 +265,11 @@ Result<> ErodeDilateCoordinationNumber::operator()()
       // After processing slice z, all marks for z-1 are complete.
       if(zIdx > 0)
       {
-        transferSlice(static_cast<usize>(zIdx - 1), sliceNeighbors[0], sliceCoordination[0]);
+        ioResult = transferSlice(static_cast<usize>(zIdx - 1), sliceNeighbors[0], sliceCoordination[0]);
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
 
       // ---- Rotate per-slice arrays forward ----
@@ -260,7 +285,11 @@ Result<> ErodeDilateCoordinationNumber::operator()()
     // ---- Flush final Z-slice ----
     if(dims[2] > 0)
     {
-      transferSlice(static_cast<usize>(dims[2] - 1), sliceNeighbors[0], sliceCoordination[0]);
+      ioResult = transferSlice(static_cast<usize>(dims[2] - 1), sliceNeighbors[0], sliceCoordination[0]);
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
 

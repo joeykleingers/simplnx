@@ -75,8 +75,16 @@ uint64 buildPrefixSumTable(const std::vector<uint64>& bitmap, std::vector<uint64
   return running;
 }
 
-// Mark vertices whose node type is in the inclusive range.
-void buildVertOkMask(const Int8AbstractDataStore& nodeTypesStore, std::vector<uint64>& vertOkMask, int8 minType, int8 maxType, const std::atomic_bool& shouldCancel)
+/**
+ * @brief Marks vertices whose node type is in the inclusive range.
+ * @param nodeTypesStore Supplies one type per source vertex.
+ * @param vertOkMask Receives accepted-vertex bits.
+ * @param minType Inclusive minimum accepted node type.
+ * @param maxType Inclusive maximum accepted node type.
+ * @param shouldCancel Stops before a later input chunk.
+ * @return The first node-type bulk-read error.
+ */
+Result<> buildVertOkMask(const Int8AbstractDataStore& nodeTypesStore, std::vector<uint64>& vertOkMask, int8 minType, int8 maxType, const std::atomic_bool& shouldCancel)
 {
   const usize numVerts = nodeTypesStore.getNumberOfTuples();
   auto chunkBuf = std::make_unique<int8[]>(k_ChunkTuples);
@@ -84,10 +92,14 @@ void buildVertOkMask(const Int8AbstractDataStore& nodeTypesStore, std::vector<ui
   {
     if(shouldCancel)
     {
-      return;
+      return {};
     }
     const usize count = std::min(k_ChunkTuples, numVerts - offset);
-    nodeTypesStore.copyIntoBuffer(offset, nonstd::span<int8>(chunkBuf.get(), count));
+    Result<> readResult = nodeTypesStore.copyIntoBuffer(offset, nonstd::span<int8>(chunkBuf.get(), count));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       const int8 nt = chunkBuf[i];
@@ -97,12 +109,24 @@ void buildVertOkMask(const Int8AbstractDataStore& nodeTypesStore, std::vector<ui
       }
     }
   }
+  return {};
 }
 
-// Keep triangles with three accepted vertices. Assign new vertex indices at
-// their first encounter to preserve triangle-traversal order.
-void scanTrianglesAndAssignVertexIndices(const UInt64AbstractDataStore& triangleStore, const std::vector<uint64>& vertOkMask, std::vector<uint64>& triMask,
-                                         std::vector<IGeometry::MeshIndexType>& vertNewIndex, IGeometry::MeshIndexType& outNumKeptVerts, usize numTris, const std::atomic_bool& shouldCancel)
+/**
+ * @brief Keeps triangles with three accepted vertices and assigns compact vertex indices.
+ * @param triangleStore Supplies source triangle connectivity.
+ * @param vertOkMask Selects accepted source vertices.
+ * @param triMask Receives kept-triangle bits.
+ * @param vertNewIndex Receives source-to-output vertex indices.
+ * @param outNumKeptVerts Receives the number of output vertices.
+ * @param numTris Number of source triangles.
+ * @param shouldCancel Stops before a later input chunk.
+ * @return The first triangle bulk-read error.
+ *
+ * First encounter order preserves triangle traversal order.
+ */
+Result<> scanTrianglesAndAssignVertexIndices(const UInt64AbstractDataStore& triangleStore, const std::vector<uint64>& vertOkMask, std::vector<uint64>& triMask,
+                                             std::vector<IGeometry::MeshIndexType>& vertNewIndex, IGeometry::MeshIndexType& outNumKeptVerts, usize numTris, const std::atomic_bool& shouldCancel)
 {
   using MeshIndexType = IGeometry::MeshIndexType;
   const MeshIndexType notSeen = std::numeric_limits<MeshIndexType>::max();
@@ -114,10 +138,14 @@ void scanTrianglesAndAssignVertexIndices(const UInt64AbstractDataStore& triangle
     if(shouldCancel)
     {
       outNumKeptVerts = currentNewVertIndex;
-      return;
+      return {};
     }
     const usize count = std::min(k_ChunkTuples, numTris - offset);
-    triangleStore.copyIntoBuffer(offset * 3, nonstd::span<uint64>(chunkBuf.get(), count * 3));
+    Result<> readResult = triangleStore.copyIntoBuffer(offset * 3, nonstd::span<uint64>(chunkBuf.get(), count * 3));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       const uint64 v0 = chunkBuf[i * 3 + 0];
@@ -142,10 +170,22 @@ void scanTrianglesAndAssignVertexIndices(const UInt64AbstractDataStore& triangle
     }
   }
   outNumKeptVerts = currentNewVertIndex;
+  return {};
 }
 
-void scanTrianglesByFaceLabels(const UInt64AbstractDataStore& triangleStore, const Int32AbstractDataStore& faceLabelsStore, std::vector<uint64>& triMask,
-                               std::vector<IGeometry::MeshIndexType>& vertNewIndex, IGeometry::MeshIndexType& outNumKeptVerts, usize numTris, const std::atomic_bool& shouldCancel)
+/**
+ * @brief Keeps internal triangles selected by their face labels.
+ * @param triangleStore Supplies source triangle connectivity.
+ * @param faceLabelsStore Supplies two labels per source triangle.
+ * @param triMask Receives kept-triangle bits.
+ * @param vertNewIndex Receives source-to-output vertex indices.
+ * @param outNumKeptVerts Receives the number of output vertices.
+ * @param numTris Number of source triangles.
+ * @param shouldCancel Stops before a later input chunk.
+ * @return The first connectivity or face-label bulk-read error.
+ */
+Result<> scanTrianglesByFaceLabels(const UInt64AbstractDataStore& triangleStore, const Int32AbstractDataStore& faceLabelsStore, std::vector<uint64>& triMask,
+                                   std::vector<IGeometry::MeshIndexType>& vertNewIndex, IGeometry::MeshIndexType& outNumKeptVerts, usize numTris, const std::atomic_bool& shouldCancel)
 {
   using MeshIndexType = IGeometry::MeshIndexType;
   const MeshIndexType notSeen = std::numeric_limits<MeshIndexType>::max();
@@ -158,11 +198,19 @@ void scanTrianglesByFaceLabels(const UInt64AbstractDataStore& triangleStore, con
     if(shouldCancel)
     {
       outNumKeptVerts = currentNewVertIndex;
-      return;
+      return {};
     }
     const usize count = std::min(k_ChunkTuples, numTris - offset);
-    triangleStore.copyIntoBuffer(offset * 3, nonstd::span<uint64>(triangleBuffer.get(), count * 3));
-    faceLabelsStore.copyIntoBuffer(offset * 2, nonstd::span<int32>(faceLabelBuffer.get(), count * 2));
+    Result<> readResult = triangleStore.copyIntoBuffer(offset * 3, nonstd::span<uint64>(triangleBuffer.get(), count * 3));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
+    readResult = faceLabelsStore.copyIntoBuffer(offset * 2, nonstd::span<int32>(faceLabelBuffer.get(), count * 2));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       const int32 labelA = faceLabelBuffer[i * 2];
@@ -184,17 +232,25 @@ void scanTrianglesByFaceLabels(const UInt64AbstractDataStore& triangleStore, con
     }
   }
   outNumKeptVerts = currentNewVertIndex;
+  return {};
 }
 
-// Pass 3 / Pass 5 body: vertex-level array copy using the dense vertNewIndex map.
-// Sources are bulk-read a chunk at a time; destinations are written one tuple at a
-// time because the triangle-traversal new-index ordering is not monotonic in source
-// order. This is still a strict improvement over the legacy operator[] loop, which
-// issued one chunk read AND one chunk write per element.
+// Nonmonotonic output order requires one destination tuple write per kept vertex.
+// Chunked source reads keep memory bounded.
 struct VertexRemapCopyFunctor
 {
+  /**
+   * @brief Copies one typed vertex array.
+   * @tparam T Specifies the array value type.
+   * @param src Supplies source vertex tuples.
+   * @param dst Receives compacted vertex tuples.
+   * @param vertNewIndex Maps source vertices to output vertices.
+   * @param numInputTuples Number of source tuples.
+   * @param shouldCancel Stops before a later input chunk.
+   * @return The first source or destination bulk-I/O error.
+   */
   template <class T>
-  void operator()(IDataArray* src, IDataArray* dst, const std::vector<IGeometry::MeshIndexType>& vertNewIndex, usize numInputTuples, const std::atomic_bool& shouldCancel) const
+  Result<> operator()(IDataArray* src, IDataArray* dst, const std::vector<IGeometry::MeshIndexType>& vertNewIndex, usize numInputTuples, const std::atomic_bool& shouldCancel) const
   {
     using MeshIndexType = IGeometry::MeshIndexType;
     const MeshIndexType notSeen = std::numeric_limits<MeshIndexType>::max();
@@ -208,26 +264,45 @@ struct VertexRemapCopyFunctor
     {
       if(shouldCancel)
       {
-        return;
+        return {};
       }
       const usize count = std::min(k_ChunkTuples, numInputTuples - offset);
-      srcStore.copyIntoBuffer(offset * numComps, nonstd::span<T>(srcBuf.get(), count * numComps));
+      Result<> ioResult = srcStore.copyIntoBuffer(offset * numComps, nonstd::span<T>(srcBuf.get(), count * numComps));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
       for(usize i = 0; i < count; i++)
       {
         const MeshIndexType newIdx = vertNewIndex[offset + i];
         if(newIdx != notSeen)
         {
           // Output order requires one possibly random store write per kept vertex.
-          dstStore.copyFromBuffer(newIdx * numComps, nonstd::span<const T>(srcBuf.get() + i * numComps, numComps));
+          ioResult = dstStore.copyFromBuffer(newIdx * numComps, nonstd::span<const T>(srcBuf.get() + i * numComps, numComps));
+          if(ioResult.invalid())
+          {
+            return ioResult;
+          }
         }
       }
     }
+    return {};
   }
 };
 
-// Copy triangles in source order and replace vertex indices with compact values.
-void copyTrianglesRemapped(const UInt64AbstractDataStore& srcStore, UInt64AbstractDataStore& dstStore, const std::vector<uint64>& triMask, const std::vector<uint64>& triPrefixSum,
-                           const std::vector<IGeometry::MeshIndexType>& vertNewIndex, usize numInputTris, const std::atomic_bool& shouldCancel)
+/**
+ * @brief Copies triangles in source order and replaces vertex indices with compact values.
+ * @param srcStore Supplies source triangle connectivity.
+ * @param dstStore Receives compacted triangle connectivity.
+ * @param triMask Selects source triangles.
+ * @param triPrefixSum Maps source triangle positions to output positions.
+ * @param vertNewIndex Maps source vertices to output vertices.
+ * @param numInputTris Number of source triangles.
+ * @param shouldCancel Stops before a later input chunk.
+ * @return The first connectivity bulk-I/O error.
+ */
+Result<> copyTrianglesRemapped(const UInt64AbstractDataStore& srcStore, UInt64AbstractDataStore& dstStore, const std::vector<uint64>& triMask, const std::vector<uint64>& triPrefixSum,
+                               const std::vector<IGeometry::MeshIndexType>& vertNewIndex, usize numInputTris, const std::atomic_bool& shouldCancel)
 {
   auto srcBuf = std::make_unique<uint64[]>(k_ChunkTuples * 3);
   auto dstBuf = std::make_unique<uint64[]>(k_ChunkTuples * 3);
@@ -236,10 +311,14 @@ void copyTrianglesRemapped(const UInt64AbstractDataStore& srcStore, UInt64Abstra
   {
     if(shouldCancel)
     {
-      return;
+      return {};
     }
     const usize count = std::min(k_ChunkTuples, numInputTris - offset);
-    srcStore.copyIntoBuffer(offset * 3, nonstd::span<uint64>(srcBuf.get(), count * 3));
+    Result<> ioResult = srcStore.copyIntoBuffer(offset * 3, nonstd::span<uint64>(srcBuf.get(), count * 3));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
 
     const uint64 dstStartNewTriIdx = remapIndex(offset, triMask, triPrefixSum);
     usize localKeptIdx = 0;
@@ -255,21 +334,37 @@ void copyTrianglesRemapped(const UInt64AbstractDataStore& srcStore, UInt64Abstra
     }
     if(localKeptIdx > 0)
     {
-      dstStore.copyFromBuffer(dstStartNewTriIdx * 3, nonstd::span<const uint64>(dstBuf.get(), localKeptIdx * 3));
+      ioResult = dstStore.copyFromBuffer(dstStartNewTriIdx * 3, nonstd::span<const uint64>(dstBuf.get(), localKeptIdx * 3));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
+  return {};
 }
 
 /**
  * @struct TriangleAttachedCopyFunctor
  * @brief Copies selected triangle tuples in monotonic compact order.
  *
- * Source and output transfers use fixed chunks. Transfer results are ignored.
+ * Source and output transfers use fixed chunks.
  */
 struct TriangleAttachedCopyFunctor
 {
+  /**
+   * @brief Copies one typed triangle array.
+   * @tparam T Specifies the array value type.
+   * @param src Supplies source triangle tuples.
+   * @param dst Receives compacted triangle tuples.
+   * @param mask Selects source triangles.
+   * @param prefixSum Maps source triangle positions to output positions.
+   * @param numInputTuples Number of source tuples.
+   * @param shouldCancel Stops before a later input chunk.
+   * @return The first source or destination bulk-I/O error.
+   */
   template <class T>
-  void operator()(IDataArray* src, IDataArray* dst, const std::vector<uint64>& mask, const std::vector<uint64>& prefixSum, usize numInputTuples, const std::atomic_bool& shouldCancel) const
+  Result<> operator()(IDataArray* src, IDataArray* dst, const std::vector<uint64>& mask, const std::vector<uint64>& prefixSum, usize numInputTuples, const std::atomic_bool& shouldCancel) const
   {
     auto& srcStore = src->template getIDataStoreRefAs<AbstractDataStore<T>>();
     auto& dstStore = dst->template getIDataStoreRefAs<AbstractDataStore<T>>();
@@ -282,10 +377,14 @@ struct TriangleAttachedCopyFunctor
     {
       if(shouldCancel)
       {
-        return;
+        return {};
       }
       const usize count = std::min(k_ChunkTuples, numInputTuples - offset);
-      srcStore.copyIntoBuffer(offset * numComps, nonstd::span<T>(srcBuf.get(), count * numComps));
+      Result<> ioResult = srcStore.copyIntoBuffer(offset * numComps, nonstd::span<T>(srcBuf.get(), count * numComps));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
 
       const uint64 dstStartNewIdx = remapIndex(offset, mask, prefixSum);
       usize localKeptIdx = 0;
@@ -302,9 +401,14 @@ struct TriangleAttachedCopyFunctor
       }
       if(localKeptIdx > 0)
       {
-        dstStore.copyFromBuffer(dstStartNewIdx * numComps, nonstd::span<const T>(dstBuf.get(), localKeptIdx * numComps));
+        ioResult = dstStore.copyFromBuffer(dstStartNewIdx * numComps, nonstd::span<const T>(dstBuf.get(), localKeptIdx * numComps));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
     }
+    return {};
   }
 };
 
@@ -355,17 +459,29 @@ Result<> ExtractInternalSurfacesFromTriangleGeometry::operator()()
   {
     const auto& nodeTypesStore = m_DataStructure.getDataRefAs<Int8Array>(m_InputValues->NodeTypesPath).getDataStoreRef();
     std::vector<uint64> vertOkMask((numVerts + 63) / 64, 0ULL);
-    buildVertOkMask(nodeTypesStore, vertOkMask, minMaxNodeValues[0], minMaxNodeValues[1], m_ShouldCancel);
+    Result<> operationResult = buildVertOkMask(nodeTypesStore, vertOkMask, minMaxNodeValues[0], minMaxNodeValues[1], m_ShouldCancel);
+    if(operationResult.invalid())
+    {
+      return operationResult;
+    }
     if(m_ShouldCancel)
     {
       return {};
     }
-    scanTrianglesAndAssignVertexIndices(trianglesStore, vertOkMask, triMask, vertNewIndex, numKeptVerts, numTris, m_ShouldCancel);
+    operationResult = scanTrianglesAndAssignVertexIndices(trianglesStore, vertOkMask, triMask, vertNewIndex, numKeptVerts, numTris, m_ShouldCancel);
+    if(operationResult.invalid())
+    {
+      return operationResult;
+    }
   }
   else
   {
     const auto& faceLabelsStore = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FaceLabelsPath).getDataStoreRef();
-    scanTrianglesByFaceLabels(trianglesStore, faceLabelsStore, triMask, vertNewIndex, numKeptVerts, numTris, m_ShouldCancel);
+    Result<> operationResult = scanTrianglesByFaceLabels(trianglesStore, faceLabelsStore, triMask, vertNewIndex, numKeptVerts, numTris, m_ShouldCancel);
+    if(operationResult.invalid())
+    {
+      return operationResult;
+    }
   }
   if(m_ShouldCancel)
   {
@@ -377,23 +493,47 @@ Result<> ExtractInternalSurfacesFromTriangleGeometry::operator()()
   const uint64 numKeptTris = buildPrefixSumTable(triMask, triPrefixSum, numTris);
 
   // Resize the output geometry and attribute matrices to the compact kept counts.
-  internalTriangleGeom.resizeVertexList(numKeptVerts);
-  internalTriangleGeom.resizeFaceList(numKeptTris);
-  internalTriangleGeom.getVertexAttributeMatrix()->resizeTuples({numKeptVerts});
-  internalTriangleGeom.getFaceAttributeMatrix()->resizeTuples({numKeptTris});
+  Result<> operationResult = internalTriangleGeom.resizeVertexList(numKeptVerts);
+  if(operationResult.invalid())
+  {
+    return operationResult;
+  }
+  operationResult = internalTriangleGeom.resizeFaceList(numKeptTris);
+  if(operationResult.invalid())
+  {
+    return operationResult;
+  }
+  operationResult = internalTriangleGeom.getVertexAttributeMatrix()->resizeTuples({numKeptVerts});
+  if(operationResult.invalid())
+  {
+    return operationResult;
+  }
+  operationResult = internalTriangleGeom.getFaceAttributeMatrix()->resizeTuples({numKeptTris});
+  if(operationResult.invalid())
+  {
+    return operationResult;
+  }
 
   IGeometry::SharedVertexList* internalVerts = internalTriangleGeom.getVertices();
   IGeometry::SharedFaceList* internalTriangles = internalTriangleGeom.getFaces();
 
   // Pass 3 — copy kept vertex XYZ coordinates into the compact output.
-  VertexRemapCopyFunctor{}.operator()<float32>(&vertices, internalVerts, vertNewIndex, numVerts, m_ShouldCancel);
+  operationResult = VertexRemapCopyFunctor{}.operator()<float32>(&vertices, internalVerts, vertNewIndex, numVerts, m_ShouldCancel);
+  if(operationResult.invalid())
+  {
+    return operationResult;
+  }
   if(m_ShouldCancel)
   {
     return {};
   }
 
   // Pass 4 — copy kept triangles with vertex indices remapped.
-  copyTrianglesRemapped(trianglesStore, internalTriangles->getDataStoreRef(), triMask, triPrefixSum, vertNewIndex, numTris, m_ShouldCancel);
+  operationResult = copyTrianglesRemapped(trianglesStore, internalTriangles->getDataStoreRef(), triMask, triPrefixSum, vertNewIndex, numTris, m_ShouldCancel);
+  if(operationResult.invalid())
+  {
+    return operationResult;
+  }
   if(m_ShouldCancel)
   {
     return {};
@@ -409,7 +549,11 @@ Result<> ExtractInternalSurfacesFromTriangleGeometry::operator()()
     DataPath destinationPath = internalTrianglesPath.createChildPath(m_InputValues->VertexAttributeMatrixName).createChildPath(targetArrayPath.getTargetName());
     auto* src = m_DataStructure.getDataAs<IDataArray>(targetArrayPath);
     auto* dest = m_DataStructure.getDataAs<IDataArray>(destinationPath);
-    ExecuteDataFunction(VertexRemapCopyFunctor{}, src->getDataType(), src, dest, vertNewIndex, numVerts, m_ShouldCancel);
+    operationResult = ExecuteDataFunction(VertexRemapCopyFunctor{}, src->getDataType(), src, dest, vertNewIndex, numVerts, m_ShouldCancel);
+    if(operationResult.invalid())
+    {
+      return operationResult;
+    }
   }
 
   // Pass 6 — copy per-triangle attached arrays using the triangle mask + prefix sum.
@@ -422,8 +566,16 @@ Result<> ExtractInternalSurfacesFromTriangleGeometry::operator()()
     DataPath destinationPath = internalTrianglesPath.createChildPath(m_InputValues->TriangleAttributeMatrixName).createChildPath(targetArrayPath.getTargetName());
     auto* src = m_DataStructure.getDataAs<IDataArray>(targetArrayPath);
     auto* dest = m_DataStructure.getDataAs<IDataArray>(destinationPath);
-    dest->resizeTuples({numKeptTris});
-    ExecuteDataFunction(TriangleAttachedCopyFunctor{}, src->getDataType(), src, dest, triMask, triPrefixSum, numTris, m_ShouldCancel);
+    operationResult = dest->resizeTuples({numKeptTris});
+    if(operationResult.invalid())
+    {
+      return operationResult;
+    }
+    operationResult = ExecuteDataFunction(TriangleAttachedCopyFunctor{}, src->getDataType(), src, dest, triMask, triPrefixSum, numTris, m_ShouldCancel);
+    if(operationResult.invalid())
+    {
+      return operationResult;
+    }
   }
 
   return {};

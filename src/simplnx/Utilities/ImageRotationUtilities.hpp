@@ -318,10 +318,10 @@ inline void FindInterpolationValues(const RotateArgs& params, usize octant, Size
 
 /**
  * @class FilterProgressCallback
- * @brief Provides throttled progress, cancellation access, and worker-result aggregation.
+ * @brief Provides throttled progress, cancellation access, and first-error storage.
  *
- * The object borrows filter callbacks until all tasks join. Result aggregation
- * uses one object mutex. Progress overloads use separate static mutexes.
+ * The object borrows filter callbacks until all tasks join. Result storage uses
+ * one object mutex. An atomic abort flag stops other workers after the first error.
  */
 class FilterProgressCallback
 {
@@ -371,18 +371,38 @@ public:
     }
   }
 
-  const std::atomic_bool& getCancel() const
+  /**
+   * @brief Tests user cancellation and worker failure state.
+   * @return True when the current worker must stop.
+   */
+  bool shouldAbort() const noexcept
   {
-    return m_ShouldCancel;
+    return m_ShouldCancel || m_ShouldAbort;
   }
 
   /**
-   * @brief Merges one worker Result under the result mutex.
+   * @brief Stores warnings or the first worker error under the result mutex.
    * @param result Provides worker warnings and errors.
+   * @param context Adds the array and range context to each error.
    */
-  void mergeResult(Result<>&& result)
+  void storeResult(Result<> result, const std::string& context = {})
   {
+    if(result.invalid() && !context.empty())
+    {
+      for(auto& error : result.errors())
+      {
+        error.message = fmt::format("{}: {}", context, error.message);
+      }
+    }
     const std::lock_guard<std::mutex> lock(m_ResultMutex);
+    if(m_Result.invalid())
+    {
+      return;
+    }
+    if(result.invalid())
+    {
+      m_ShouldAbort = true;
+    }
     m_Result = MergeResults(std::move(m_Result), std::move(result));
   }
 
@@ -391,7 +411,7 @@ public:
    * @return Accumulated warnings and errors.
    * @pre All worker tasks have joined.
    */
-  Result<> takeResult()
+  [[nodiscard]] Result<> takeResult()
   {
     const std::lock_guard<std::mutex> lock(m_ResultMutex);
     return std::move(m_Result);
@@ -400,6 +420,7 @@ public:
 private:
   const IFilter::MessageHandler& m_MessageHandler;
   const std::atomic_bool& m_ShouldCancel;
+  std::atomic_bool m_ShouldAbort = false;
   mutable std::mutex m_ProgressMessage_Mutex;
   std::chrono::steady_clock::time_point m_InitialTime = std::chrono::steady_clock::now();
   int32 m_Progcounter = 0;
@@ -780,7 +801,7 @@ public:
 
     for(int64 k = 0; k < m_Params.outputDims[2]; k++)
     {
-      if(m_FilterCallback->getCancel())
+      if(m_FilterCallback->shouldAbort())
       {
         break;
       }
@@ -818,8 +839,7 @@ public:
         std::fill(outSliceBuf.get(), outSliceBuf.get() + outSliceSize * numComps, static_cast<T>(0));
         if(auto writeResult = newDataStore.copyFromBuffer(static_cast<usize>(k) * outSliceSize * numComps, nonstd::span<const T>(outSliceBuf.get(), outSliceSize * numComps)); writeResult.invalid())
         {
-          m_FilterCallback->mergeResult(
-              MakeErrorResult(k_NearestNeighborCopyFailed_Error, fmt::format("Trilinear destination slice write failed for '{}' at destination Z {}", m_SourceArray->getName(), k)));
+          m_FilterCallback->storeResult(std::move(writeResult), fmt::format("Trilinear destination slice write failed for '{}' at destination Z {}", m_SourceArray->getName(), k));
           return;
         }
         continue;
@@ -830,8 +850,7 @@ public:
       {
         if(auto readResult = updateSlabCache<T>(oldDataStore, srcSlabBuf, srcSlabBufSize, cachedSrcZMin, cachedSrcZMax, neededZMin, neededZMax, srcSliceSize, numComps); readResult.invalid())
         {
-          m_FilterCallback->mergeResult(MakeErrorResult(k_NearestNeighborCopyFailed_Error,
-                                                        fmt::format("Trilinear source slab read failed for '{}' at source Z range [{}, {}]", m_SourceArray->getName(), neededZMin, neededZMax)));
+          m_FilterCallback->storeResult(std::move(readResult), fmt::format("Trilinear source slab read failed for '{}' at source Z range [{}, {}]", m_SourceArray->getName(), neededZMin, neededZMax));
           return;
         }
       }
@@ -955,15 +974,14 @@ public:
 
       if(boundedReadResult.invalid())
       {
-        m_FilterCallback->mergeResult(std::move(boundedReadResult));
+        m_FilterCallback->storeResult(std::move(boundedReadResult), fmt::format("Trilinear source page read failed for '{}'", m_SourceArray->getName()));
         return;
       }
 
       // Write one completed output slice.
       if(auto writeResult = newDataStore.copyFromBuffer(static_cast<usize>(k) * outSliceSize * numComps, nonstd::span<const T>(outSliceBuf.get(), outSliceSize * numComps)); writeResult.invalid())
       {
-        m_FilterCallback->mergeResult(
-            MakeErrorResult(k_NearestNeighborCopyFailed_Error, fmt::format("Trilinear destination slice write failed for '{}' at destination Z {}", m_SourceArray->getName(), k)));
+        m_FilterCallback->storeResult(std::move(writeResult), fmt::format("Trilinear destination slice write failed for '{}' at destination Z {}", m_SourceArray->getName(), k));
         return;
       }
     }
@@ -1072,7 +1090,7 @@ public:
 
     for(int64 k = 0; k < m_Params.outputDims[2]; k++)
     {
-      if(m_FilterCallback->getCancel())
+      if(m_FilterCallback->shouldAbort())
       {
         break;
       }
@@ -1122,8 +1140,7 @@ public:
         auto writeResult = newDataStore.copyFromBuffer(static_cast<usize>(k) * outSliceSize * numComps, nonstd::span<const T>(outSliceBuf.get(), outSliceSize * numComps));
         if(writeResult.invalid())
         {
-          m_FilterCallback->mergeResult(
-              MakeErrorResult(k_NearestNeighborCopyFailed_Error, fmt::format("Nearest-neighbor destination slice write failed for '{}' at destination Z {}", m_SourceArray->getName(), k)));
+          m_FilterCallback->storeResult(std::move(writeResult), fmt::format("Nearest-neighbor destination slice write failed for '{}' at destination Z {}", m_SourceArray->getName(), k));
           return;
         }
         continue;
@@ -1136,8 +1153,8 @@ public:
       {
         if(auto readResult = updateSlabCache<T>(oldDataStore, srcSlabBuf, srcSlabBufSize, cachedSrcZMin, cachedSrcZMax, neededZMin, neededZMax, srcSliceSize, numComps); readResult.invalid())
         {
-          m_FilterCallback->mergeResult(MakeErrorResult(k_NearestNeighborCopyFailed_Error,
-                                                        fmt::format("Nearest-neighbor source slab read failed for '{}' at source Z range [{}, {}]", m_SourceArray->getName(), neededZMin, neededZMax)));
+          m_FilterCallback->storeResult(std::move(readResult),
+                                        fmt::format("Nearest-neighbor source slab read failed for '{}' at source Z range [{}, {}]", m_SourceArray->getName(), neededZMin, neededZMax));
           return;
         }
       }
@@ -1208,15 +1225,14 @@ public:
 
       if(boundedReadResult.invalid())
       {
-        m_FilterCallback->mergeResult(std::move(boundedReadResult));
+        m_FilterCallback->storeResult(std::move(boundedReadResult), fmt::format("Nearest-neighbor source page read failed for '{}'", m_SourceArray->getName()));
         return;
       }
 
       auto writeResult = newDataStore.copyFromBuffer(static_cast<usize>(k) * outSliceSize * numComps, nonstd::span<const T>(outSliceBuf.get(), outSliceSize * numComps));
       if(writeResult.invalid())
       {
-        m_FilterCallback->mergeResult(
-            MakeErrorResult(k_NearestNeighborCopyFailed_Error, fmt::format("Nearest-neighbor destination slice write failed for '{}' at destination Z {}", m_SourceArray->getName(), k)));
+        m_FilterCallback->storeResult(std::move(writeResult), fmt::format("Nearest-neighbor destination slice write failed for '{}' at destination Z {}", m_SourceArray->getName(), k));
         return;
       }
     }
@@ -1281,7 +1297,7 @@ public:
 
     for(usize chunkStart = start; chunkStart < end; chunkStart += k_ChunkVertices)
     {
-      if(m_FilterCallback->getCancel())
+      if(m_FilterCallback->shouldAbort())
       {
         return;
       }
@@ -1291,8 +1307,8 @@ public:
 
       if(auto readResult = vertexStore.copyIntoBuffer(elementOffset, nonstd::span<float32>(chunkBuf.get(), elementCount)); readResult.invalid())
       {
-        m_FilterCallback->mergeResult(
-            MakeErrorResult(k_NearestNeighborCopyFailed_Error, fmt::format("Node-geometry vertex read failed at vertex range [{}, {}]", chunkStart, chunkStart + chunkCount - 1)));
+        m_FilterCallback->storeResult(std::move(readResult),
+                                      fmt::format("Node-geometry vertex read failed for '{}' at vertex range [{}, {}]", m_Vertices.getName(), chunkStart, chunkStart + chunkCount - 1));
         return;
       }
 
@@ -1307,8 +1323,8 @@ public:
 
       if(auto writeResult = vertexStore.copyFromBuffer(elementOffset, nonstd::span<const float32>(chunkBuf.get(), elementCount)); writeResult.invalid())
       {
-        m_FilterCallback->mergeResult(
-            MakeErrorResult(k_NearestNeighborCopyFailed_Error, fmt::format("Node-geometry vertex write failed at vertex range [{}, {}]", chunkStart, chunkStart + chunkCount - 1)));
+        m_FilterCallback->storeResult(std::move(writeResult),
+                                      fmt::format("Node-geometry vertex write failed for '{}' at vertex range [{}, {}]", m_Vertices.getName(), chunkStart, chunkStart + chunkCount - 1));
         return;
       }
 

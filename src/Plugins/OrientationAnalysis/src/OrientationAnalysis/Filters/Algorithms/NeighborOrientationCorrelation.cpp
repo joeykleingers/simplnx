@@ -91,7 +91,10 @@ Result<> NeighborOrientationCorrelation::operator()()
   const auto& crystalStructuresStore = crystalStructuresArray.getDataStoreRef();
   const usize numPhases = crystalStructuresStore.getNumberOfTuples();
   std::vector<uint32> crystalStructures(numPhases);
-  crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), numPhases));
+  if(Result<> ioResult = crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), numPhases)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const auto& ciStore = confidenceIndex.getDataStoreRef();
   const auto& phaseStore = cellPhases.getDataStoreRef();
@@ -140,19 +143,19 @@ Result<> NeighborOrientationCorrelation::operator()()
   }
 
   // Bulk-read a Z-slice using copyIntoBuffer for OOC efficiency
-  auto readQuatSlice = [&](int64 z, usize slot) {
+  auto readQuatSlice = [&](int64 z, usize slot) -> Result<> {
     const usize zOffset = static_cast<usize>(z) * sliceSize * 4;
-    quatStore.copyIntoBuffer(zOffset, nonstd::span<float32>(quatSlices[slot].data(), sliceSize * 4));
+    return quatStore.copyIntoBuffer(zOffset, nonstd::span<float32>(quatSlices[slot].data(), sliceSize * 4));
   };
 
-  auto readPhaseSlice = [&](int64 z, usize slot) {
+  auto readPhaseSlice = [&](int64 z, usize slot) -> Result<> {
     const usize zOffset = static_cast<usize>(z) * sliceSize;
-    phaseStore.copyIntoBuffer(zOffset, nonstd::span<int32>(phaseSlices[slot].data(), sliceSize));
+    return phaseStore.copyIntoBuffer(zOffset, nonstd::span<int32>(phaseSlices[slot].data(), sliceSize));
   };
 
-  auto readCISlice = [&](int64 z) {
+  auto readCISlice = [&](int64 z) -> Result<> {
     const usize zOffset = static_cast<usize>(z) * sliceSize;
-    ciStore.copyIntoBuffer(zOffset, nonstd::span<float32>(ciSlice.data(), sliceSize));
+    return ciStore.copyIntoBuffer(zOffset, nonstd::span<float32>(ciSlice.data(), sliceSize));
   };
 
   // Per-slice best neighbor marks (replaces O(totalPoints) bestNeighbor array)
@@ -165,12 +168,24 @@ Result<> NeighborOrientationCorrelation::operator()()
     usize processedVoxels = 0;
 
     // Initialize rolling window: load z=0 into slot 1, z=1 into slot 2
-    readQuatSlice(0, 1);
-    readPhaseSlice(0, 1);
+    if(Result<> ioResult = readQuatSlice(0, 1); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = readPhaseSlice(0, 1); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
     if(dims[2] > 1)
     {
-      readQuatSlice(1, 2);
-      readPhaseSlice(1, 2);
+      if(Result<> ioResult = readQuatSlice(1, 2); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
+      if(Result<> ioResult = readPhaseSlice(1, 2); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
 
     for(int64 zIdx = 0; zIdx < dims[2] && !m_ShouldCancel; zIdx++)
@@ -184,12 +199,21 @@ Result<> NeighborOrientationCorrelation::operator()()
         std::swap(phaseSlices[1], phaseSlices[2]);
         if(zIdx + 1 < dims[2])
         {
-          readQuatSlice(zIdx + 1, 2);
-          readPhaseSlice(zIdx + 1, 2);
+          if(Result<> ioResult = readQuatSlice(zIdx + 1, 2); ioResult.invalid())
+          {
+            return ConvertResult(std::move(ioResult));
+          }
+          if(Result<> ioResult = readPhaseSlice(zIdx + 1, 2); ioResult.invalid())
+          {
+            return ConvertResult(std::move(ioResult));
+          }
         }
       }
 
-      readCISlice(zIdx);
+      if(Result<> ioResult = readCISlice(zIdx); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
 
       for(int64 yIdx = 0; yIdx < dims[1]; yIdx++)
       {
@@ -287,7 +311,10 @@ Result<> NeighborOrientationCorrelation::operator()()
       {
         if(auto* dataArrayPtr = dynamic_cast<IDataArray*>(arrayPtr.get()); dataArrayPtr != nullptr)
         {
-          SliceBufferedTransferOneZ(*dataArrayPtr, sliceBestNeighbor, sliceSize, static_cast<usize>(zIdx), dimZ);
+          if(Result<> transferResult = SliceBufferedTransferOneZ(*dataArrayPtr, sliceBestNeighbor, sliceSize, static_cast<usize>(zIdx), dimZ); transferResult.invalid())
+          {
+            return ConvertResult(std::move(transferResult));
+          }
           continue;
         }
 

@@ -137,12 +137,18 @@ Result<> WriteGBCDGMTFile::operator()()
   // Cache ensemble metadata and only the selected GBCD phase slice.
   const usize numCrystalStructures = crystalStructures.getSize();
   auto crystalStructuresCache = std::make_unique<uint32[]>(numCrystalStructures);
-  crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.get(), numCrystalStructures));
+  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.get(), numCrystalStructures)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const auto totalGBCDBins = (gbcdSizes[0] * gbcdSizes[1] * gbcdSizes[2] * gbcdSizes[3] * gbcdSizes[4] * 2);
   const usize phaseOffset = static_cast<usize>(m_InputValues->PhaseOfInterest) * static_cast<usize>(totalGBCDBins);
   auto gbcdPhaseCache = std::make_unique<float64[]>(static_cast<usize>(totalGBCDBins));
-  gbcd.getDataStoreRef().copyIntoBuffer(phaseOffset, nonstd::span<float64>(gbcdPhaseCache.get(), static_cast<usize>(totalGBCDBins)));
+  if(Result<> ioResult = gbcd.getDataStoreRef().copyIntoBuffer(phaseOffset, nonstd::span<float64>(gbcdPhaseCache.get(), static_cast<usize>(totalGBCDBins))); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const ebsdlib::LaueOps::Pointer orientOps = ebsdlib::LaueOps::GetAllOrientationOps()[crystalStructuresCache[m_InputValues->PhaseOfInterest]];
 

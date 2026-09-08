@@ -83,7 +83,11 @@ Result<> ApplyTransformationToGeometry::applyImageGeometryTransformation()
     destImageGeom.setDimensions(dims);
     destImageGeom.setOrigin(origin);
     destImageGeom.setSpacing(spacing);
-    destCellDataAM.resizeTuples(dataArrayShape);
+    Result<> resizeResult = destCellDataAM.resizeTuples(dataArrayShape);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   }
 
   // Serialize out-of-core array transforms so bounded page and output-slice

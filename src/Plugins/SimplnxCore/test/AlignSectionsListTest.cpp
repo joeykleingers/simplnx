@@ -62,7 +62,7 @@ TEST_CASE("SimplnxCore::AlignSectionsListFilter: Relative Shifts execution", "[S
 
   REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int64Array>(newShiftsPath));
   auto& newShifts = dataStructure.getDataRefAs<Int64Array>(newShiftsPath);
-  CopyFromArray::CopyData(exemplarShifts, newShifts, 0ULL, 0ULL, exemplarShifts.getNumberOfTuples());
+  SIMPLNX_RESULT_REQUIRE_VALID(CopyFromArray::CopyData(exemplarShifts, newShifts, 0ULL, 0ULL, exemplarShifts.getNumberOfTuples()));
 
   // Apply the mask filter before alignment.
   SmallIn100::ExecuteMultiThresholdObjects(dataStructure, *filterList);
@@ -138,7 +138,7 @@ TEST_CASE("SimplnxCore::AlignSectionsListFilter: Cumulative Shifts execution", "
 
   REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int64Array>(newShiftsPath));
   auto& newShifts = dataStructure.getDataRefAs<Int64Array>(newShiftsPath);
-  CopyFromArray::CopyData(exemplarShifts, newShifts, 0ULL, 0ULL, exemplarShifts.getNumberOfTuples());
+  SIMPLNX_RESULT_REQUIRE_VALID(CopyFromArray::CopyData(exemplarShifts, newShifts, 0ULL, 0ULL, exemplarShifts.getNumberOfTuples()));
 
   // Apply the mask filter before alignment.
   SmallIn100::ExecuteMultiThresholdObjects(dataStructure, *filterList);

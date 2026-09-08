@@ -154,25 +154,30 @@ namespace
  * @param sliceOffset Identifies the first mask tuple in the slice.
  * @param sliceVoxels Specifies the number of slice tuples.
  * @param maskBuf Receives uint8 mask values.
+ * @return Success or the first store read error.
  *
  * Bool values convert to zero or one for the feature flood fill.
  */
-void bufferMaskSlice(const AbstractDataStore<uint8>* maskUInt8StorePtr, const AbstractDataStore<bool>* maskBoolStorePtr, int64 sliceOffset, int64 sliceVoxels, std::vector<uint8>& maskBuf)
+Result<> bufferMaskSlice(const AbstractDataStore<uint8>* maskUInt8StorePtr, const AbstractDataStore<bool>* maskBoolStorePtr, int64 sliceOffset, int64 sliceVoxels, std::vector<uint8>& maskBuf)
 {
   if(maskUInt8StorePtr != nullptr)
   {
-    maskUInt8StorePtr->copyIntoBuffer(sliceOffset, nonstd::span<uint8>(maskBuf.data(), sliceVoxels));
+    return maskUInt8StorePtr->copyIntoBuffer(sliceOffset, nonstd::span<uint8>(maskBuf.data(), sliceVoxels));
   }
-  else if(maskBoolStorePtr != nullptr)
+  if(maskBoolStorePtr != nullptr)
   {
     // NOLINTNEXTLINE(modernize-avoid-c-arrays) -- Runtime-sized buffer; std::array cannot represent this extent.
     auto boolBuf = std::make_unique<bool[]>(sliceVoxels);
-    maskBoolStorePtr->copyIntoBuffer(sliceOffset, nonstd::span<bool>(boolBuf.get(), sliceVoxels));
+    if(Result<> ioResult = maskBoolStorePtr->copyIntoBuffer(sliceOffset, nonstd::span<bool>(boolBuf.get(), sliceVoxels)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
     for(int64 idx = 0; idx < sliceVoxels; idx++)
     {
       maskBuf[idx] = boolBuf[idx] ? 1 : 0;
     }
   }
+  return {};
 }
 
 } // namespace
@@ -194,7 +199,10 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
   const auto& crystalStructuresArray = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
   const auto& crystalStructuresStore = crystalStructuresArray.getDataStoreRef();
   std::vector<uint32> crystalStructures(crystalStructuresStore.getSize());
-  crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), crystalStructures.size()));
+  if(Result<> ioResult = crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), crystalStructures.size())); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   float32 misorientationTolerance = m_InputValues->MisorientationTolerance * nx::core::Constants::k_PiOver180F;
 
@@ -232,27 +240,41 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
     maskBuf.resize(sliceVoxels, 1);
   }
 
-  auto floodFillSlice = [&](int64 sliceIndex, std::vector<int32>& featureIds) -> int32 {
+  auto floodFillSlice = [&](int64 sliceIndex, std::vector<int32>& featureIds) -> Result<int32> {
     std::fill(featureIds.begin(), featureIds.end(), 0);
 
     int64 sliceOffset = sliceIndex * sliceVoxels;
 
-    cellPhasesStore.copyIntoBuffer(sliceOffset, nonstd::span<int32>(phasesBuf.data(), sliceVoxels));
-    quatsStore.copyIntoBuffer(sliceOffset * 4, nonstd::span<float32>(quatsBuf.data(), sliceVoxels * 4));
+    if(Result<> ioResult = cellPhasesStore.copyIntoBuffer(sliceOffset, nonstd::span<int32>(phasesBuf.data(), sliceVoxels)); ioResult.invalid())
+    {
+      return ConvertInvalidResult<int32>(std::move(ioResult));
+    }
+    if(Result<> ioResult = quatsStore.copyIntoBuffer(sliceOffset * 4, nonstd::span<float32>(quatsBuf.data(), sliceVoxels * 4)); ioResult.invalid())
+    {
+      return ConvertInvalidResult<int32>(std::move(ioResult));
+    }
 
     const uint8* sliceMask = nullptr;
     if(m_InputValues->UseMask)
     {
-      bufferMaskSlice(maskUInt8StorePtr, maskBoolStorePtr, sliceOffset, sliceVoxels, maskBuf);
+      if(Result<> ioResult = bufferMaskSlice(maskUInt8StorePtr, maskBoolStorePtr, sliceOffset, sliceVoxels, maskBuf); ioResult.invalid())
+      {
+        return ConvertInvalidResult<int32>(std::move(ioResult));
+      }
       sliceMask = maskBuf.data();
     }
 
-    return formFeaturesForSlice(quatsBuf.data(), phasesBuf.data(), sliceMask, featureIds, dims[0], dims[1], misorientationTolerance, m_InputValues->UseMask, orientationOps, crystalStructures);
+    return {formFeaturesForSlice(quatsBuf.data(), phasesBuf.data(), sliceMask, featureIds, dims[0], dims[1], misorientationTolerance, m_InputValues->UseMask, orientationOps, crystalStructures)};
   };
 
   // The first adjacent pair uses the top slice as its reference.
   int64 topSlice = dims[2] - 1;
-  refFeatureCount = floodFillSlice(topSlice, refFeatureIds);
+  Result<int32> floodFillResult = floodFillSlice(topSlice, refFeatureIds);
+  if(floodFillResult.invalid())
+  {
+    return ConvertResult(std::move(floodFillResult));
+  }
+  refFeatureCount = floodFillResult.value();
 
   std::vector<std::vector<float32>> mutualInfo12;
   std::vector<float32> mutualInfo1;
@@ -278,7 +300,12 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
 
       int64 slice = (dims[2] - 1) - iter;
 
-      curFeatureCount = floodFillSlice(slice, curFeatureIds);
+      floodFillResult = floodFillSlice(slice, curFeatureIds);
+      if(floodFillResult.invalid())
+      {
+        return ConvertResult(std::move(floodFillResult));
+      }
+      curFeatureCount = floodFillResult.value();
 
       m_MessageHandler(IFilter::Message::Type::Info, fmt::format("Determining Shifts: Slice {}/{} complete", iter, dims[2]));
 
@@ -412,7 +439,12 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
 
       int64 slice = (dims[2] - 1) - iter;
 
-      curFeatureCount = floodFillSlice(slice, curFeatureIds);
+      floodFillResult = floodFillSlice(slice, curFeatureIds);
+      if(floodFillResult.invalid())
+      {
+        return ConvertResult(std::move(floodFillResult));
+      }
+      curFeatureCount = floodFillResult.value();
 
       m_MessageHandler(IFilter::Message::Type::Info, fmt::format("Determining Shifts: Slice {}/{} complete", iter, dims[2]));
 

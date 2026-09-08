@@ -544,6 +544,51 @@ TEST_CASE("SimplnxCore::ComputeArrayStatisticsFilter: Scanline propagates bulk s
   }
 }
 
+TEST_CASE("SimplnxCore::ComputeArrayStatisticsFilter: a damaged out-of-core backing file surfaces as a filter error", "[SimplnxCore][ComputeArrayStatisticsFilter][ooc]")
+{
+  UnitTest::LoadPlugins();
+  auto& ioCollection = DataStoreUtilities::GetIOCollection();
+  if(!ioCollection.hasDataStoreCreationFunction("HDF5-OOC"))
+  {
+    return;
+  }
+
+  UnitTest::PreferencesSentinel preferences(DataStorageMode::ForceOutOfCore, 1);
+  constexpr usize k_TupleCount = (64ULL * 1024ULL * 1024ULL) / sizeof(int32);
+  const DataPath inputPath({"DamagedInput"});
+  const DataPath statisticsPath({"Statistics"});
+
+  DataStructure dataStructure;
+  auto inputStore = DataStoreUtilities::CreateDataStore<int32>(dataStructure, inputPath, {k_TupleCount}, {1}, IDataAction::Mode::Execute);
+  REQUIRE(inputStore != nullptr);
+  auto* inputArray = Int32Array::Create(dataStructure, inputPath.getTargetName(), inputStore);
+  REQUIRE(inputArray != nullptr);
+  REQUIRE(inputArray->getIDataStoreRef().getStoreType() == IDataStore::StoreType::OutOfCore);
+
+  const auto recoveryMetadata = inputArray->getDataStoreRef().getRecoveryMetadata();
+  const auto backingPathIter = recoveryMetadata.find("OocBackingFilePath");
+  REQUIRE(backingPathIter != recoveryMetadata.cend());
+  const fs::path backingPath = backingPathIter->second;
+  REQUIRE(fs::exists(backingPath));
+
+  ioCollection.finalizeStores(dataStructure);
+  ioCollection.shutdownManagers();
+  fs::resize_file(backingPath, 1024);
+
+  ComputeArrayStatisticsFilter filter;
+  Arguments args = filter.getDefaultArguments();
+  args.insertOrAssign(ComputeArrayStatisticsFilter::k_FindLength_Key, std::make_any<bool>(true));
+  args.insertOrAssign(ComputeArrayStatisticsFilter::k_SelectedArrayPath_Key, std::make_any<DataPath>(inputPath));
+  args.insertOrAssign(ComputeArrayStatisticsFilter::k_DestinationAttributeMatrixPath_Key, std::make_any<DataPath>(statisticsPath));
+
+  const auto executeResult = filter.execute(dataStructure, args);
+  REQUIRE(executeResult.result.invalid());
+  REQUIRE_FALSE(executeResult.result.errors().empty());
+  const bool identifiesInput = std::any_of(executeResult.result.errors().cbegin(), executeResult.result.errors().cend(),
+                                           [&inputPath](const Error& error) { return error.message.find(inputPath.toString()) != std::string::npos; });
+  REQUIRE(identifiesInput);
+}
+
 TEST_CASE("SimplnxCore::ComputeArrayStatisticsFilter: entry and mid-pass cancellation preserve unwritten outputs", "[SimplnxCore][ComputeArrayStatisticsFilter]")
 {
   UnitTest::LoadPlugins();

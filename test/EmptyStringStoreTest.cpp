@@ -48,7 +48,7 @@ TEST_CASE("EmptyStringStore: deep copy preserves placeholder status")
 TEST_CASE("EmptyStringStore: resize")
 {
   EmptyStringStore store({2});
-  store.resizeTuples({10});
+  REQUIRE(store.resizeTuples({10}).valid());
   REQUIRE(store.getNumberOfTuples() == 10);
   REQUIRE(store.size() == 10);
 }

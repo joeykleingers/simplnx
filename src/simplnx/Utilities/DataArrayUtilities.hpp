@@ -19,10 +19,13 @@
 #include <fmt/core.h>
 #include <fmt/ranges.h>
 
+#include <atomic>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <type_traits>
 
 #if defined(_MSC_VER)
 /**
@@ -513,8 +516,9 @@ public:
    * @brief Copies a range of mapped destination tuples.
    * @param start First destination tuple index.
    * @param end One past the last destination tuple index.
+   * @return Error from the first tuple copy that fails.
    */
-  void convert(usize start, usize end) const
+  [[nodiscard]] Result<> convert(usize start, usize end) const
   {
     const auto& oldDataStore = m_OldCellArray.template getIDataStoreRefAs<AbstractDataStore<T>>();
     auto& newDataStore = m_NewCellArray.template getIDataStoreRefAs<AbstractDataStore<T>>();
@@ -524,12 +528,10 @@ public:
       int64 oldIndexI = m_NewToOldIndices[i];
       if(oldIndexI >= 0)
       {
-        if(newDataStore.copyFrom(i, oldDataStore, oldIndexI, 1).invalid())
+        auto copyResult = newDataStore.copyFrom(i, oldDataStore, oldIndexI, 1);
+        if(copyResult.invalid())
         {
-          std::cout << fmt::format("Array copy failed: Source Array Name: {} Source Tuple Index: {}\nDest Array Name: {}  Dest. Tuple Index {}\n", m_OldCellArray.getName(), oldIndexI,
-                                   m_NewCellArray.getName(), i)
-                    << std::endl;
-          break;
+          return copyResult;
         }
       }
       else
@@ -537,14 +539,16 @@ public:
         newDataStore.fillTuple(i, 0);
       }
     }
+    return {};
   }
 
   /**
    * @brief Copies every mapped destination tuple.
+   * @return Error from the first tuple copy that fails.
    */
-  void operator()() const
+  [[nodiscard]] Result<> operator()() const
   {
-    convert(0, m_NewToOldIndices.size());
+    return convert(0, m_NewToOldIndices.size());
   }
 
 private:
@@ -692,17 +696,71 @@ std::vector<std::array<T, 2>> GetComponentMinMax(std::shared_ptr<DataArray<T>> d
 namespace CopyFromArray
 {
 /**
+ * @class ParallelTaskResult
+ * @brief Stores the first invalid result from parallel array tasks.
+ *
+ * Tasks stop after the first reported error. The state retains warnings that completed before that error.
+ */
+class SIMPLNX_EXPORT ParallelTaskResult
+{
+public:
+  /**
+   * @brief Tests whether a task reported an error.
+   * @return True if pending tasks must stop.
+   */
+  bool shouldAbort() const noexcept
+  {
+    return m_ShouldAbort.load();
+  }
+
+  /**
+   * @brief Stores task warnings or the first task error.
+   * @param result Supplies one completed task result.
+   */
+  void store(Result<> result)
+  {
+    const std::lock_guard<std::mutex> lock(m_Mutex);
+    if(m_Result.invalid())
+    {
+      return;
+    }
+    if(result.invalid())
+    {
+      m_ShouldAbort = true;
+    }
+    m_Result = MergeResults(std::move(m_Result), std::move(result));
+  }
+
+  /**
+   * @brief Moves the stored result after all tasks join.
+   * @return The first error and warnings that completed before that error.
+   * @pre The associated task runner has completed all tasks.
+   */
+  [[nodiscard]] Result<> takeResult()
+  {
+    const std::lock_guard<std::mutex> lock(m_Mutex);
+    return std::move(m_Result);
+  }
+
+private:
+  std::atomic_bool m_ShouldAbort = false;
+  std::mutex m_Mutex;
+  Result<> m_Result;
+};
+
+/**
  * @brief Appends array values at a flat destination offset.
  * @tparam K Array type.
  * @param inputArray Source array.
  * @param destArray Destination array.
  * @param offset First destination value offset.
+ * @return Error from the first bulk store operation that fails.
  *
  * Numeric DataArrays use bounded bulk pages. Variable-length arrays retain
  * element-wise access because a fixed page cannot represent their tuples.
  */
 template <class K>
-void AppendData(const K& inputArray, K& destArray, usize offset)
+[[nodiscard]] Result<> AppendData(const K& inputArray, K& destArray, usize offset)
 {
   const usize numElements = inputArray.getNumberOfTuples() * inputArray.getNumberOfComponents();
   if constexpr(requires { inputArray.getDataStoreRef(); })
@@ -716,8 +774,16 @@ void AppendData(const K& inputArray, K& destArray, usize offset)
     for(usize i = 0; i < numElements; i += k_ChunkSize)
     {
       usize count = std::min(k_ChunkSize, numElements - i);
-      srcStore.copyIntoBuffer(i, nonstd::span<ValueType>(buffer.get(), count));
-      dstStore.copyFromBuffer(offset + i, nonstd::span<const ValueType>(buffer.get(), count));
+      auto readResult = srcStore.copyIntoBuffer(i, nonstd::span<ValueType>(buffer.get(), count));
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
+      auto writeResult = dstStore.copyFromBuffer(offset + i, nonstd::span<const ValueType>(buffer.get(), count));
+      if(writeResult.invalid())
+      {
+        return writeResult;
+      }
     }
   }
   else
@@ -727,6 +793,7 @@ void AppendData(const K& inputArray, K& destArray, usize offset)
       destArray.setValue(offset + i, inputArray.at(i));
     }
   }
+  return {};
 }
 
 /**
@@ -744,7 +811,7 @@ void AppendData(const K& inputArray, K& destArray, usize offset)
  * the single std::copy fast path.
  */
 template <class K>
-Result<> CopyData(const K& inputArray, K& destArray, usize destTupleOffset, usize srcTupleOffset, usize totalSrcTuples)
+[[nodiscard]] Result<> CopyData(const K& inputArray, K& destArray, usize destTupleOffset, usize srcTupleOffset, usize totalSrcTuples)
 {
   if(destTupleOffset >= destArray.getNumberOfTuples())
   {
@@ -784,8 +851,16 @@ Result<> CopyData(const K& inputArray, K& destArray, usize destTupleOffset, usiz
       for(usize offset = 0; offset < numElements; offset += k_ChunkSize)
       {
         usize count = std::min(k_ChunkSize, numElements - offset);
-        srcStore.copyIntoBuffer(srcStart + offset, nonstd::span<ValueType>(buffer.get(), count));
-        dstStore.copyFromBuffer(dstStart + offset, nonstd::span<const ValueType>(buffer.get(), count));
+        auto readResult = srcStore.copyIntoBuffer(srcStart + offset, nonstd::span<ValueType>(buffer.get(), count));
+        if(readResult.invalid())
+        {
+          return readResult;
+        }
+        auto writeResult = dstStore.copyFromBuffer(dstStart + offset, nonstd::span<const ValueType>(buffer.get(), count));
+        if(writeResult.invalid())
+        {
+          return writeResult;
+        }
       }
     }
     else
@@ -821,7 +896,7 @@ Result<> CopyData(const K& inputArray, K& destArray, usize destTupleOffset, usiz
  * @pre The source tuple range is valid.
  */
 template <class T, class K>
-Result<> CopyData(const std::vector<T>& src, K& dst, usize dstTupleOffset, usize srcTupleOffset, usize totalSrcTuples, usize srcNumComponents)
+[[nodiscard]] Result<> CopyData(const std::vector<T>& src, K& dst, usize dstTupleOffset, usize srcTupleOffset, usize totalSrcTuples, usize srcNumComponents)
 {
   static_assert(std::is_same_v<T, typename K::value_type>, "Element type mismatch between std::vector<T> and DataArray<value_type>");
 
@@ -853,11 +928,19 @@ Result<> CopyData(const std::vector<T>& src, K& dst, usize dstTupleOffset, usize
   usize dstStart = dstTupleOffset * dstNumComponents;
   if constexpr(requires { dst.getDataStoreRef(); })
   {
-    dst.getDataStoreRef().copyFromBuffer(dstStart, nonstd::span<const T>(src.data() + srcStart, numElements));
+    auto writeResult = dst.getDataStoreRef().copyFromBuffer(dstStart, nonstd::span<const T>(src.data() + srcStart, numElements));
+    if(writeResult.invalid())
+    {
+      return writeResult;
+    }
   }
   else if constexpr(requires { dst.copyFromBuffer(dstStart, nonstd::span<const T>(src.data(), 1)); })
   {
-    dst.copyFromBuffer(dstStart, nonstd::span<const T>(src.data() + srcStart, numElements));
+    auto writeResult = dst.copyFromBuffer(dstStart, nonstd::span<const T>(src.data() + srcStart, numElements));
+    if(writeResult.invalid())
+    {
+      return writeResult;
+    }
   }
   else
   {
@@ -884,7 +967,7 @@ Result<> CopyData(const std::vector<T>& src, K& dst, usize dstTupleOffset, usize
  * The layout is row-major. The last index is fastest.
  */
 template <class K>
-Result<> CopyDataND(const K& inputArray, K& destArray, const std::vector<usize>& srcStart, const std::vector<usize>& dstStart, const std::vector<usize>& extent)
+[[nodiscard]] Result<> CopyDataND(const K& inputArray, K& destArray, const std::vector<usize>& srcStart, const std::vector<usize>& dstStart, const std::vector<usize>& extent)
 {
   const auto& inputShape = inputArray.getTupleShape();
   const auto& destShape = destArray.getTupleShape();
@@ -978,12 +1061,13 @@ enum class Direction
  * @param dataArray Array to shift.
  * @param originalDestDims Existing destination dimensions.
  * @param newDestDims Expanded destination dimensions.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from the tuple copies.
  *
  * The caller validates dimensions and capacity.
  */
 template <class K>
-Result<> ShiftDataX(K& dataArray, const std::vector<usize>& originalDestDims, const std::vector<usize>& newDestDims)
+[[nodiscard]] Result<> ShiftDataX(K& dataArray, const std::vector<usize>& originalDestDims, const std::vector<usize>& newDestDims, const ParallelTaskResult* taskResult = nullptr)
 {
   auto shiftZDim = static_cast<int64>(newDestDims[0]);
   auto shiftYDim = static_cast<int64>(newDestDims[1]);
@@ -992,8 +1076,16 @@ Result<> ShiftDataX(K& dataArray, const std::vector<usize>& originalDestDims, co
 
   for(int64 z = shiftZDim - 1; z >= 0; --z)
   {
+    if(taskResult != nullptr && taskResult->shouldAbort())
+    {
+      return {};
+    }
     for(int64 y = shiftYDim - 1; y >= 0; --y)
     {
+      if(taskResult != nullptr && taskResult->shouldAbort())
+      {
+        return {};
+      }
       usize srcOffset = (z * shiftYDim * shiftSrcXDim) + (y * shiftSrcXDim);
       usize destOffset = ((z * shiftYDim * shiftDestXDim) + (y * shiftDestXDim));
       if(srcOffset == destOffset)
@@ -1018,12 +1110,13 @@ Result<> ShiftDataX(K& dataArray, const std::vector<usize>& originalDestDims, co
  * @param dataArray Array to shift.
  * @param originalDestDims Existing destination dimensions.
  * @param newDestDims Expanded destination dimensions.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from the tuple copies.
  *
  * The caller validates dimensions and capacity.
  */
 template <class K>
-Result<> ShiftDataY(K& dataArray, const std::vector<usize>& originalDestDims, const std::vector<usize>& newDestDims)
+[[nodiscard]] Result<> ShiftDataY(K& dataArray, const std::vector<usize>& originalDestDims, const std::vector<usize>& newDestDims, const ParallelTaskResult* taskResult = nullptr)
 {
   auto shiftZDim = static_cast<int64>(newDestDims[0]);
   auto shiftDestYDim = newDestDims[1];
@@ -1032,8 +1125,16 @@ Result<> ShiftDataY(K& dataArray, const std::vector<usize>& originalDestDims, co
 
   for(int64 z = shiftZDim - 1; z >= 0; --z)
   {
+    if(taskResult != nullptr && taskResult->shouldAbort())
+    {
+      return {};
+    }
     for(int64 y = shiftSrcYDim - 1; y >= 0; --y)
     {
+      if(taskResult != nullptr && taskResult->shouldAbort())
+      {
+        return {};
+      }
       usize srcOffset = (z * shiftSrcYDim * shiftXDim) + (y * shiftXDim);
       usize destOffset = ((z * shiftDestYDim * shiftXDim) + (y * shiftXDim));
       if(srcOffset == destOffset)
@@ -1061,13 +1162,14 @@ Result<> ShiftDataY(K& dataArray, const std::vector<usize>& originalDestDims, co
  * @param newDestDims Destination dimensions.
  * @param offset First X offset.
  * @param mirror True to mirror rows after append.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from tuple copies.
  *
  * The caller validates dimensions and capacity.
  */
 template <class K>
-Result<> AppendDataX(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& newDestDims, usize offset,
-                     bool mirror = false)
+[[nodiscard]] Result<> AppendDataX(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& newDestDims, usize offset,
+                                   bool mirror = false, const ParallelTaskResult* taskResult = nullptr)
 {
   auto appendZDim = static_cast<int64>(newDestDims[0]);
   auto appendYDim = static_cast<int64>(newDestDims[1]);
@@ -1075,8 +1177,16 @@ Result<> AppendDataX(const std::vector<const K*>& inputArrays, const std::vector
 
   for(int z = 0; z < appendZDim; ++z)
   {
+    if(taskResult != nullptr && taskResult->shouldAbort())
+    {
+      return {};
+    }
     for(int y = 0; y < appendYDim; ++y)
     {
+      if(taskResult != nullptr && taskResult->shouldAbort())
+      {
+        return {};
+      }
       usize xOffset = offset;
       for(usize i = 0; i < inputArrays.size(); ++i)
       {
@@ -1106,7 +1216,11 @@ Result<> AppendDataX(const std::vector<const K*>& inputArrays, const std::vector
             auto scanline = std::make_unique<ValueType[]>(scanlineElements);
             auto& store = destArray.getDataStoreRef();
             usize rowStart = ((z * appendYDim * appendDestXDim) + (y * appendDestXDim)) * numComps;
-            store.copyIntoBuffer(rowStart, nonstd::span<ValueType>(scanline.get(), scanlineElements));
+            auto readResult = store.copyIntoBuffer(rowStart, nonstd::span<ValueType>(scanline.get(), scanlineElements));
+            if(readResult.invalid())
+            {
+              return readResult;
+            }
             // Reverse complete tuples so component values remain together.
             for(usize x = 0; x < appendDestXDim / 2; ++x)
             {
@@ -1116,7 +1230,11 @@ Result<> AppendDataX(const std::vector<const K*>& inputArrays, const std::vector
                 std::swap(scanline[x * numComps + c], scanline[mirrorX * numComps + c]);
               }
             }
-            store.copyFromBuffer(rowStart, nonstd::span<const ValueType>(scanline.get(), scanlineElements));
+            auto writeResult = store.copyFromBuffer(rowStart, nonstd::span<const ValueType>(scanline.get(), scanlineElements));
+            if(writeResult.invalid())
+            {
+              return writeResult;
+            }
           }
           else
           {
@@ -1155,13 +1273,14 @@ Result<> AppendDataX(const std::vector<const K*>& inputArrays, const std::vector
  * @param newDestDims Destination dimensions.
  * @param offset First Y offset.
  * @param mirror True to mirror rows after append.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from tuple copies.
  *
  * The caller validates dimensions and capacity.
  */
 template <class K>
-Result<> AppendDataY(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& newDestDims, usize offset,
-                     bool mirror = false)
+[[nodiscard]] Result<> AppendDataY(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& newDestDims, usize offset,
+                                   bool mirror = false, const ParallelTaskResult* taskResult = nullptr)
 {
   auto appendZDim = static_cast<int64>(newDestDims[0]);
   auto appendDestYDim = newDestDims[1];
@@ -1170,9 +1289,17 @@ Result<> AppendDataY(const std::vector<const K*>& inputArrays, const std::vector
   usize yOffset = offset;
   for(usize i = 0; i < inputArrays.size(); ++i)
   {
+    if(taskResult != nullptr && taskResult->shouldAbort())
+    {
+      return {};
+    }
     auto appendSrcYDim = inputTupleShapes[i][1];
     for(int z = 0; z < appendZDim; ++z)
     {
+      if(taskResult != nullptr && taskResult->shouldAbort())
+      {
+        return {};
+      }
       for(int y = 0; y < appendSrcYDim; ++y)
       {
         const K* inputArray = inputArrays[i];
@@ -1205,15 +1332,35 @@ Result<> AppendDataY(const std::vector<const K*>& inputArrays, const std::vector
         auto& store = destArray.getDataStoreRef();
         for(int64 z = 0; z < appendZDim; ++z)
         {
+          if(taskResult != nullptr && taskResult->shouldAbort())
+          {
+            return {};
+          }
           for(usize y = 0; y < appendDestYDim / 2; ++y)
           {
             usize mirrorY = appendDestYDim - 1 - y;
             usize offsetA = (static_cast<usize>(z) * appendDestYDim * static_cast<usize>(appendXDim) + y * static_cast<usize>(appendXDim)) * numComps;
             usize offsetB = (static_cast<usize>(z) * appendDestYDim * static_cast<usize>(appendXDim) + mirrorY * static_cast<usize>(appendXDim)) * numComps;
-            store.copyIntoBuffer(offsetA, nonstd::span<ValueType>(rowA.get(), rowElements));
-            store.copyIntoBuffer(offsetB, nonstd::span<ValueType>(rowB.get(), rowElements));
-            store.copyFromBuffer(offsetA, nonstd::span<const ValueType>(rowB.get(), rowElements));
-            store.copyFromBuffer(offsetB, nonstd::span<const ValueType>(rowA.get(), rowElements));
+            auto firstReadResult = store.copyIntoBuffer(offsetA, nonstd::span<ValueType>(rowA.get(), rowElements));
+            if(firstReadResult.invalid())
+            {
+              return firstReadResult;
+            }
+            auto secondReadResult = store.copyIntoBuffer(offsetB, nonstd::span<ValueType>(rowB.get(), rowElements));
+            if(secondReadResult.invalid())
+            {
+              return secondReadResult;
+            }
+            auto firstWriteResult = store.copyFromBuffer(offsetA, nonstd::span<const ValueType>(rowB.get(), rowElements));
+            if(firstWriteResult.invalid())
+            {
+              return firstWriteResult;
+            }
+            auto secondWriteResult = store.copyFromBuffer(offsetB, nonstd::span<const ValueType>(rowA.get(), rowElements));
+            if(secondWriteResult.invalid())
+            {
+              return secondWriteResult;
+            }
           }
         }
       }
@@ -1236,6 +1383,10 @@ Result<> AppendDataY(const std::vector<const K*>& inputArrays, const std::vector
     {
       for(int64 z = 0; z < appendZDim; ++z)
       {
+        if(taskResult != nullptr && taskResult->shouldAbort())
+        {
+          return {};
+        }
         for(usize y = 0; y < appendDestYDim / 2; ++y)
         {
           usize mirrorY = appendDestYDim - 1 - y;
@@ -1260,17 +1411,22 @@ Result<> AppendDataY(const std::vector<const K*>& inputArrays, const std::vector
  * @param newDestDims Destination dimensions.
  * @param offset First Z offset.
  * @param mirror True to mirror slices after append.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from tuple copies.
  *
  * The caller validates dimensions and capacity.
  */
 template <class K>
-Result<> AppendDataZ(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& newDestDims, usize offset,
-                     bool mirror = false)
+[[nodiscard]] Result<> AppendDataZ(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& newDestDims, usize offset,
+                                   bool mirror = false, const ParallelTaskResult* taskResult = nullptr)
 {
   usize destOffset = offset;
   for(usize i = 0; i < inputArrays.size(); ++i)
   {
+    if(taskResult != nullptr && taskResult->shouldAbort())
+    {
+      return {};
+    }
     const K* inputArray = inputArrays[i];
     auto totalInputTuples = std::accumulate(inputTupleShapes[i].begin(), inputTupleShapes[i].end(), static_cast<usize>(1), std::multiplies<>());
     auto result = CopyData(*inputArray, destArray, destOffset, 0, totalInputTuples);
@@ -1300,18 +1456,42 @@ Result<> AppendDataZ(const std::vector<const K*>& inputArrays, const std::vector
         auto& store = destArray.getDataStoreRef();
         for(usize i = 0; i < appendDestZDim / 2; ++i)
         {
+          if(taskResult != nullptr && taskResult->shouldAbort())
+          {
+            return {};
+          }
           usize offsetA = i * sliceElements;
           usize offsetB = (appendDestZDim - 1 - i) * sliceElements;
-          store.copyIntoBuffer(offsetA, nonstd::span<ValueType>(bufA.get(), sliceElements));
-          store.copyIntoBuffer(offsetB, nonstd::span<ValueType>(bufB.get(), sliceElements));
-          store.copyFromBuffer(offsetA, nonstd::span<const ValueType>(bufB.get(), sliceElements));
-          store.copyFromBuffer(offsetB, nonstd::span<const ValueType>(bufA.get(), sliceElements));
+          auto firstReadResult = store.copyIntoBuffer(offsetA, nonstd::span<ValueType>(bufA.get(), sliceElements));
+          if(firstReadResult.invalid())
+          {
+            return firstReadResult;
+          }
+          auto secondReadResult = store.copyIntoBuffer(offsetB, nonstd::span<ValueType>(bufB.get(), sliceElements));
+          if(secondReadResult.invalid())
+          {
+            return secondReadResult;
+          }
+          auto firstWriteResult = store.copyFromBuffer(offsetA, nonstd::span<const ValueType>(bufB.get(), sliceElements));
+          if(firstWriteResult.invalid())
+          {
+            return firstWriteResult;
+          }
+          auto secondWriteResult = store.copyFromBuffer(offsetB, nonstd::span<const ValueType>(bufA.get(), sliceElements));
+          if(secondWriteResult.invalid())
+          {
+            return secondWriteResult;
+          }
         }
       }
       else
       {
         for(int i = 0; i < appendDestZDim / 2; ++i)
         {
+          if(taskResult != nullptr && taskResult->shouldAbort())
+          {
+            return {};
+          }
           usize tupleIdx = i * sliceTupleCount;
           usize endTupleIdx = tupleIdx + sliceTupleCount;
           usize mirrorTupleIdx = (appendDestZDim - 1 - i) * sliceTupleCount;
@@ -1323,6 +1503,10 @@ Result<> AppendDataZ(const std::vector<const K*>& inputArrays, const std::vector
     {
       for(int i = 0; i < appendDestZDim / 2; ++i)
       {
+        if(taskResult != nullptr && taskResult->shouldAbort())
+        {
+          return {};
+        }
         usize tupleIdx = i * sliceTupleCount;
         usize endTupleIdx = tupleIdx + sliceTupleCount;
         usize mirrorTupleIdx = (appendDestZDim - 1 - i) * sliceTupleCount;
@@ -1343,19 +1527,20 @@ Result<> AppendDataZ(const std::vector<const K*>& inputArrays, const std::vector
  * @param originalDestDims Existing dimensions.
  * @param newDestDims Expanded dimensions.
  * @param mirror True to mirror rows after append.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from shifting or appending.
  */
 template <class K>
-Result<> ShiftAndAppendDataX(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& originalDestDims,
-                             const std::vector<usize>& newDestDims, bool mirror = false)
+[[nodiscard]] Result<> ShiftAndAppendDataX(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& originalDestDims,
+                                           const std::vector<usize>& newDestDims, bool mirror = false, const ParallelTaskResult* taskResult = nullptr)
 {
-  auto result = ShiftDataX(destArray, originalDestDims, newDestDims);
+  auto result = ShiftDataX(destArray, originalDestDims, newDestDims, taskResult);
   if(result.invalid())
   {
     return result;
   }
 
-  return AppendDataX(inputArrays, inputTupleShapes, destArray, newDestDims, originalDestDims[2], mirror);
+  return AppendDataX(inputArrays, inputTupleShapes, destArray, newDestDims, originalDestDims[2], mirror, taskResult);
 }
 
 /**
@@ -1367,19 +1552,20 @@ Result<> ShiftAndAppendDataX(const std::vector<const K*>& inputArrays, const std
  * @param originalDestDims Existing dimensions.
  * @param newDestDims Expanded dimensions.
  * @param mirror True to mirror rows after append.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from shifting or appending.
  */
 template <class K>
-Result<> ShiftAndAppendDataY(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& originalDestDims,
-                             const std::vector<usize>& newDestDims, bool mirror = false)
+[[nodiscard]] Result<> ShiftAndAppendDataY(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& originalDestDims,
+                                           const std::vector<usize>& newDestDims, bool mirror = false, const ParallelTaskResult* taskResult = nullptr)
 {
-  auto result = ShiftDataY(destArray, originalDestDims, newDestDims);
+  auto result = ShiftDataY(destArray, originalDestDims, newDestDims, taskResult);
   if(result.invalid())
   {
     return result;
   }
 
-  return AppendDataY(inputArrays, inputTupleShapes, destArray, newDestDims, originalDestDims[1], mirror);
+  return AppendDataY(inputArrays, inputTupleShapes, destArray, newDestDims, originalDestDims[1], mirror, taskResult);
 }
 
 /**
@@ -1392,23 +1578,24 @@ Result<> ShiftAndAppendDataY(const std::vector<const K*>& inputArrays, const std
  * @param newDestDims Expanded dimensions.
  * @param direction Append axis.
  * @param mirror True to mirror after append.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from shifting or appending.
  */
 template <class K>
-Result<> AppendData(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& originalDestDims,
-                    const std::vector<usize>& newDestDims, Direction direction = Direction::Z, bool mirror = false)
+[[nodiscard]] Result<> AppendData(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& originalDestDims,
+                                  const std::vector<usize>& newDestDims, Direction direction = Direction::Z, bool mirror = false, const ParallelTaskResult* taskResult = nullptr)
 {
   switch(direction)
   {
   case Direction::X: {
-    return ShiftAndAppendDataX(inputArrays, inputTupleShapes, destArray, originalDestDims, newDestDims, mirror);
+    return ShiftAndAppendDataX(inputArrays, inputTupleShapes, destArray, originalDestDims, newDestDims, mirror, taskResult);
   }
   case Direction::Y: {
-    return ShiftAndAppendDataY(inputArrays, inputTupleShapes, destArray, originalDestDims, newDestDims, mirror);
+    return ShiftAndAppendDataY(inputArrays, inputTupleShapes, destArray, originalDestDims, newDestDims, mirror, taskResult);
   }
   default: {
     auto totalTuples = std::accumulate(originalDestDims.begin(), originalDestDims.end(), static_cast<usize>(1), std::multiplies<>());
-    return AppendDataZ(inputArrays, inputTupleShapes, destArray, newDestDims, totalTuples, mirror);
+    return AppendDataZ(inputArrays, inputTupleShapes, destArray, newDestDims, totalTuples, mirror, taskResult);
   }
   }
 }
@@ -1422,22 +1609,23 @@ Result<> AppendData(const std::vector<const K*>& inputArrays, const std::vector<
  * @param newDestDims Destination dimensions.
  * @param direction Combine axis.
  * @param mirror True to mirror after combine.
+ * @param taskResult Optional shared abort state for a parallel task.
  * @return Error from appending.
  */
 template <class K>
-Result<> CombineData(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& newDestDims,
-                     Direction direction = Direction::Z, bool mirror = false)
+[[nodiscard]] Result<> CombineData(const std::vector<const K*>& inputArrays, const std::vector<std::vector<usize>>& inputTupleShapes, K& destArray, const std::vector<usize>& newDestDims,
+                                   Direction direction = Direction::Z, bool mirror = false, const ParallelTaskResult* taskResult = nullptr)
 {
   switch(direction)
   {
   case Direction::X: {
-    return AppendDataX(inputArrays, inputTupleShapes, destArray, newDestDims, 0, mirror);
+    return AppendDataX(inputArrays, inputTupleShapes, destArray, newDestDims, 0, mirror, taskResult);
   }
   case Direction::Y: {
-    return AppendDataY(inputArrays, inputTupleShapes, destArray, newDestDims, 0, mirror);
+    return AppendDataY(inputArrays, inputTupleShapes, destArray, newDestDims, 0, mirror, taskResult);
   }
   default: {
-    return AppendDataZ(inputArrays, inputTupleShapes, destArray, newDestDims, 0, mirror);
+    return AppendDataZ(inputArrays, inputTupleShapes, destArray, newDestDims, 0, mirror, taskResult);
   }
   }
 }
@@ -1454,6 +1642,7 @@ public:
   /**
    * @brief Creates an append dispatcher.
    * @param destCellArray Destination array.
+   * @param taskResult Stores the first error from all scheduled array tasks.
    * @param inputCellArrays Source arrays.
    * @param inputTupleShapes Source tuple dimensions.
    * @param originalDestDims Existing destination dimensions.
@@ -1462,9 +1651,10 @@ public:
    * @param mirror True to mirror after append.
    * @pre Source and destination arrays outlive this dispatcher.
    */
-  AppendArray(IArray& destCellArray, const std::vector<const IArray*>& inputCellArrays, const std::vector<std::vector<usize>>& inputTupleShapes, const std::vector<usize>& originalDestDims,
-              const std::vector<usize>& newDestDims, Direction direction = Direction::Z, bool mirror = false)
+  AppendArray(IArray& destCellArray, ParallelTaskResult& taskResult, const std::vector<const IArray*>& inputCellArrays, const std::vector<std::vector<usize>>& inputTupleShapes,
+              const std::vector<usize>& originalDestDims, const std::vector<usize>& newDestDims, Direction direction = Direction::Z, bool mirror = false)
   : m_ArrayType(destCellArray.getArrayType())
+  , m_TaskResult(taskResult)
   , m_InputCellArrays(inputCellArrays)
   , m_InputTupleShapes(inputTupleShapes)
   , m_DestCellArray(&destCellArray)
@@ -1495,10 +1685,16 @@ public:
   AppendArray& operator=(AppendArray&&) noexcept = delete;
 
   /**
-   * @brief Appends the selected arrays.
+   * @brief Appends the selected arrays and stores the first error.
    */
   void operator()() const
   {
+    if(m_TaskResult.shouldAbort())
+    {
+      return;
+    }
+
+    Result<> result;
     if(m_ArrayType == IArray::ArrayType::NeighborListArray)
     {
       using NeighborListType = NeighborList<T>;
@@ -1514,29 +1710,31 @@ public:
       std::transform(m_InputCellArrays.begin(), m_InputCellArrays.end(), std::back_inserter(castedArrays),
                      [](const IArray* elem) -> const NeighborListType* { return dynamic_cast<const NeighborListType*>(elem); });
 
-      AppendData<NeighborListType>(castedArrays, m_InputTupleShapes, *destArrayPtr, m_OriginalDestDims, m_NewDestDims, m_Direction, m_Mirror);
+      result = AppendData<NeighborListType>(castedArrays, m_InputTupleShapes, *destArrayPtr, m_OriginalDestDims, m_NewDestDims, m_Direction, m_Mirror, &m_TaskResult);
     }
-    if(m_ArrayType == IArray::ArrayType::DataArray)
+    else if(m_ArrayType == IArray::ArrayType::DataArray)
     {
       using DataArrayType = DataArray<T>;
       std::vector<const DataArrayType*> castedArrays;
       castedArrays.reserve(m_InputCellArrays.size());
       std::transform(m_InputCellArrays.begin(), m_InputCellArrays.end(), std::back_inserter(castedArrays),
                      [](const IArray* elem) -> const DataArrayType* { return dynamic_cast<const DataArrayType*>(elem); });
-      AppendData<DataArrayType>(castedArrays, m_InputTupleShapes, *dynamic_cast<DataArrayType*>(m_DestCellArray), m_OriginalDestDims, m_NewDestDims, m_Direction, m_Mirror);
+      result = AppendData<DataArrayType>(castedArrays, m_InputTupleShapes, *dynamic_cast<DataArrayType*>(m_DestCellArray), m_OriginalDestDims, m_NewDestDims, m_Direction, m_Mirror, &m_TaskResult);
     }
-    if(m_ArrayType == IArray::ArrayType::StringArray)
+    else if(m_ArrayType == IArray::ArrayType::StringArray)
     {
       std::vector<const StringArray*> castedArrays;
       castedArrays.reserve(m_InputCellArrays.size());
       std::transform(m_InputCellArrays.begin(), m_InputCellArrays.end(), std::back_inserter(castedArrays),
                      [](const IArray* elem) -> const StringArray* { return dynamic_cast<const StringArray*>(elem); });
-      AppendData<StringArray>(castedArrays, m_InputTupleShapes, *dynamic_cast<StringArray*>(m_DestCellArray), m_OriginalDestDims, m_NewDestDims, m_Direction, m_Mirror);
+      result = AppendData<StringArray>(castedArrays, m_InputTupleShapes, *dynamic_cast<StringArray*>(m_DestCellArray), m_OriginalDestDims, m_NewDestDims, m_Direction, m_Mirror, &m_TaskResult);
     }
+    m_TaskResult.store(std::move(result));
   }
 
 private:
   IArray::ArrayType m_ArrayType = IArray::ArrayType::Any;
+  ParallelTaskResult& m_TaskResult;
   std::vector<const IArray*> m_InputCellArrays;
   std::vector<std::vector<usize>> m_InputTupleShapes;
   IArray* m_DestCellArray = nullptr;
@@ -1558,6 +1756,7 @@ public:
   /**
    * @brief Creates a combine dispatcher.
    * @param destCellArray Destination array.
+   * @param taskResult Stores the first error from all scheduled array tasks.
    * @param inputCellArrays Source arrays.
    * @param inputTupleShapes Source tuple dimensions.
    * @param newDestDims Destination dimensions.
@@ -1565,9 +1764,10 @@ public:
    * @param mirror True to mirror after combine.
    * @pre Source and destination arrays outlive this dispatcher.
    */
-  CombineArrays(IArray& destCellArray, const std::vector<const IArray*>& inputCellArrays, const std::vector<std::vector<usize>>& inputTupleShapes, const std::vector<usize>& newDestDims,
-                Direction direction = Direction::Z, bool mirror = false)
+  CombineArrays(IArray& destCellArray, ParallelTaskResult& taskResult, const std::vector<const IArray*>& inputCellArrays, const std::vector<std::vector<usize>>& inputTupleShapes,
+                const std::vector<usize>& newDestDims, Direction direction = Direction::Z, bool mirror = false)
   : m_ArrayType(destCellArray.getArrayType())
+  , m_TaskResult(taskResult)
   , m_InputCellArrays(inputCellArrays)
   , m_InputTupleShapes(inputTupleShapes)
   , m_NewDestDims(newDestDims)
@@ -1597,10 +1797,16 @@ public:
   CombineArrays& operator=(CombineArrays&&) noexcept = delete;
 
   /**
-   * @brief Combines the selected arrays.
+   * @brief Combines the selected arrays and stores the first error.
    */
   void operator()() const
   {
+    if(m_TaskResult.shouldAbort())
+    {
+      return;
+    }
+
+    Result<> result;
     if(m_ArrayType == IArray::ArrayType::NeighborListArray)
     {
       using NeighborListT = NeighborList<T>;
@@ -1614,29 +1820,31 @@ public:
       castedArrays.reserve(m_InputCellArrays.size());
       std::transform(m_InputCellArrays.begin(), m_InputCellArrays.end(), std::back_inserter(castedArrays),
                      [](const IArray* elem) -> const NeighborListT* { return dynamic_cast<const NeighborListT*>(elem); });
-      CombineData<NeighborListT>(castedArrays, m_InputTupleShapes, *destArray, m_NewDestDims, m_Direction, m_Mirror);
+      result = CombineData<NeighborListT>(castedArrays, m_InputTupleShapes, *destArray, m_NewDestDims, m_Direction, m_Mirror, &m_TaskResult);
     }
-    if(m_ArrayType == IArray::ArrayType::DataArray)
+    else if(m_ArrayType == IArray::ArrayType::DataArray)
     {
       using DataArrayType = DataArray<T>;
       std::vector<const DataArrayType*> castedArrays;
       castedArrays.reserve(m_InputCellArrays.size());
       std::transform(m_InputCellArrays.begin(), m_InputCellArrays.end(), std::back_inserter(castedArrays),
                      [](const IArray* elem) -> const DataArrayType* { return dynamic_cast<const DataArrayType*>(elem); });
-      CombineData<DataArrayType>(castedArrays, m_InputTupleShapes, *dynamic_cast<DataArrayType*>(m_DestCellArray), m_NewDestDims, m_Direction, m_Mirror);
+      result = CombineData<DataArrayType>(castedArrays, m_InputTupleShapes, *dynamic_cast<DataArrayType*>(m_DestCellArray), m_NewDestDims, m_Direction, m_Mirror, &m_TaskResult);
     }
-    if(m_ArrayType == IArray::ArrayType::StringArray)
+    else if(m_ArrayType == IArray::ArrayType::StringArray)
     {
       std::vector<const StringArray*> castedArrays;
       castedArrays.reserve(m_InputCellArrays.size());
       std::transform(m_InputCellArrays.begin(), m_InputCellArrays.end(), std::back_inserter(castedArrays),
                      [](const IArray* elem) -> const StringArray* { return dynamic_cast<const StringArray*>(elem); });
-      CombineData<StringArray>(castedArrays, m_InputTupleShapes, *dynamic_cast<StringArray*>(m_DestCellArray), m_NewDestDims, m_Direction, m_Mirror);
+      result = CombineData<StringArray>(castedArrays, m_InputTupleShapes, *dynamic_cast<StringArray*>(m_DestCellArray), m_NewDestDims, m_Direction, m_Mirror, &m_TaskResult);
     }
+    m_TaskResult.store(std::move(result));
   }
 
 private:
   IArray::ArrayType m_ArrayType = IArray::ArrayType::Any;
+  ParallelTaskResult& m_TaskResult;
   std::vector<const IArray*> m_InputCellArrays;
   std::vector<std::vector<usize>> m_InputTupleShapes;
   std::vector<usize> m_NewDestDims;
@@ -1659,12 +1867,14 @@ public:
   /**
    * @brief Creates an index-map copy dispatcher.
    * @param destCellArray Destination array.
+   * @param taskResult Stores the first error from all scheduled array tasks.
    * @param inputCellArray Source array.
    * @param newToOldIndices Destination-to-source index map.
    * @pre Source and destination arrays and newToOldIndices storage outlive this dispatcher.
    */
-  CopyUsingIndexList(IArray& destCellArray, const IArray& inputCellArray, const nonstd::span<const int64>& newToOldIndices)
+  CopyUsingIndexList(IArray& destCellArray, ParallelTaskResult& taskResult, const IArray& inputCellArray, const nonstd::span<const int64>& newToOldIndices)
   : m_ArrayType(destCellArray.getArrayType())
+  , m_TaskResult(taskResult)
   , m_InputCellArray(&inputCellArray)
   , m_DestCellArray(&destCellArray)
   , m_NewToOldIndices(newToOldIndices)
@@ -1691,12 +1901,30 @@ public:
   CopyUsingIndexList& operator=(CopyUsingIndexList&&) noexcept = delete;
 
   /**
-   * @brief Copies mapped values and initializes invalid mappings.
+   * @brief Copies mapped values and stores the first error.
    */
   void operator()() const
   {
+    if(m_TaskResult.shouldAbort())
+    {
+      return;
+    }
+    m_TaskResult.store(convert());
+  }
+
+private:
+  /**
+   * @brief Copies mapped values and initializes invalid mappings.
+   * @return Error from the first tuple copy that fails.
+   */
+  Result<> convert() const
+  {
     for(usize i = 0; i < m_NewToOldIndices.size(); i++)
     {
+      if(m_TaskResult.shouldAbort())
+      {
+        return {};
+      }
       int64 oldIndexI = m_NewToOldIndices[i];
       Result<> copySucceeded;
       if(m_ArrayType == IArray::ArrayType::NeighborListArray)
@@ -1738,16 +1966,14 @@ public:
 
       if(copySucceeded.invalid())
       {
-        std::cout << fmt::format("Array copy failed: Source Array Name: {} Source Tuple Index: {}\nDest Array Name: {}  Dest. Tuple Index {}\n", m_InputCellArray->getName(), oldIndexI,
-                                 m_DestCellArray->getName(), i)
-                  << std::endl;
-        break;
+        return copySucceeded;
       }
     }
+    return {};
   }
 
-private:
   IArray::ArrayType m_ArrayType = IArray::ArrayType::Any;
+  ParallelTaskResult& m_TaskResult;
   const IArray* m_InputCellArray = nullptr;
   IArray* m_DestCellArray = nullptr;
   nonstd::span<const int64> m_NewToOldIndices;
@@ -1800,6 +2026,7 @@ public:
   /**
    * @brief Creates a RectGrid-to-ImageGeom mapper.
    * @param destCellArray Destination array.
+   * @param taskResult Stores the first error from all scheduled array tasks.
    * @param inputCellArray Source array.
    * @param origin ImageGeom origin.
    * @param imageGeoDims ImageGeom dimensions.
@@ -1811,9 +2038,11 @@ public:
    * @pre Source and destination arrays and grid-value arrays outlive this mapper.
    * @pre xGridValues, yGridValues, and zGridValues are not null.
    */
-  MapRectGridDataToImageData(IArray& destCellArray, const IArray& inputCellArray, const FloatVec3& origin, const SizeVec3& imageGeoDims, const std::vector<float32>& imageGeoSpacing,
-                             const SizeVec3& rectGridDims, const Float32Array* xGridValues, const Float32Array* yGridValues, const Float32Array* zGridValues)
+  MapRectGridDataToImageData(IArray& destCellArray, ParallelTaskResult& taskResult, const IArray& inputCellArray, const FloatVec3& origin, const SizeVec3& imageGeoDims,
+                             const std::vector<float32>& imageGeoSpacing, const SizeVec3& rectGridDims, const Float32Array* xGridValues, const Float32Array* yGridValues,
+                             const Float32Array* zGridValues)
   : m_ArrayType(destCellArray.getArrayType())
+  , m_TaskResult(taskResult)
   , m_InputCellArray(&inputCellArray)
   , m_DestCellArray(&destCellArray)
   , m_Origin(origin)
@@ -1847,12 +2076,17 @@ public:
   MapRectGridDataToImageData& operator=(MapRectGridDataToImageData&&) noexcept = delete;
 
   /**
-   * @brief Maps and copies every destination cell.
+   * @brief Maps every destination cell and stores the first error.
    *
    * DataArrays use bulk buffers. Variable-length arrays use tuple copies.
    */
   void operator()() const
   {
+    if(m_TaskResult.shouldAbort())
+    {
+      return;
+    }
+
     // Axis maps are reused across every row and slice.
     const std::vector<usize> zIndices = ComputeAxisBinIndices(m_ImageGeomDims[2], m_Origin[2], m_ImageGeomSpacing[2], m_HalfSpacing[2], *m_ZGridValues);
     const std::vector<usize> yIndices = ComputeAxisBinIndices(m_ImageGeomDims[1], m_Origin[1], m_ImageGeomSpacing[1], m_HalfSpacing[1], *m_YGridValues);
@@ -1860,11 +2094,11 @@ public:
 
     if(m_ArrayType == IArray::ArrayType::DataArray)
     {
-      mapDataArray(zIndices, yIndices, xIndices);
+      m_TaskResult.store(mapDataArray(zIndices, yIndices, xIndices));
     }
     else
     {
-      mapVariableLengthArray(zIndices, yIndices, xIndices);
+      m_TaskResult.store(mapVariableLengthArray(zIndices, yIndices, xIndices));
     }
   }
 
@@ -1874,11 +2108,12 @@ private:
    * @param zIndices Source Z index for each destination Z index.
    * @param yIndices Source Y index for each destination Y index.
    * @param xIndices Source X index for each destination X index.
+   * @return Error from the first bulk store operation that fails.
    *
    * One source row can serve repeated destination rows. Row buffers avoid
    * per-voxel cache access and remain bounded by axis dimensions.
    */
-  void mapDataArray(const std::vector<usize>& zIndices, const std::vector<usize>& yIndices, const std::vector<usize>& xIndices) const
+  Result<> mapDataArray(const std::vector<usize>& zIndices, const std::vector<usize>& yIndices, const std::vector<usize>& xIndices) const
   {
     auto* destArray = dynamic_cast<DataArray<T>*>(m_DestCellArray);
     const auto* srcArray = dynamic_cast<const DataArray<T>*>(m_InputCellArray);
@@ -1900,6 +2135,10 @@ private:
 
     for(usize z = 0; z < m_ImageGeomDims[2]; z++)
     {
+      if(m_TaskResult.shouldAbort())
+      {
+        return {};
+      }
       const usize zIndex = zIndices[z];
       for(usize y = 0; y < m_ImageGeomDims[1]; y++)
       {
@@ -1909,7 +2148,11 @@ private:
         if(!haveCachedSrcRow || yIndex != cachedYIndex || zIndex != cachedZIndex)
         {
           const usize srcRowStart = ((m_RectGridDims[0] * m_RectGridDims[1] * zIndex) + (m_RectGridDims[0] * yIndex)) * numComponents;
-          srcStore.copyIntoBuffer(srcRowStart, nonstd::span<T>(srcRowBuffer.get(), srcRowLength));
+          auto readResult = srcStore.copyIntoBuffer(srcRowStart, nonstd::span<T>(srcRowBuffer.get(), srcRowLength));
+          if(readResult.invalid())
+          {
+            return readResult;
+          }
           cachedYIndex = yIndex;
           cachedZIndex = zIndex;
           haveCachedSrcRow = true;
@@ -1932,9 +2175,14 @@ private:
         }
 
         const usize destRowStart = ((z * m_ImageGeomDims[1] * m_ImageGeomDims[0]) + (y * m_ImageGeomDims[0])) * numComponents;
-        destStore.copyFromBuffer(destRowStart, nonstd::span<const T>(destRowBuffer.get(), destRowLength));
+        auto writeResult = destStore.copyFromBuffer(destRowStart, nonstd::span<const T>(destRowBuffer.get(), destRowLength));
+        if(writeResult.invalid())
+        {
+          return writeResult;
+        }
       }
     }
+    return {};
   }
 
   /**
@@ -1942,15 +2190,20 @@ private:
    * @param zIndices Source Z index for each destination Z index.
    * @param yIndices Source Y index for each destination Y index.
    * @param xIndices Source X index for each destination X index.
+   * @return Error from the first tuple copy that fails.
    *
    * Variable-length tuples cannot use fixed row buffers. Axis maps still avoid
    * repeated geometry searches.
    */
-  void mapVariableLengthArray(const std::vector<usize>& zIndices, const std::vector<usize>& yIndices, const std::vector<usize>& xIndices) const
+  Result<> mapVariableLengthArray(const std::vector<usize>& zIndices, const std::vector<usize>& yIndices, const std::vector<usize>& xIndices) const
   {
     usize imageIndex = 0;
     for(usize z = 0; z < m_ImageGeomDims[2]; z++)
     {
+      if(m_TaskResult.shouldAbort())
+      {
+        return {};
+      }
       const usize zIndex = zIndices[z];
       for(usize y = 0; y < m_ImageGeomDims[1]; y++)
       {
@@ -1962,18 +2215,23 @@ private:
           const int64 rectGridIndex = static_cast<int64>((m_RectGridDims[0] * m_RectGridDims[1] * zIndex) + (m_RectGridDims[0] * yIndex) + xIndex);
 
           Result<> copySucceeded;
-          if(m_ArrayType == IArray::ArrayType::NeighborListArray)
+          // NeighborList has no bool instantiation, and every bool cell array is a DataArray, so the
+          // NeighborList branch is compiled out for T == bool to keep the bool mapper linkable.
+          if constexpr(!std::is_same_v<T, bool>)
           {
-            using NeighborListT = NeighborList<T>;
-            auto* destArrayPtr = dynamic_cast<NeighborListT*>(m_DestCellArray);
-            // NeighborList tuple copies require an initialized destination list.
-            destArrayPtr->setList(imageIndex, typename NeighborListT::SharedVectorType(new typename NeighborListT::VectorType));
-            if(rectGridIndex >= 0)
+            if(m_ArrayType == IArray::ArrayType::NeighborListArray)
             {
-              copySucceeded = CopyData<NeighborListT>(*dynamic_cast<const NeighborListT*>(m_InputCellArray), *destArrayPtr, imageIndex, rectGridIndex, 1);
+              using NeighborListT = NeighborList<T>;
+              auto* destArrayPtr = dynamic_cast<NeighborListT*>(m_DestCellArray);
+              // NeighborList tuple copies require an initialized destination list.
+              destArrayPtr->setList(imageIndex, typename NeighborListT::SharedVectorType(new typename NeighborListT::VectorType));
+              if(rectGridIndex >= 0)
+              {
+                copySucceeded = CopyData<NeighborListT>(*dynamic_cast<const NeighborListT*>(m_InputCellArray), *destArrayPtr, imageIndex, rectGridIndex, 1);
+              }
             }
           }
-          else if(m_ArrayType == IArray::ArrayType::StringArray)
+          if(m_ArrayType == IArray::ArrayType::StringArray)
           {
             auto destArray = *dynamic_cast<StringArray*>(m_DestCellArray);
             if(rectGridIndex >= 0)
@@ -1987,19 +2245,18 @@ private:
           }
           if(copySucceeded.invalid())
           {
-            std::cout << fmt::format("Array copy failed: Source Array Name: {} Source Tuple Index: {}\nDest Array Name: {}  Dest. Tuple Index {}\n", m_InputCellArray->getName(), rectGridIndex,
-                                     m_DestCellArray->getName(), imageIndex)
-                      << std::endl;
-            break;
+            return copySucceeded;
           }
 
           ++imageIndex;
         }
       }
     }
+    return {};
   }
 
   IArray::ArrayType m_ArrayType = IArray::ArrayType::Any;
+  ParallelTaskResult& m_TaskResult;
   const IArray* m_InputCellArray = nullptr;
   IArray* m_DestCellArray = nullptr;
   const FloatVec3 m_Origin;
@@ -2015,6 +2272,7 @@ private:
 /**
  * @brief Appends bool arrays through the bool-specific path.
  * @param destCellArray Destination bool array.
+ * @param taskResult Stores the first error from all scheduled array tasks.
  * @param inputCellArrays Source arrays.
  * @param inputTupleShapes Source tuple dimensions.
  * @param originalDestDims Existing destination dimensions.
@@ -2022,7 +2280,7 @@ private:
  * @param direction Append axis.
  * @param mirror True to mirror after append.
  */
-inline void RunAppendBoolAppend(IArray& destCellArray, const std::vector<const IArray*>& inputCellArrays, const std::vector<std::vector<usize>>& inputTupleShapes,
+inline void RunAppendBoolAppend(IArray& destCellArray, ParallelTaskResult& taskResult, const std::vector<const IArray*>& inputCellArrays, const std::vector<std::vector<usize>>& inputTupleShapes,
                                 const std::vector<usize>& originalDestDims, const std::vector<usize>& newDestDims, Direction direction = Direction::Z, bool mirror = false)
 {
   using DataArrayType = DataArray<bool>;
@@ -2030,19 +2288,20 @@ inline void RunAppendBoolAppend(IArray& destCellArray, const std::vector<const I
   castedArrays.reserve(inputTupleShapes.size());
   std::transform(inputCellArrays.cbegin(), inputCellArrays.cend(), std::back_inserter(castedArrays),
                  [](const IArray* elem) -> const DataArrayType* { return dynamic_cast<const DataArrayType*>(elem); });
-  AppendData<DataArrayType>(castedArrays, inputTupleShapes, *dynamic_cast<DataArrayType*>(&destCellArray), originalDestDims, newDestDims, direction, mirror);
+  taskResult.store(AppendData<DataArrayType>(castedArrays, inputTupleShapes, *dynamic_cast<DataArrayType*>(&destCellArray), originalDestDims, newDestDims, direction, mirror, &taskResult));
 }
 
 /**
  * @brief Combines bool arrays through the bool-specific path.
  * @param destCellArray Destination bool array.
+ * @param taskResult Stores the first error from all scheduled array tasks.
  * @param inputCellArrays Source arrays.
  * @param inputTupleShapes Source tuple dimensions.
  * @param newDestDims Destination dimensions.
  * @param direction Combine axis.
  * @param mirror True to mirror after combine.
  */
-inline void RunCombineBoolAppend(IArray& destCellArray, const std::vector<const IArray*>& inputCellArrays, const std::vector<std::vector<usize>>& inputTupleShapes,
+inline void RunCombineBoolAppend(IArray& destCellArray, ParallelTaskResult& taskResult, const std::vector<const IArray*>& inputCellArrays, const std::vector<std::vector<usize>>& inputTupleShapes,
                                  const std::vector<usize>& newDestDims, Direction direction = Direction::Z, bool mirror = false)
 {
   using DataArrayType = DataArray<bool>;
@@ -2050,26 +2309,28 @@ inline void RunCombineBoolAppend(IArray& destCellArray, const std::vector<const 
   castedArrays.reserve(inputCellArrays.size());
   std::transform(inputCellArrays.cbegin(), inputCellArrays.cend(), std::back_inserter(castedArrays),
                  [](const IArray* elem) -> const DataArrayType* { return dynamic_cast<const DataArrayType*>(elem); });
-  CombineData<DataArrayType>(castedArrays, inputTupleShapes, *dynamic_cast<DataArrayType*>(&destCellArray), newDestDims, direction, mirror);
+  taskResult.store(CombineData<DataArrayType>(castedArrays, inputTupleShapes, *dynamic_cast<DataArrayType*>(&destCellArray), newDestDims, direction, mirror, &taskResult));
 }
 
 /**
- * @brief Creates a bool index-map copy dispatcher.
+ * @brief Copies bool arrays through the bool-specific index-map path.
  * @param destCellArray Destination bool array.
+ * @param taskResult Stores the first error from all scheduled array tasks.
  * @param inputCellArray Source bool array.
  * @param newToOldIndices Destination-to-source index map.
  * @pre destCellArray and inputCellArray identify DataArray<bool> objects.
- * @note The function does not invoke the dispatcher.
+ * @note The function executes synchronously.
  */
-inline void RunBoolCopyUsingIndexList(IArray& destCellArray, const IArray& inputCellArray, const nonstd::span<const int64>& newToOldIndices)
+inline void RunBoolCopyUsingIndexList(IArray& destCellArray, ParallelTaskResult& taskResult, const IArray& inputCellArray, const nonstd::span<const int64>& newToOldIndices)
 {
   using DataArrayType = DataArray<bool>;
-  CopyUsingIndexList<DataArrayType>(*dynamic_cast<DataArrayType*>(&destCellArray), *dynamic_cast<const DataArrayType*>(&inputCellArray), newToOldIndices);
+  CopyUsingIndexList<bool>(*dynamic_cast<DataArrayType*>(&destCellArray), taskResult, *dynamic_cast<const DataArrayType*>(&inputCellArray), newToOldIndices)();
 }
 
 /**
- * @brief Creates a bool RectGrid-to-ImageGeom mapper.
+ * @brief Maps bool arrays through the bool-specific RectGrid path.
  * @param destCellArray Destination bool array.
+ * @param taskResult Stores the first error from all scheduled array tasks.
  * @param inputCellArray Source bool array.
  * @param origin ImageGeom origin.
  * @param imageGeoDims ImageGeom dimensions.
@@ -2079,14 +2340,15 @@ inline void RunBoolCopyUsingIndexList(IArray& destCellArray, const IArray& input
  * @param yGridValues RectGrid Y bounds.
  * @param zGridValues RectGrid Z bounds.
  * @pre destCellArray and inputCellArray identify DataArray<bool> objects.
- * @note The function does not invoke the mapper.
+ * @note The function executes synchronously.
  */
-inline void RunBoolMapRectToImage(IArray& destCellArray, const IArray& inputCellArray, const FloatVec3& origin, const SizeVec3& imageGeoDims, const std::vector<float32>& imageGeoSpacing,
-                                  const SizeVec3& rectGridDims, const Float32Array* xGridValues, const Float32Array* yGridValues, const Float32Array* zGridValues)
+inline void RunBoolMapRectToImage(IArray& destCellArray, ParallelTaskResult& taskResult, const IArray& inputCellArray, const FloatVec3& origin, const SizeVec3& imageGeoDims,
+                                  const std::vector<float32>& imageGeoSpacing, const SizeVec3& rectGridDims, const Float32Array* xGridValues, const Float32Array* yGridValues,
+                                  const Float32Array* zGridValues)
 {
   using DataArrayType = DataArray<bool>;
-  MapRectGridDataToImageData<DataArrayType>(*dynamic_cast<DataArrayType*>(&destCellArray), *dynamic_cast<const DataArrayType*>(&inputCellArray), origin, imageGeoDims, imageGeoSpacing, rectGridDims,
-                                            xGridValues, yGridValues, zGridValues);
+  MapRectGridDataToImageData<bool>(*dynamic_cast<DataArrayType*>(&destCellArray), taskResult, *dynamic_cast<const DataArrayType*>(&inputCellArray), origin, imageGeoDims, imageGeoSpacing, rectGridDims,
+                                   xGridValues, yGridValues, zGridValues)();
 }
 
 /**
@@ -2095,12 +2357,13 @@ inline void RunBoolMapRectToImage(IArray& destCellArray, const IArray& inputCell
  * @tparam ArgsT Forwarded append arguments.
  * @param destArray Destination array.
  * @param runner Parallel runner.
+ * @param taskResult Stores the first error from all scheduled array tasks.
  * @param args Forwarded append arguments.
  *
  * Boolean arrays run directly because their specialized path does not use runner.
  */
 template <class ParallelRunnerT, class... ArgsT>
-void RunParallelAppend(IArray& destArray, ParallelRunnerT&& runner, ArgsT&&... args)
+void RunParallelAppend(IArray& destArray, ParallelRunnerT&& runner, ParallelTaskResult& taskResult, ArgsT&&... args)
 {
   const IArray::ArrayType arrayType = destArray.getArrayType();
   DataType dataType = DataType::int32;
@@ -2113,11 +2376,12 @@ void RunParallelAppend(IArray& destArray, ParallelRunnerT&& runner, ArgsT&&... a
     dataType = dynamic_cast<IDataArray*>(&destArray)->getDataType();
     if(dataType == DataType::boolean)
     {
-      return RunAppendBoolAppend(destArray, std::forward<ArgsT>(args)...);
+      RunAppendBoolAppend(destArray, taskResult, std::forward<ArgsT>(args)...);
+      return;
     }
   }
 
-  ExecuteParallelFunction<AppendArray, NoBooleanType>(dataType, std::forward<ParallelRunnerT>(runner), destArray, std::forward<ArgsT>(args)...);
+  ExecuteParallelFunction<AppendArray, NoBooleanType>(dataType, std::forward<ParallelRunnerT>(runner), destArray, taskResult, std::forward<ArgsT>(args)...);
 }
 
 /**
@@ -2126,12 +2390,13 @@ void RunParallelAppend(IArray& destArray, ParallelRunnerT&& runner, ArgsT&&... a
  * @tparam ArgsT Forwarded combine arguments.
  * @param destArray Destination array.
  * @param runner Parallel runner.
+ * @param taskResult Stores the first error from all scheduled array tasks.
  * @param args Forwarded combine arguments.
  *
  * Boolean arrays run directly because their specialized path does not use runner.
  */
 template <class ParallelRunnerT, class... ArgsT>
-void RunParallelCombine(IArray& destArray, ParallelRunnerT&& runner, ArgsT&&... args)
+void RunParallelCombine(IArray& destArray, ParallelRunnerT&& runner, ParallelTaskResult& taskResult, ArgsT&&... args)
 {
   const IArray::ArrayType arrayType = destArray.getArrayType();
   DataType dataType = DataType::int32;
@@ -2144,11 +2409,12 @@ void RunParallelCombine(IArray& destArray, ParallelRunnerT&& runner, ArgsT&&... 
     dataType = dynamic_cast<IDataArray*>(&destArray)->getDataType();
     if(dataType == DataType::boolean)
     {
-      RunCombineBoolAppend(destArray, std::forward<ArgsT>(args)...);
+      RunCombineBoolAppend(destArray, taskResult, std::forward<ArgsT>(args)...);
+      return;
     }
   }
 
-  ExecuteParallelFunction<CombineArrays, NoBooleanType>(dataType, std::forward<ParallelRunnerT>(runner), destArray, std::forward<ArgsT>(args)...);
+  ExecuteParallelFunction<CombineArrays, NoBooleanType>(dataType, std::forward<ParallelRunnerT>(runner), destArray, taskResult, std::forward<ArgsT>(args)...);
 }
 
 /**
@@ -2157,13 +2423,14 @@ void RunParallelCombine(IArray& destArray, ParallelRunnerT&& runner, ArgsT&&... 
  * @tparam ArgsT Forwarded copy arguments.
  * @param destArray Destination array.
  * @param runner Parallel runner.
+ * @param taskResult Stores the first error from all scheduled array tasks.
  * @param args Forwarded copy arguments.
  *
  * Large index maps require memory proportional to destination tuple count.
- * For bool arrays, the specialized wrapper does not invoke the dispatcher.
+ * For bool arrays, the specialized wrapper executes synchronously.
  */
 template <class ParallelRunnerT, class... ArgsT>
-void RunParallelCopyUsingIndexList(IArray& destArray, ParallelRunnerT&& runner, ArgsT&&... args)
+void RunParallelCopyUsingIndexList(IArray& destArray, ParallelRunnerT&& runner, ParallelTaskResult& taskResult, ArgsT&&... args)
 {
   const IArray::ArrayType arrayType = destArray.getArrayType();
   DataType dataType = DataType::int32;
@@ -2176,11 +2443,12 @@ void RunParallelCopyUsingIndexList(IArray& destArray, ParallelRunnerT&& runner, 
     dataType = dynamic_cast<IDataArray*>(&destArray)->getDataType();
     if(dataType == DataType::boolean)
     {
-      RunBoolCopyUsingIndexList(destArray, std::forward<ArgsT>(args)...);
+      RunBoolCopyUsingIndexList(destArray, taskResult, std::forward<ArgsT>(args)...);
+      return;
     }
   }
 
-  ExecuteParallelFunction<CopyUsingIndexList, NoBooleanType>(dataType, std::forward<ParallelRunnerT>(runner), destArray, std::forward<ArgsT>(args)...);
+  ExecuteParallelFunction<CopyUsingIndexList, NoBooleanType>(dataType, std::forward<ParallelRunnerT>(runner), destArray, taskResult, std::forward<ArgsT>(args)...);
 }
 
 /**
@@ -2189,12 +2457,13 @@ void RunParallelCopyUsingIndexList(IArray& destArray, ParallelRunnerT&& runner, 
  * @tparam ArgsT Forwarded mapping arguments.
  * @param destArray Destination array.
  * @param runner Parallel runner.
+ * @param taskResult Stores the first error from all scheduled array tasks.
  * @param args Forwarded mapping arguments.
  *
- * For bool arrays, the specialized wrapper does not invoke the mapper.
+ * For bool arrays, the specialized wrapper executes synchronously.
  */
 template <class ParallelRunnerT, class... ArgsT>
-void RunParallelMapRectToImage(IArray& destArray, ParallelRunnerT&& runner, ArgsT&&... args)
+void RunParallelMapRectToImage(IArray& destArray, ParallelRunnerT&& runner, ParallelTaskResult& taskResult, ArgsT&&... args)
 {
   const IArray::ArrayType arrayType = destArray.getArrayType();
   DataType dataType = DataType::int32;
@@ -2207,11 +2476,12 @@ void RunParallelMapRectToImage(IArray& destArray, ParallelRunnerT&& runner, Args
     dataType = dynamic_cast<IDataArray*>(&destArray)->getDataType();
     if(dataType == DataType::boolean)
     {
-      RunBoolMapRectToImage(destArray, std::forward<ArgsT>(args)...);
+      RunBoolMapRectToImage(destArray, taskResult, std::forward<ArgsT>(args)...);
+      return;
     }
   }
 
-  ExecuteParallelFunction<MapRectGridDataToImageData, NoBooleanType>(dataType, std::forward<ParallelRunnerT>(runner), destArray, std::forward<ArgsT>(args)...);
+  ExecuteParallelFunction<MapRectGridDataToImageData, NoBooleanType>(dataType, std::forward<ParallelRunnerT>(runner), destArray, taskResult, std::forward<ArgsT>(args)...);
 }
 
 } // namespace CopyFromArray

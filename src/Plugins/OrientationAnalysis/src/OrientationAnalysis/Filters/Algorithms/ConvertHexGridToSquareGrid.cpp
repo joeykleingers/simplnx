@@ -222,6 +222,10 @@ public:
     {
       for(auto& atomicFile : m_AtomicFiles)
       {
+        if(m_ShouldCancel)
+        {
+          return MakeErrorResult(-1, "Filter cancelled");
+        }
         Result<> commitResult = atomicFile.value().commit();
         if(commitResult.invalid())
         {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "simplnx/Common/Aliases.hpp"
+#include "simplnx/Common/Result.hpp"
 #include "simplnx/Common/Types.hpp"
 #include "simplnx/simplnx_export.hpp"
 
@@ -365,7 +366,14 @@ public:
    */
   virtual const ShapeType& getTupleShape() const = 0;
 
-  virtual void resizeTuples(const ShapeType& tupleShape) = 0;
+  /**
+   * @brief Changes the tuple shape.
+   * @param tupleShape New tuple dimensions in slowest-to-fastest order.
+   * @return Valid on success. A resize failure returns error -6035.
+   *
+   * Callers must inspect the result because a failed resize can retain the prior string shape.
+   */
+  [[nodiscard]] virtual Result<> resizeTuples(const ShapeType& tupleShape) = 0;
 
   virtual reference operator[](usize index) = 0;
 

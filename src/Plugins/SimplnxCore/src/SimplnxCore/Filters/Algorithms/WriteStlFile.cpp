@@ -526,10 +526,10 @@ private:
  * @param vertices Provides flat XYZ coordinates.
  * @param maxTriangles Limits triangles in one file.
  * @param shouldCancel Stops before later triangles or commits when true.
- * @return AtomicFile creation error, or success after cancellation or commits.
+ * @return The first AtomicFile creation, cancellation, or commit error, or success after all commits.
  *
- * Commit failures are accumulated locally but not returned. Commits are sequential,
- * so a later failure can leave earlier overflow files published.
+ * Commits are sequential, so a later failure can leave earlier overflow files
+ * published.
  */
 Result<> ExecuteSingleFileOverflow(WriteStlFile* filter, const IGeometry::MeshIndexType nTriangles, const std::string& header, const fs::path& firstFile, const TriStore& triangles,
                                    const VertexStore& vertices, const usize maxTriangles, const std::atomic_bool& shouldCancel)
@@ -571,16 +571,19 @@ Result<> ExecuteSingleFileOverflow(WriteStlFile* filter, const IGeometry::MeshIn
 
   if(shouldCancel)
   {
-    return {};
+    return MakeErrorResult(-1, "Filter cancelled");
   }
 
-  Result<> endResult = {};
   for(auto& atomicFile : limitedFile.m_AtomicFilesList)
   {
+    if(shouldCancel)
+    {
+      return MakeErrorResult(-1, "Filter cancelled");
+    }
     Result<> commitResult = atomicFile.commit();
     if(commitResult.invalid())
     {
-      endResult = MergeResults(endResult, commitResult);
+      return commitResult;
     }
   }
 
@@ -641,10 +644,14 @@ Result<> WriteStlFile::operator()()
       }
       if(m_ShouldCancel)
       {
-        return {};
+        return MakeErrorResult(-1, "Filter cancelled");
       }
     }
 
+    if(m_ShouldCancel)
+    {
+      return MakeErrorResult(-1, "Filter cancelled");
+    }
     Result<> commitResult = atomicFile.commit();
     if(commitResult.invalid())
     {
@@ -663,12 +670,13 @@ Result<> WriteStlFile::operator()()
     }
   }
 
+  // Keep every AtomicFile alive until all group tasks finish. Declared before the task
+  // runner so the runner's destructor joins every worker while these files are still alive.
+  std::vector<LimitBoundAtomicFile> fileList;
+
   // Each group task writes a separate temporary file sequence.
   ParallelTaskAlgorithm taskRunner;
   taskRunner.setParallelizationEnabled(true);
-
-  // Keep every AtomicFile alive until all group tasks finish.
-  std::vector<LimitBoundAtomicFile> fileList;
 
   if(groupingType == GroupingType::Features)
   {
@@ -686,6 +694,8 @@ Result<> WriteStlFile::operator()()
       auto atomicFileResult = LimitBoundAtomicFileFactory::Create(firstFile);
       if(atomicFileResult.invalid())
       {
+        // Workers already running hold references to the block-local membership map, so join them before it goes out of scope.
+        taskRunner.wait();
         return ConvertResult(std::move(atomicFileResult));
       }
       fileList.emplace_back(std::move(atomicFileResult.value()));
@@ -718,6 +728,9 @@ Result<> WriteStlFile::operator()()
     // Reuse the feature-group membership and winding rule for phase-qualified names.
     const std::unordered_map<int32, std::vector<usize>> trianglesByFeature = ::BuildTrianglesByLabel(featureIds);
 
+    // Workers hold references into fileList, so it must never reallocate while tasks run.
+    fileList.reserve(uniqueGrainIdToPhase.size());
+
     usize fileIndex = 0;
     for(const auto& [featureId, value] : uniqueGrainIdToPhase)
     {
@@ -725,6 +738,8 @@ Result<> WriteStlFile::operator()()
       auto atomicFileResult = LimitBoundAtomicFileFactory::Create(firstFile);
       if(atomicFileResult.invalid())
       {
+        // Workers already running hold references to the block-local membership map, so join them before it goes out of scope.
+        taskRunner.wait();
         return ConvertResult(std::move(atomicFileResult));
       }
       fileList.emplace_back(std::move(atomicFileResult.value()));
@@ -756,6 +771,8 @@ Result<> WriteStlFile::operator()()
       auto atomicFileResult = LimitBoundAtomicFileFactory::Create(firstFile);
       if(atomicFileResult.invalid())
       {
+        // Workers already running hold references to the block-local membership map, so join them before it goes out of scope.
+        taskRunner.wait();
         return ConvertResult(std::move(atomicFileResult));
       }
       fileList.emplace_back(std::move(atomicFileResult.value()));
@@ -774,7 +791,7 @@ Result<> WriteStlFile::operator()()
 
   if(m_ShouldCancel)
   {
-    return {};
+    return MakeErrorResult(-1, "Filter cancelled");
   }
 
   // Publish each temporary file after all workers finish successfully.
@@ -782,10 +799,14 @@ Result<> WriteStlFile::operator()()
   {
     for(auto& atomicFile : limitedAtomicFile.m_AtomicFilesList)
     {
+      if(m_ShouldCancel)
+      {
+        return MakeErrorResult(-1, "Filter cancelled");
+      }
       Result<> commitResult = atomicFile.commit();
       if(commitResult.invalid())
       {
-        m_Result = MergeResults(m_Result, commitResult);
+        return commitResult;
       }
     }
   }

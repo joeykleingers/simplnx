@@ -209,7 +209,11 @@ Result<> CreateRegularGrid(DataStructure& dataStructure, const Arguments& filter
   image->setDimensions(iDims);
   image->setSpacing(iRes[0], iRes[1], iRes[2]);
   image->setOrigin(iOrigin[0], iOrigin[1], iOrigin[2]);
-  image->getCellData()->resizeTuples({iDims[2], iDims[1], iDims[0]});
+  Result<> resizeResult = image->getCellData()->resizeTuples({iDims[2], iDims[1], iDims[0]});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   return {};
 }

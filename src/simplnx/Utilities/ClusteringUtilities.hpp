@@ -176,11 +176,12 @@ float64 GetDistance(const leftDataType& leftVector, usize leftOffset, const righ
  * @param featureIds Cell-to-feature ID store to update.
  * @param totalFeatures Total feature count, including feature zero.
  * @pre totalFeatures is nonzero and totalFeatures - 1 fits int32.
- * @pre Each feature ID is in the range [0, totalFeatures). Bulk store operations succeed.
+ * @pre Each feature ID is in the range [0, totalFeatures).
+ * @return Error from the first bulk store operation that fails.
  *
  * Feature zero remains fixed. The supplied count avoids an additional full-store scan.
  */
-SIMPLNX_EXPORT void RandomizeFeatureIds(Int32AbstractDataStore& featureIds, usize totalFeatures);
+[[nodiscard]] SIMPLNX_EXPORT Result<> RandomizeFeatureIds(Int32AbstractDataStore& featureIds, usize totalFeatures);
 
 /**
  * @brief Permutes cell feature IDs and applies matching pairwise feature-tuple swaps.
@@ -188,12 +189,13 @@ SIMPLNX_EXPORT void RandomizeFeatureIds(Int32AbstractDataStore& featureIds, usiz
  * @param totalFeatures Total feature count, including feature zero.
  * @param featureIArrays Non-owning feature arrays to permute.
  * @pre totalFeatures is nonzero and totalFeatures - 1 fits int32.
- * @pre Each feature ID is in the range [0, totalFeatures). Bulk store operations succeed.
+ * @pre Each feature ID is in the range [0, totalFeatures).
  * @pre Each array pointer is non-null and contains at least totalFeatures tuples.
+ * @return Error from the first bulk store operation that fails.
  *
  * The caller supplies the feature arrays so it can omit arrays that must not move.
  * Feature zero remains fixed. The implementation derives a deterministic swap
  * sequence from the same feature-ID mapping.
  */
-SIMPLNX_EXPORT void RandomizeFeatureIds(Int32AbstractDataStore& featureIds, usize totalFeatures, std::vector<IArray*>& featureIArrays);
+[[nodiscard]] SIMPLNX_EXPORT Result<> RandomizeFeatureIds(Int32AbstractDataStore& featureIds, usize totalFeatures, std::vector<IArray*>& featureIArrays);
 } // namespace nx::core::ClusterUtilities

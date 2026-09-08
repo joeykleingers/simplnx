@@ -73,9 +73,14 @@ public:
     return GetDataType<T>();
   }
 
-  void resizeTuples(const ShapeType& /*tupleShape*/) override
+  /**
+   * @brief Rejects resize requests for this test store.
+   * @param tupleShape Requested tuple shape.
+   * @return Error -6035 because the test store does not implement resizing.
+   */
+  [[nodiscard]] Result<> resizeTuples([[maybe_unused]] const ShapeType& tupleShape) override
   {
-    throw std::runtime_error("MockOocDataStore::resizeTuples not implemented");
+    return MakeErrorResult(-6035, "MockOocDataStore resize failed: the test store does not implement resizing.");
   }
 
   value_type getValue(usize /*index*/) const override
@@ -88,47 +93,77 @@ public:
     throw std::runtime_error("MockOocDataStore::setValue not implemented");
   }
 
-  Result<> copyIntoBuffer(usize /*startIndex*/, nonstd::span<T> /*buffer*/) const override
+  /**
+   * @brief Rejects bulk reads for this test store.
+   * @param startIndex First requested value index.
+   * @param buffer Destination buffer.
+   * @return The test-only bulk-read error.
+   */
+  [[nodiscard]] Result<> copyIntoBuffer([[maybe_unused]] usize startIndex, [[maybe_unused]] nonstd::span<T> buffer) const override
   {
     return MakeErrorResult(-9001, "MockOocDataStore::copyIntoBuffer not implemented");
   }
 
-  Result<> copyFromBuffer(usize /*startIndex*/, nonstd::span<const T> /*buffer*/) override
+  /**
+   * @brief Rejects bulk writes for this test store.
+   * @param startIndex First requested value index.
+   * @param buffer Source buffer.
+   * @return The test-only bulk-write error.
+   */
+  [[nodiscard]] Result<> copyFromBuffer([[maybe_unused]] usize startIndex, [[maybe_unused]] nonstd::span<const T> buffer) override
   {
     return MakeErrorResult(-9002, "MockOocDataStore::copyFromBuffer not implemented");
   }
 
-  std::vector<T> readExtent(const Extent& /*extent*/) const override
+  /**
+   * @brief Rejects allocating extent reads for this test store.
+   * @param extent Requested tuple-space extent.
+   * @return Error -6032 because the test store does not implement extent reads.
+   */
+  [[nodiscard]] Result<std::vector<T>> readExtent([[maybe_unused]] const Extent& extent) const override
   {
-    throw std::runtime_error("MockOocDataStore::readExtent not implemented");
+    return MakeErrorResult<std::vector<T>>(-6032, "MockOocDataStore extent read failed: the test store does not implement extent reads.");
   }
 
-  void readExtentIntoBuffer(const Extent& extent, nonstd::span<T> destination) const override
+  /**
+   * @brief Fills a valid extent destination with zero values.
+   * @param extent Requested tuple-space extent.
+   * @param destination Receives the test values.
+   * @return Valid on success. Error -6034 reports invalid extent arguments.
+   */
+  [[nodiscard]] Result<> readExtentIntoBuffer(const Extent& extent, nonstd::span<T> destination) const override
   {
     if(extent.dimensions() != m_TupleShape.size())
     {
-      throw std::invalid_argument("MockOocDataStore::readExtentIntoBuffer extent dimensions do not match the tuple shape");
+      return MakeErrorResult(-6034, "MockOocDataStore extent read failed: extent dimensions do not match the tuple shape.");
     }
     for(usize dimension = 0; dimension < m_TupleShape.size(); ++dimension)
     {
       if(extent.stride[dimension] == 0 || extent.min[dimension] > extent.max[dimension] || extent.max[dimension] >= m_TupleShape[dimension])
       {
-        throw std::invalid_argument("MockOocDataStore::readExtentIntoBuffer extent is outside the tuple shape");
+        return MakeErrorResult(-6034, "MockOocDataStore extent read failed: the extent is outside the tuple shape.");
       }
     }
 
     const usize requiredValues = static_cast<usize>(extent.totalElements()) * m_NumComponents;
     if(destination.size() != requiredValues)
     {
-      throw std::invalid_argument("MockOocDataStore::readExtentIntoBuffer destination size does not match the extent");
+      return MakeErrorResult(-6034, "MockOocDataStore extent read failed: destination size does not match the extent.");
     }
 
     std::fill(destination.begin(), destination.end(), T{});
+    return {};
   }
 
-  void writeExtent(const Extent& /*extent*/, nonstd::span<const T> /*data*/) override
+  /**
+   * @brief Rejects extent writes for this test store.
+   * @param extent Requested tuple-space extent.
+   * @param data Source values.
+   * @return Error -6033 because the test store does not implement extent writes.
+   */
+  [[nodiscard]] Result<> writeExtent([[maybe_unused]] const Extent& extent, [[maybe_unused]] nonstd::span<const T> data) override
   {
-    throw std::runtime_error("MockOocDataStore::writeExtent not implemented");
+    return MakeErrorResult(-6033, "MockOocDataStore extent write failed: the test store does not implement extent writes.");
   }
 
   value_type at(usize /*index*/) const override

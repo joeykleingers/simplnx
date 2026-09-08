@@ -80,14 +80,19 @@ Result<> ErodeDilateMask::operator()()
 
   // Reads one Z-slice from the data store into both the read and write buffers.
   // The bool->uint8 conversion happens here.
-  auto readMaskSlice = [&](int64 z, usize slot) {
+  auto readMaskSlice = [&](int64 z, usize slot) -> Result<> {
     const usize zOffset = static_cast<usize>(z) * sliceSize;
-    maskStore.copyIntoBuffer(zOffset, nonstd::span<bool>(boolBuf.get(), sliceSize));
+    Result<> readResult = maskStore.copyIntoBuffer(zOffset, nonstd::span<bool>(boolBuf.get(), sliceSize));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < sliceSize; i++)
     {
       maskSlices[slot][i] = boolBuf[i] ? 1 : 0;
       maskCopySlices[slot][i] = maskSlices[slot][i];
     }
+    return {};
   };
 
   // Maps face-neighbor index to rolling-window slot:
@@ -101,10 +106,18 @@ Result<> ErodeDilateMask::operator()()
 
     // Re-initialize rolling window from the (potentially modified) store.
     // z=0 -> slot 1 (current), z=1 -> slot 2 (next).
-    readMaskSlice(0, 1);
+    Result<> ioResult = readMaskSlice(0, 1);
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     if(dims[2] > 1)
     {
-      readMaskSlice(1, 2);
+      ioResult = readMaskSlice(1, 2);
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
 
     // ---- Z-slice scan loop ----
@@ -119,7 +132,11 @@ Result<> ErodeDilateMask::operator()()
         std::swap(maskCopySlices[1], maskCopySlices[2]);
         if(zIdx + 1 < dims[2])
         {
-          readMaskSlice(zIdx + 1, 2);
+          ioResult = readMaskSlice(zIdx + 1, 2);
+          if(ioResult.invalid())
+          {
+            return ioResult;
+          }
         }
       }
 
@@ -201,7 +218,11 @@ Result<> ErodeDilateMask::operator()()
         {
           boolBuf[i] = (maskCopySlices[0][i] != 0);
         }
-        maskStore.copyFromBuffer(prevZOffset, nonstd::span<const bool>(boolBuf.get(), sliceSize));
+        ioResult = maskStore.copyFromBuffer(prevZOffset, nonstd::span<const bool>(boolBuf.get(), sliceSize));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
     }
 
@@ -213,7 +234,11 @@ Result<> ErodeDilateMask::operator()()
       {
         boolBuf[i] = (maskCopySlices[1][i] != 0);
       }
-      maskStore.copyFromBuffer(0, nonstd::span<const bool>(boolBuf.get(), sliceSize));
+      ioResult = maskStore.copyFromBuffer(0, nonstd::span<const bool>(boolBuf.get(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
     else
     {
@@ -224,7 +249,11 @@ Result<> ErodeDilateMask::operator()()
       {
         boolBuf[i] = (maskCopySlices[1][i] != 0);
       }
-      maskStore.copyFromBuffer(lastZOffset, nonstd::span<const bool>(boolBuf.get(), sliceSize));
+      ioResult = maskStore.copyFromBuffer(lastZOffset, nonstd::span<const bool>(boolBuf.get(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
 

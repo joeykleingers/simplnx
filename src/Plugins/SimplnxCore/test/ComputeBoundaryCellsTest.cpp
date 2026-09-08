@@ -57,7 +57,7 @@ void BuildOctantFeatureIds(DataStructure& ds)
         sliceBuffer[inSlice] = ((globalIdx * 7 + 13) % 100) < 5 ? 0 : octant;
       }
     }
-    fidsRef.copyFromBuffer(iz * sliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(fidsRef.copyFromBuffer(iz * sliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceSize)));
   }
 }
 } // namespace

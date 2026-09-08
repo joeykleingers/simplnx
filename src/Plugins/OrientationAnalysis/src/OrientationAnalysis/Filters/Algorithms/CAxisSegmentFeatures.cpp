@@ -160,7 +160,10 @@ Result<> CAxisSegmentFeatures::operator()()
   // Feature tuple zero remains reserved for background cells.
   ShapeType tDims = {static_cast<usize>(m_FoundFeatures + 1)};
   auto& cellFeatureAM = m_DataStructure.getDataRefAs<AttributeMatrix>(m_InputValues->CellFeatureAttributeMatrixPath);
-  cellFeatureAM.resizeTuples(tDims);
+  if(Result<> resizeResult = cellFeatureAM.resizeTuples(tDims); resizeResult.invalid())
+  {
+    return ConvertResult(std::move(resizeResult));
+  }
 
   auto* activeArray = m_DataStructure.getDataAs<UInt8Array>(m_InputValues->ActiveArrayPath);
   activeArray->getDataStore()->fill(1);
@@ -169,7 +172,10 @@ Result<> CAxisSegmentFeatures::operator()()
   // Random IDs improve visual distinction between adjacent features.
   if(m_InputValues->RandomizeFeatureIds)
   {
-    ClusterUtilities::RandomizeFeatureIds(m_FeatureIdsArray->getDataStoreRef(), m_FoundFeatures + 1);
+    if(Result<> randomizeResult = ClusterUtilities::RandomizeFeatureIds(m_FeatureIdsArray->getDataStoreRef(), m_FoundFeatures + 1); randomizeResult.invalid())
+    {
+      return ConvertResult(std::move(randomizeResult));
+    }
   }
 
   return {};

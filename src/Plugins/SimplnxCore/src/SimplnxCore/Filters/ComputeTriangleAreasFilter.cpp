@@ -132,7 +132,17 @@ Result<> ComputeTriangleAreasFilter::executeImpl(DataStructure& dataStructure, c
 
   const auto& triStore = triangleGeom->getFaces()->getDataStoreRef();
   const auto& vertStore = triangleGeom->getVertices()->getDataStoreRef();
+  const DataPath trianglePath = pTriangleGeometryDataPath.createChildPath(triangleGeom->getFaces()->getName());
+  const DataPath vertexPath = pTriangleGeometryDataPath.createChildPath(triangleGeom->getVertices()->getName());
   const usize numTris = triangleGeom->getNumberOfFaces();
+
+  const auto addIoContext = [](Result<> result, const DataPath& path, usize offset, usize count, const char* operation) {
+    for(auto& error : result.errors())
+    {
+      error.message = fmt::format("{} for array '{}' over element range [{}, {}): {}", operation, path.toString(), offset, offset + count, error.message);
+    }
+    return result;
+  };
 
   // Connectivity and area buffers stay bounded by the triangle chunk size.
   auto triBuf = std::make_unique<uint64[]>(k_ChunkTriangles * 3);
@@ -141,8 +151,6 @@ Result<> ComputeTriangleAreasFilter::executeImpl(DataStructure& dataStructure, c
   // Vertex scratch grows once and remains bounded by k_MaxVertexSpan.
   std::vector<float32> vertBuf;
 
-  // The algorithm does not inspect bulk-I/O Result values. A storage error can
-  // leave partial area output.
   for(usize chunkStart = 0; chunkStart < numTris; chunkStart += k_ChunkTriangles)
   {
     if(shouldCancel)
@@ -151,7 +159,11 @@ Result<> ComputeTriangleAreasFilter::executeImpl(DataStructure& dataStructure, c
     }
     const usize chunkCount = std::min<usize>(k_ChunkTriangles, numTris - chunkStart);
 
-    triStore.copyIntoBuffer(chunkStart * 3, nonstd::span<uint64>(triBuf.get(), chunkCount * 3));
+    Result<> ioResult = triStore.copyIntoBuffer(chunkStart * 3, nonstd::span<uint64>(triBuf.get(), chunkCount * 3));
+    if(ioResult.invalid())
+    {
+      return addIoContext(std::move(ioResult), trianglePath, chunkStart * 3, chunkCount * 3, "Bulk read failed");
+    }
 
     uint64 minVertIdx = std::numeric_limits<uint64>::max();
     uint64 maxVertIdx = 0;
@@ -178,7 +190,11 @@ Result<> ComputeTriangleAreasFilter::executeImpl(DataStructure& dataStructure, c
       {
         vertBuf.resize(needFloats);
       }
-      vertStore.copyIntoBuffer(minVertIdx * 3, nonstd::span<float32>(vertBuf.data(), needFloats));
+      ioResult = vertStore.copyIntoBuffer(minVertIdx * 3, nonstd::span<float32>(vertBuf.data(), needFloats));
+      if(ioResult.invalid())
+      {
+        return addIoContext(std::move(ioResult), vertexPath, minVertIdx * 3, needFloats, "Bulk read failed");
+      }
 
       // Workers access only local buffers and write disjoint area positions.
       const uint64* triBufPtr = triBuf.get();
@@ -221,9 +237,21 @@ Result<> ComputeTriangleAreasFilter::executeImpl(DataStructure& dataStructure, c
         const uint64 v0 = triBuf[i * 3 + 0];
         const uint64 v1 = triBuf[i * 3 + 1];
         const uint64 v2 = triBuf[i * 3 + 2];
-        vertStore.copyIntoBuffer(v0 * 3, nonstd::span<float32>(v0Buf.data(), 3));
-        vertStore.copyIntoBuffer(v1 * 3, nonstd::span<float32>(v1Buf.data(), 3));
-        vertStore.copyIntoBuffer(v2 * 3, nonstd::span<float32>(v2Buf.data(), 3));
+        ioResult = vertStore.copyIntoBuffer(v0 * 3, nonstd::span<float32>(v0Buf.data(), 3));
+        if(ioResult.invalid())
+        {
+          return addIoContext(std::move(ioResult), vertexPath, v0 * 3, 3, "Bulk read failed");
+        }
+        ioResult = vertStore.copyIntoBuffer(v1 * 3, nonstd::span<float32>(v1Buf.data(), 3));
+        if(ioResult.invalid())
+        {
+          return addIoContext(std::move(ioResult), vertexPath, v1 * 3, 3, "Bulk read failed");
+        }
+        ioResult = vertStore.copyIntoBuffer(v2 * 3, nonstd::span<float32>(v2Buf.data(), 3));
+        if(ioResult.invalid())
+        {
+          return addIoContext(std::move(ioResult), vertexPath, v2 * 3, 3, "Bulk read failed");
+        }
         const Point3Df p0{v0Buf[0], v0Buf[1], v0Buf[2]};
         const Point3Df p1{v1Buf[0], v1Buf[1], v1Buf[2]};
         const Point3Df p2{v2Buf[0], v2Buf[1], v2Buf[2]};
@@ -234,7 +262,11 @@ Result<> ComputeTriangleAreasFilter::executeImpl(DataStructure& dataStructure, c
       }
     }
 
-    areaStore.copyFromBuffer(chunkStart, nonstd::span<const float64>(areaBuf.get(), chunkCount));
+    ioResult = areaStore.copyFromBuffer(chunkStart, nonstd::span<const float64>(areaBuf.get(), chunkCount));
+    if(ioResult.invalid())
+    {
+      return addIoContext(std::move(ioResult), pCalculatedAreasDataPath, chunkStart, chunkCount, "Bulk write failed");
+    }
   }
 
   return {};

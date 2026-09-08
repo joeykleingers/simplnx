@@ -287,13 +287,21 @@ Result<> AlignSectionsFeatureCentroid::findShiftsOoc(std::vector<int64>& xShifts
 
     if(maskUInt8StorePtr != nullptr)
     {
-      maskUInt8StorePtr->copyIntoBuffer(sliceOffset, nonstd::span<uint8>(maskBuf.data(), sliceVoxels));
+      Result<> readResult = maskUInt8StorePtr->copyIntoBuffer(sliceOffset, nonstd::span<uint8>(maskBuf.data(), sliceVoxels));
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
     }
     else if(maskBoolStorePtr != nullptr)
     {
       // NOLINTNEXTLINE(modernize-avoid-c-arrays) -- Runtime-sized buffer; std::array cannot represent this extent.
       auto boolBuf = std::make_unique<bool[]>(sliceVoxels);
-      maskBoolStorePtr->copyIntoBuffer(sliceOffset, nonstd::span<bool>(boolBuf.get(), sliceVoxels));
+      Result<> readResult = maskBoolStorePtr->copyIntoBuffer(sliceOffset, nonstd::span<bool>(boolBuf.get(), sliceVoxels));
+      if(readResult.invalid())
+      {
+        return readResult;
+      }
       for(usize idx = 0; idx < sliceVoxels; idx++)
       {
         maskBuf[idx] = boolBuf[idx] ? 1 : 0;

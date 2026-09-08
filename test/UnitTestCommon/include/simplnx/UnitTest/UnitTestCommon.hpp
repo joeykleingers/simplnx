@@ -554,8 +554,8 @@ void CompareDataArrays(const IDataArray& left, const IDataArray& right, usize st
   for(usize offset = start; offset < totalSize && !failed; offset += k_ChunkSize)
   {
     const usize count = std::min(k_ChunkSize, totalSize - offset);
-    oldDataStore.copyIntoBuffer(offset, nonstd::span<T>(oldBuf.get(), count));
-    newDataStore.copyIntoBuffer(offset, nonstd::span<T>(newBuf.get(), count));
+    SIMPLNX_RESULT_REQUIRE_VALID(oldDataStore.copyIntoBuffer(offset, nonstd::span<T>(oldBuf.get(), count)));
+    SIMPLNX_RESULT_REQUIRE_VALID(newDataStore.copyIntoBuffer(offset, nonstd::span<T>(newBuf.get(), count)));
 
     for(usize i = 0; i < count; i++)
     {
@@ -644,8 +644,8 @@ void CompareDataArraysByComponent(const IDataArray& left, const IDataArray& righ
   {
     const usize tCount = std::min(k_ChunkTuples, tupleCount - tStart);
     const usize elemCount = tCount * componentCount;
-    oldDataStore.copyIntoBuffer(tStart * componentCount, nonstd::span<T>(oldBuf.get(), elemCount));
-    newDataStore.copyIntoBuffer(tStart * componentCount, nonstd::span<T>(newBuf.get(), elemCount));
+    SIMPLNX_RESULT_REQUIRE_VALID(oldDataStore.copyIntoBuffer(tStart * componentCount, nonstd::span<T>(oldBuf.get(), elemCount)));
+    SIMPLNX_RESULT_REQUIRE_VALID(newDataStore.copyIntoBuffer(tStart * componentCount, nonstd::span<T>(newBuf.get(), elemCount)));
 
     for(usize t = 0; t < tCount; t++)
     {
@@ -711,8 +711,8 @@ void CompareArrays(const DataStructure& dataStructure, const DataPath& exemplary
   for(usize offset = 0; offset < totalSize && !failed; offset += k_ChunkSize)
   {
     const usize count = std::min(k_ChunkSize, totalSize - offset);
-    oldStore.copyIntoBuffer(offset, nonstd::span<T>(oldBuf.get(), count));
-    newStore.copyIntoBuffer(offset, nonstd::span<T>(newBuf.get(), count));
+    SIMPLNX_RESULT_REQUIRE_VALID(oldStore.copyIntoBuffer(offset, nonstd::span<T>(oldBuf.get(), count)));
+    SIMPLNX_RESULT_REQUIRE_VALID(newStore.copyIntoBuffer(offset, nonstd::span<T>(newBuf.get(), count)));
 
     for(usize i = 0; i < count; i++)
     {
@@ -778,8 +778,8 @@ void CompareFloatArraysWithNans(const DataStructure& dataStructure, const DataPa
   for(usize offset = 0; offset < totalSize; offset += k_ChunkSize)
   {
     const usize count = std::min(k_ChunkSize, totalSize - offset);
-    oldStore.copyIntoBuffer(offset, nonstd::span<T>(oldBuf.get(), count));
-    newStore.copyIntoBuffer(offset, nonstd::span<T>(newBuf.get(), count));
+    SIMPLNX_RESULT_REQUIRE_VALID(oldStore.copyIntoBuffer(offset, nonstd::span<T>(oldBuf.get(), count)));
+    SIMPLNX_RESULT_REQUIRE_VALID(newStore.copyIntoBuffer(offset, nonstd::span<T>(newBuf.get(), count)));
 
     for(usize i = 0; i < count; i++)
     {

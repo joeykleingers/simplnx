@@ -967,8 +967,8 @@ bool SegmentFeatures::areNeighborsSimilar(int64 point1, int64 point2) const
   return false;
 }
 
-void SegmentFeatures::randomizeFeatureIds(nx::core::Int32Array* featureIds, uint64 totalFeatures)
+Result<> SegmentFeatures::randomizeFeatureIds(nx::core::Int32Array* featureIds, uint64 totalFeatures)
 {
   m_MessageHelper.sendMessage("Randomizing Feature Ids");
-  ClusterUtilities::RandomizeFeatureIds(featureIds->getDataStoreRef(), totalFeatures);
+  return ClusterUtilities::RandomizeFeatureIds(featureIds->getDataStoreRef(), totalFeatures);
 }

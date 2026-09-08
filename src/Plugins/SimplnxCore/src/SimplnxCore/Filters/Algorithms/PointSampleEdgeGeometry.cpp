@@ -186,9 +186,17 @@ Result<> PointSampleEdgeGeometry::operator()()
 
   // Resize the vertex geometry and the vertex attribute matrix
   auto& vertices = vertexGeom.getVerticesRef();
-  vertices.resizeTuples({numVertices});
+  Result<> resizeResult = vertices.resizeTuples({numVertices});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
   auto& vertexAttrMatrix = vertexGeom.getVertexAttributeMatrixRef();
-  vertexAttrMatrix.resizeTuples({numVertices});
+  resizeResult = vertexAttrMatrix.resizeTuples({numVertices});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   // --- Step 2: Generate and write each sampled point ---
   m_MessageHandler(IFilter::Message::Type::Info, "Generating sampled points along edge geometry...");

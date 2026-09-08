@@ -203,7 +203,11 @@ Result<> CreateFeatureArrayFromElementArray::operator()()
       }
     }
 
-    cellFeatureAttrMat.resizeTuples({requiredFeatureTuples});
+    Result<> resizeResult = cellFeatureAttrMat.resizeTuples({requiredFeatureTuples});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   }
 
   return ExecuteDataFunction(CopyCellDataFunctor{}, selectedCellArray->getDataType(), selectedCellArray, featureIdsStore, createdArray, m_ShouldCancel);

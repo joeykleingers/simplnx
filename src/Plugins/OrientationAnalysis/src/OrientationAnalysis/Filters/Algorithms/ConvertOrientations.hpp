@@ -8,6 +8,7 @@
 #include "simplnx/Parameters/ArraySelectionParameter.hpp"
 #include "simplnx/Parameters/ChoicesParameter.hpp"
 #include "simplnx/Parameters/DataObjectNameParameter.hpp"
+#include "simplnx/Utilities/DataArrayUtilities.hpp"
 
 #include <EbsdLib/Orientation/OrientationFwd.hpp>
 
@@ -72,7 +73,7 @@ public:
 
   /**
    * @brief Converts orientations.
-   * @return Success.
+   * @return Success or the first parallel store transfer error.
    *
    * Cancellation returns success with completed chunks preserved.
    */
@@ -93,6 +94,20 @@ public:
   void sendThreadSafeProgressMessage(usize counter);
 
   /**
+   * @brief Tests whether a parallel worker reported a store error.
+   * @return True if workers must stop before another transfer.
+   */
+  bool shouldAbort() const noexcept;
+
+  /**
+   * @brief Stores the first parallel store error.
+   * @param result Supplies one store transfer result.
+   *
+   * The shared state uses a mutex because worker copies can report concurrently.
+   */
+  void storeResult(Result<> result);
+
+  /**
    * @brief Returns the retained cancellation flag.
    * @return Reference to the cancellation flag supplied at construction.
    */
@@ -109,6 +124,7 @@ private:
 
   std::chrono::steady_clock::time_point m_InitialPoint = std::chrono::steady_clock::now();
   mutable std::mutex m_ProgressMessage_Mutex;
+  CopyFromArray::ParallelTaskResult m_ParallelResult;
   usize m_TotalPoints = 0;
   usize m_ProgressCounter = 0;
 };

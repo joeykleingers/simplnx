@@ -340,7 +340,11 @@ Result<IArray*> CreateDefaultValueArrayFromArray(DataStructure& destDataStructur
   {
   case IArray::ArrayType::StringArray: {
     auto newStringArray = StringArray::Create(destDataStructure, newArrayName, parentId);
-    newStringArray->resizeTuples(tupleShape);
+    auto resizeResult = newStringArray->resizeTuples(tupleShape);
+    if(resizeResult.invalid())
+    {
+      return ConvertInvalidResult<IArray*>(std::move(resizeResult));
+    }
     std::fill(newStringArray->begin(), newStringArray->end(), defaultValue);
     return {newStringArray};
   }

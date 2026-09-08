@@ -295,17 +295,41 @@ struct ExtractFeatureBoundariesFunctor
 
     if(totalEdgeCount == 0)
     {
-      edgeGeom.resizeVertexList(0);
-      edgeGeom.resizeEdgeList(0);
-      edgeGeom.getVertexAttributeMatrix()->resizeTuples({0});
-      edgeGeom.getEdgeAttributeMatrix()->resizeTuples({0});
+      Result<> resizeResult = edgeGeom.resizeVertexList(0);
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
+      resizeResult = edgeGeom.resizeEdgeList(0);
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
+      resizeResult = edgeGeom.getVertexAttributeMatrix()->resizeTuples({0});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
+      resizeResult = edgeGeom.getEdgeAttributeMatrix()->resizeTuples({0});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
       return {};
     }
 
     // Allocate two endpoints per edge. Deduplication removes shared copies later.
     const usize numVertices = totalEdgeCount * 2;
-    edgeGeom.resizeVertexList(numVertices);
-    edgeGeom.resizeEdgeList(totalEdgeCount);
+    Result<> resizeResult = edgeGeom.resizeVertexList(numVertices);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = edgeGeom.resizeEdgeList(totalEdgeCount);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
 
     INodeGeometry0D::SharedVertexList& verticesRef = edgeGeom.getVerticesRef();
     INodeGeometry1D::SharedEdgeList& edgesRef = edgeGeom.getEdgesRef();
@@ -437,8 +461,16 @@ struct ExtractFeatureBoundariesFunctor
     }
 
     // Update attribute matrices to match the actual counts
-    edgeGeom.getVertexAttributeMatrix()->resizeTuples({numVertices});
-    edgeGeom.getEdgeAttributeMatrix()->resizeTuples({totalEdgeCount});
+    resizeResult = edgeGeom.getVertexAttributeMatrix()->resizeTuples({numVertices});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = edgeGeom.getEdgeAttributeMatrix()->resizeTuples({totalEdgeCount});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
 
     // Merge shared endpoints and update edge connectivity.
     Result<> result = GeometryUtilities::EliminateDuplicateNodes<EdgeGeom>(edgeGeom);

@@ -27,19 +27,29 @@ constexpr uint64 k_ZSliceBatch = 32;
  * slices. ParallelTaskAlgorithm can run several array tasks at the same time,
  * so total scratch is the sum of active tasks.
  *
- * Bulk-transfer Result values are ignored because the worker interface returns
- * void. Cancellation leaves the destination fill value and completed slabs.
+ * Cancellation or an error leaves the destination fill value and completed slabs.
  */
 template <typename T>
 class CropImageGeomDataArray
 {
 public:
-  CropImageGeomDataArray(const IDataArray& oldCellArray, IDataArray& newCellArray, const ImageGeom& srcImageGeom, std::array<uint64, 6> bounds, const std::atomic_bool& shouldCancel)
+  /**
+   * @brief Creates one array-cropping task.
+   * @param oldCellArray Supplies source cell tuples.
+   * @param newCellArray Receives cropped cell tuples.
+   * @param srcImageGeom Supplies source dimensions.
+   * @param bounds Specifies half-open XYZ crop bounds.
+   * @param shouldCancel Stops before a later Z slab.
+   * @param taskResult Stores the first bulk-I/O error from all array tasks.
+   */
+  CropImageGeomDataArray(const IDataArray& oldCellArray, IDataArray& newCellArray, const ImageGeom& srcImageGeom, std::array<uint64, 6> bounds, const std::atomic_bool& shouldCancel,
+                         CopyFromArray::ParallelTaskResult& taskResult)
   : m_OldCellStore(oldCellArray.template getIDataStoreRefAs<AbstractDataStore<T>>())
   , m_NewCellStore(newCellArray.template getIDataStoreRefAs<AbstractDataStore<T>>())
   , m_SrcImageGeom(srcImageGeom)
   , m_Bounds(bounds)
   , m_ShouldCancel(shouldCancel)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -93,7 +103,7 @@ protected:
 
     for(uint64 zStart = zMin; zStart < zMax; zStart += k_ZSliceBatch)
     {
-      if(m_ShouldCancel)
+      if(m_ShouldCancel || m_TaskResult.shouldAbort())
       {
         return;
       }
@@ -112,7 +122,12 @@ protected:
 
       // Read consecutive source slices in one transfer.
       const uint64 srcStartTuple = zStart * srcSliceTuples;
-      m_OldCellStore.copyIntoBuffer(srcStartTuple * numComps, nonstd::span<T>(srcSlab.get(), srcSlabElements));
+      Result<> readResult = m_OldCellStore.copyIntoBuffer(srcStartTuple * numComps, nonstd::span<T>(srcSlab.get(), srcSlabElements));
+      if(readResult.invalid())
+      {
+        m_TaskResult.store(std::move(readResult));
+        return;
+      }
 
       // Extract cropped rows from the resident source slab.
       for(uint64 dz = 0; dz < batch; dz++)
@@ -129,7 +144,12 @@ protected:
 
       // Write consecutive destination slices in one transfer.
       const uint64 dstStartTuple = (zStart - zMin) * dstSliceTuples;
-      m_NewCellStore.copyFromBuffer(dstStartTuple * numComps, nonstd::span<const T>(dstSlab.get(), dstSlabElements));
+      Result<> writeResult = m_NewCellStore.copyFromBuffer(dstStartTuple * numComps, nonstd::span<const T>(dstSlab.get(), dstSlabElements));
+      if(writeResult.invalid())
+      {
+        m_TaskResult.store(std::move(writeResult));
+        return;
+      }
     }
 
     // Copy bounds already constrain Z. Suppress the unused dimension value.
@@ -142,6 +162,7 @@ private:
   const ImageGeom& m_SrcImageGeom;
   std::array<uint64, 6> m_Bounds;
   const std::atomic_bool& m_ShouldCancel;
+  CopyFromArray::ParallelTaskResult& m_TaskResult;
 };
 } // namespace
 
@@ -228,6 +249,8 @@ Result<> CropImageGeometry::operator()()
   std::array<uint64, 6> bounds = {xMin, xMax + 1, yMin, yMax + 1, zMin, zMax + 1};
 
   // Each task owns one source and destination array. Arrays can copy in parallel.
+  // Declared before the task runner so the runner's destructor joins every worker while this holder is still alive.
+  CopyFromArray::ParallelTaskResult taskResult;
   ParallelTaskAlgorithm taskRunner;
   const auto& srcCellDataAM = srcImageGeom.getCellDataRef();
   auto& destCellDataAM = destImageGeom.getCellDataRef();
@@ -244,9 +267,14 @@ Result<> CropImageGeometry::operator()()
     auto& newDataArray = dynamic_cast<IDataArray&>(destCellDataAM.at(srcName));
 
     m_MessageHandler(fmt::format("Cropping Volume || Copying Data Array {}", srcName));
-    ExecuteParallelFunction<CropImageGeomDataArray>(oldDataArray.getDataType(), taskRunner, oldDataArray, newDataArray, srcImageGeom, bounds, m_ShouldCancel);
+    ExecuteParallelFunction<CropImageGeomDataArray>(oldDataArray.getDataType(), taskRunner, oldDataArray, newDataArray, srcImageGeom, bounds, m_ShouldCancel, taskResult);
   }
   taskRunner.wait();
+  Result<> cropResult = taskResult.takeResult();
+  if(cropResult.invalid())
+  {
+    return cropResult;
+  }
 
   if(m_ShouldCancel)
   {

@@ -35,7 +35,14 @@ public:
 
   const ShapeType& getTupleShape() const override;
 
-  void resizeTuples(const ShapeType& tupleShape) override;
+  /**
+   * @brief Changes the tuple shape and retains values in the shared prefix.
+   * @param tupleShape New tuple dimensions in slowest-to-fastest order.
+   * @return Valid on success. Allocation failure returns error -6035 and preserves the prior store.
+   *
+   * The Result contract prevents an allocation failure from escaping across the store boundary.
+   */
+  [[nodiscard]] Result<> resizeTuples(const ShapeType& tupleShape) override;
 
   usize size() const override;
   bool empty() const override;

@@ -6,6 +6,7 @@
 #include "simplnx/DataStructure/INeighborList.hpp"
 #include "simplnx/DataStructure/IO/Generic/IExternalSort.hpp"
 #include "simplnx/Utilities/AlgorithmDispatch.hpp"
+#include "simplnx/Utilities/DataArrayUtilities.hpp"
 #include "simplnx/Utilities/DataStoreUtilities.hpp"
 #include "simplnx/Utilities/FilterUtilities.hpp"
 #include "simplnx/Utilities/HistogramUtilities.hpp"
@@ -104,12 +105,13 @@ public:
    * @param mask Selects accepted tuples.
    * @param overflow Counts values outside configured ranges.
    * @param progressMessageHelper Reports progress.
+   * @param taskResult Stores the first bulk-I/O error from all feature workers.
    * @pre Referenced stores, mask, and progress helper outlive this worker.
    */
   GenerateFeatureHistogramImpl(const AbstractDataStore<Type>& inputStore, AbstractDataStore<Type>& binRangesStore, NeighborList<Type>* modalBinRangesList,
                                const AbstractDataStore<int32>& featureIdsStore, float64 histMin, float64 histMax, bool histFullRange, const std::atomic_bool& shouldCancel, const int32 numBins,
                                AbstractDataStore<SizeType>& histogramStore, AbstractDataStore<SizeType>& mostPopulatedStore, const std::unique_ptr<MaskCompareUtilities::MaskCompare>& mask,
-                               std::atomic<usize>& overflow, ProgressMessageHelper& progressMessageHelper)
+                               std::atomic<usize>& overflow, ProgressMessageHelper& progressMessageHelper, CopyFromArray::ParallelTaskResult& taskResult)
   : m_InputStore(inputStore)
   , m_ShouldCancel(shouldCancel)
   , m_NumBins(numBins)
@@ -124,6 +126,7 @@ public:
   , m_Mask(mask)
   , m_Overflow(overflow)
   , m_ProgressMessageHelper(progressMessageHelper)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -142,12 +145,13 @@ public:
    * @param mask Selects accepted tuples.
    * @param overflow Counts values outside configured ranges.
    * @param progressMessageHelper Reports progress.
+   * @param taskResult Stores the first bulk-I/O error from all feature workers.
    * @pre Referenced stores, mask, and progress helper outlive this worker.
    */
   GenerateFeatureHistogramImpl(const AbstractDataStore<Type>& inputStore, AbstractDataStore<Type>& binRangesStore, const AbstractDataStore<int32>& featureIdsStore, float64 histMin, float64 histMax,
                                bool histFullRange, const std::atomic_bool& shouldCancel, const int32 numBins, AbstractDataStore<SizeType>& histogramStore,
                                AbstractDataStore<SizeType>& mostPopulatedStore, const std::unique_ptr<MaskCompareUtilities::MaskCompare>& mask, std::atomic<usize>& overflow,
-                               ProgressMessageHelper& progressMessageHelper)
+                               ProgressMessageHelper& progressMessageHelper, CopyFromArray::ParallelTaskResult& taskResult)
   : m_InputStore(inputStore)
   , m_ShouldCancel(shouldCancel)
   , m_NumBins(numBins)
@@ -162,6 +166,7 @@ public:
   , m_Mask(mask)
   , m_Overflow(overflow)
   , m_ProgressMessageHelper(progressMessageHelper)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -209,7 +214,7 @@ public:
 
     for(usize localFeatureIndex = 0; localFeatureIndex < numCurrentFeatures; localFeatureIndex++)
     {
-      if(m_ShouldCancel)
+      if(m_ShouldCancel || m_TaskResult.shouldAbort())
       {
         return;
       }
@@ -256,8 +261,18 @@ public:
       }
 
       const usize chunkTupleCount = std::min(k_ChunkTuples, numTuples - chunkStart);
-      m_FeatureIdsStore.copyIntoBuffer(chunkStart, nonstd::span<int32>(featureIdsBuffer.get(), chunkTupleCount));
-      m_InputStore.copyIntoBuffer(chunkStart, nonstd::span<Type>(valueBuffer.get(), chunkTupleCount));
+      Result<> readResult = m_FeatureIdsStore.copyIntoBuffer(chunkStart, nonstd::span<int32>(featureIdsBuffer.get(), chunkTupleCount));
+      if(readResult.invalid())
+      {
+        m_TaskResult.store(std::move(readResult));
+        return;
+      }
+      readResult = m_InputStore.copyIntoBuffer(chunkStart, nonstd::span<Type>(valueBuffer.get(), chunkTupleCount));
+      if(readResult.invalid())
+      {
+        m_TaskResult.store(std::move(readResult));
+        return;
+      }
 
       for(usize cellIdx = 0; cellIdx < chunkTupleCount; cellIdx++)
       {
@@ -305,7 +320,7 @@ public:
     usize progressCount = 0;
     for(usize j = start; j < end; j++)
     {
-      if(m_ShouldCancel)
+      if(m_ShouldCancel || m_TaskResult.shouldAbort())
       {
         return;
       }
@@ -393,6 +408,7 @@ private:
   NeighborList<Type>* m_ModalBinRangesList;
   std::atomic<usize>& m_Overflow;
   ProgressMessageHelper& m_ProgressMessageHelper;
+  CopyFromArray::ParallelTaskResult& m_TaskResult;
 };
 
 /**
@@ -847,9 +863,21 @@ Result<> generateScanlineHistogram(const IDataArray& inputArray, IDataArray& bin
         -23804, fmt::format("ComputeArrayHistogramByFeature: output shape for input array '{}' overflows the platform size type ({} features, {} bins).", inputArray.getName(), numFeatures, bins));
   }
 
-  binRangesArray.resizeTuples({numFeatures});
-  countsArray.resizeTuples({numFeatures});
-  mostPopulatedArray.resizeTuples({numFeatures});
+  Result<> resizeResult = binRangesArray.resizeTuples({numFeatures});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = countsArray.resizeTuples({numFeatures});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = mostPopulatedArray.resizeTuples({numFeatures});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   const auto& inputStore = inputArray.template getIDataStoreRefAs<AbstractDataStore<T>>();
   auto& binRangesStore = binRangesArray.template getIDataStoreRefAs<AbstractDataStore<T>>();
@@ -1122,7 +1150,11 @@ Result<> generateScanlineHistogram(const IDataArray& inputArray, IDataArray& bin
     if(modalBinRanges != nullptr)
     {
       auto& typedModalBinRanges = *dynamic_cast<NeighborList<T>*>(modalBinRanges);
-      typedModalBinRanges.resizeTuples({numFeatures});
+      resizeResult = typedModalBinRanges.resizeTuples({numFeatures});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
       for(usize feature = 0; feature < numFeatures; ++feature)
       {
         if(lengths[feature] > 0 && std::fabs(increments[feature]) < 1.0E-10F)
@@ -1399,9 +1431,21 @@ Result<> ComputeArrayHistogramByFeature::operator()()
     }
 
     const std::function<Result<>()> executeDirect = [&]() -> Result<> {
-      binRanges->resizeTuples({numFeatures});
-      counts.resizeTuples({numFeatures});
-      mostPopulated.resizeTuples({numFeatures});
+      Result<> resizeResult = binRanges->resizeTuples({numFeatures});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
+      resizeResult = counts.resizeTuples({numFeatures});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
+      resizeResult = mostPopulated.resizeTuples({numFeatures});
+      if(resizeResult.invalid())
+      {
+        return resizeResult;
+      }
 
       std::unique_ptr<MaskCompareUtilities::MaskCompare> mask = nullptr;
       if(m_InputValues->UseMask)
@@ -1414,20 +1458,25 @@ Result<> ComputeArrayHistogramByFeature::operator()()
       const bool histFullRange = !m_InputValues->UserDefinedRange;
       ProgressMessageHelper progressMessageHelper = messageHelper.createProgressMessageHelper();
       progressMessageHelper.setMaxProgresss(numFeatures);
+      CopyFromArray::ParallelTaskResult taskResult;
 
       if(m_InputValues->CreatedBinModalRangesDataPaths.has_value())
       {
-        modalBinRanges->resizeTuples({numFeatures});
+        resizeResult = modalBinRanges->resizeTuples({numFeatures});
+        if(resizeResult.invalid())
+        {
+          return resizeResult;
+        }
         ExecuteParallelFunctor<InstantiateHistogramByFeatureImplFunctor, NoBooleanType>(InstantiateHistogramByFeatureImplFunctor{}, inputData->getDataType(), dataAlg, modalBinRanges, inputData,
                                                                                         binRanges, featureIdsStore, m_InputValues->MinRange, m_InputValues->MaxRange, histFullRange, m_ShouldCancel,
-                                                                                        numBins, counts, mostPopulated, mask, overflow, progressMessageHelper);
+                                                                                        numBins, counts, mostPopulated, mask, overflow, progressMessageHelper, taskResult);
       }
       else
       {
         ExecuteParallelFunctor(InstantiateHistogramByFeatureImplFunctor{}, inputData->getDataType(), dataAlg, inputData, binRanges, featureIdsStore, m_InputValues->MinRange, m_InputValues->MaxRange,
-                               histFullRange, m_ShouldCancel, numBins, counts, mostPopulated, mask, overflow, progressMessageHelper);
+                               histFullRange, m_ShouldCancel, numBins, counts, mostPopulated, mask, overflow, progressMessageHelper, taskResult);
       }
-      return {};
+      return taskResult.takeResult();
     };
 
     // Every read and created write target participates in storage-based dispatch.

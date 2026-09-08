@@ -96,6 +96,7 @@ private:
    * @param[in,out] nodeIds Maps dual-grid indices to vertex IDs. Maximum values identify unassigned nodes.
    * @param[out] nodeCount Receives the number of unique mesh vertices.
    * @param[out] triangleCount Receives the number of generated triangles.
+   * @param[out] suppressedFaceCount Receives the number of omitted exterior faces.
    */
   void determineActiveNodes(std::vector<MeshIndexType>& nodeIds, MeshIndexType& nodeCount, MeshIndexType& triangleCount, MeshIndexType& suppressedFaceCount);
 
@@ -104,8 +105,9 @@ private:
    * @param nodeIds Dual-grid-to-vertex mapping from determineActiveNodes().
    * @param nodeCount Exact vertex count from the count pass.
    * @param triangleCount Exact triangle count from the count pass.
+   * @return The first geometry, attribute-matrix, or node-type resize error.
    */
-  void createNodesAndTriangles(std::vector<MeshIndexType>& nodeIds, MeshIndexType nodeCount, MeshIndexType triangleCount);
+  Result<> createNodesAndTriangles(std::vector<MeshIndexType>& nodeIds, MeshIndexType nodeCount, MeshIndexType triangleCount);
 
   DataStructure& m_DataStructure;
   const QuickSurfaceMeshInputValues* m_InputValues = nullptr;

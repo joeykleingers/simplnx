@@ -79,8 +79,8 @@ void BuildFillBadDataTestData(DataStructure& ds, usize dimX, usize dimY, usize d
       std::fill(featureIdsSliceBuffer.begin(), featureIdsSliceBuffer.end(), 0);
     }
 
-    featureIdsStore.copyFromBuffer(z * sliceSize, nonstd::span<const int32>(featureIdsSliceBuffer.data(), sliceSize));
-    phasesStore.copyFromBuffer(z * sliceSize, nonstd::span<const int32>(phasesSliceBuffer.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(featureIdsStore.copyFromBuffer(z * sliceSize, nonstd::span<const int32>(featureIdsSliceBuffer.data(), sliceSize)));
+    SIMPLNX_RESULT_REQUIRE_VALID(phasesStore.copyFromBuffer(z * sliceSize, nonstd::span<const int32>(phasesSliceBuffer.data(), sliceSize)));
   }
 }
 // These paths select the FillBadData exemplar archive.
@@ -709,7 +709,7 @@ TEST_CASE("SimplnxCore::FillBadData: 200x200x200 Ignored Arrays", "[Core][FillBa
     for(usize off = 0; off < totalTuples; off += kChunk)
     {
       const usize count = std::min(kChunk, totalTuples - off);
-      fidsStore.copyIntoBuffer(off, nonstd::span<int32>(buf.get(), count));
+      SIMPLNX_RESULT_REQUIRE_VALID(fidsStore.copyIntoBuffer(off, nonstd::span<int32>(buf.get(), count)));
       for(usize i = 0; i < count; i++)
       {
         if(buf[i] == 0)
@@ -749,7 +749,7 @@ TEST_CASE("SimplnxCore::FillBadData: 200x200x200 Ignored Arrays", "[Core][FillBa
     for(usize off = 0; off < totalTuples; off += kChunk)
     {
       const usize count = std::min(kChunk, totalTuples - off);
-      fidsAfterStore.copyIntoBuffer(off, nonstd::span<int32>(buf.get(), count));
+      SIMPLNX_RESULT_REQUIRE_VALID(fidsAfterStore.copyIntoBuffer(off, nonstd::span<int32>(buf.get(), count)));
       for(usize i = 0; i < count; i++)
       {
         if(buf[i] == 0)
@@ -770,7 +770,7 @@ TEST_CASE("SimplnxCore::FillBadData: 200x200x200 Ignored Arrays", "[Core][FillBa
     for(usize off = 0; off < totalTuples; off += kChunk)
     {
       const usize count = std::min(kChunk, totalTuples - off);
-      ignoredAfterStore.copyIntoBuffer(off, nonstd::span<int32>(buf.get(), count));
+      SIMPLNX_RESULT_REQUIRE_VALID(ignoredAfterStore.copyIntoBuffer(off, nonstd::span<int32>(buf.get(), count)));
       for(usize i = 0; i < count; i++)
       {
         if(buf[i] != k_Sentinel)

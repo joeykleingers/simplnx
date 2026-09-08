@@ -396,10 +396,26 @@ Result<> ComputeFeatureBoundsScanline::operator()()
     usize numEdges = numFeatures * 12;
 
     auto& edgeGeom = m_DataStructure.getDataRefAs<EdgeGeom>(m_InputValues->EdgeGeometryDataPath);
-    edgeGeom.resizeVertexList(numVerts);
-    edgeGeom.resizeEdgeList(numEdges);
-    edgeGeom.getEdgeAttributeMatrix()->resizeTuples({numEdges});
-    edgeGeom.getVertexAttributeMatrix()->resizeTuples({numVerts});
+    Result<> resizeResult = edgeGeom.resizeVertexList(numVerts);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = edgeGeom.resizeEdgeList(numEdges);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = edgeGeom.getEdgeAttributeMatrix()->resizeTuples({numEdges});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = edgeGeom.getVertexAttributeMatrix()->resizeTuples({numVerts});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
 
     DataPath edgeAmPath = m_InputValues->EdgeGeometryDataPath.createChildPath(m_InputValues->EdgeAttributeMatrixName);
     auto& edgeFeatureIds = m_DataStructure.getDataRefAs<Int32Array>(edgeAmPath.createChildPath(m_InputValues->FeatureIdsArrayName)).getDataStoreRef();
@@ -444,10 +460,26 @@ Result<> ComputeFeatureBoundsScanline::operator()()
     }
 
     currentOffset--;
-    edgeGeom.resizeVertexList(currentOffset * 8);
-    edgeGeom.getVertexAttributeMatrix()->resizeTuples({currentOffset * 8});
-    edgeGeom.resizeEdgeList(currentOffset * 12);
-    edgeGeom.getEdgeAttributeMatrix()->resizeTuples({currentOffset * 12});
+    resizeResult = edgeGeom.resizeVertexList(currentOffset * 8);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = edgeGeom.getVertexAttributeMatrix()->resizeTuples({currentOffset * 8});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = edgeGeom.resizeEdgeList(currentOffset * 12);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = edgeGeom.getEdgeAttributeMatrix()->resizeTuples({currentOffset * 12});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   }
 
   return {};

@@ -384,7 +384,7 @@ TEST_CASE("SimplnxCore::CreateFeatureArrayFromElementArrayFilter: AF-5 error pat
 
     // Child array created directly with 5 tuples -more than AM.tupleCount=2 and more than maxValue+1=4
     auto* siblingArray = Float32Array::CreateWithStore<DataStore<float32>>(ds, k_SiblingArrayPath.getTargetName(), featureAM->getShape(), ShapeType{1ULL}, featureAM->getId());
-    siblingArray->resizeTuples(ShapeType{5ULL});
+    SIMPLNX_RESULT_REQUIRE_VALID(siblingArray->resizeTuples(ShapeType{5ULL}));
 
     auto* fidsArray = Int32Array::CreateWithStore<DataStore<int32>>(ds, AnalyticalFixtures::k_FeatureIdsPath.getTargetName(), cellAM->getShape(), ShapeType{1ULL}, cellAM->getId());
     (*fidsArray)[0] = 1;

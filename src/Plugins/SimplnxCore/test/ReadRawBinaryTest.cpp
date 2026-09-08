@@ -124,7 +124,7 @@ void TestCase1_Execute(NumericType scalarType)
     for(usize start = 0; start < dataArraySize && isSame; start += k_BufSize)
     {
       usize count = std::min(k_BufSize, dataArraySize - start);
-      store.copyIntoBuffer(start, nonstd::span<T>(readBuf.data(), count));
+      SIMPLNX_RESULT_REQUIRE_VALID(store.copyIntoBuffer(start, nonstd::span<T>(readBuf.data(), count)));
       for(usize i = 0; i < count; ++i)
       {
         if(readBuf[i] != exemplaryData[start + i])
@@ -258,7 +258,7 @@ void TestCase4_Execute(NumericType scalarType)
     for(usize start = 0; start < size && isSame; start += k_BufSize)
     {
       usize count = std::min(k_BufSize, size - start);
-      createdStore.copyIntoBuffer(start, nonstd::span<T>(readBuf.data(), count));
+      SIMPLNX_RESULT_REQUIRE_VALID(createdStore.copyIntoBuffer(start, nonstd::span<T>(readBuf.data(), count)));
       for(usize i = 0; i < count; ++i)
       {
         if(readBuf[i] != exemplaryData[start + i + elementOffset])

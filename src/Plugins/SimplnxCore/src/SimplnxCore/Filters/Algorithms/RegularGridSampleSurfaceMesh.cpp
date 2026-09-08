@@ -3,6 +3,7 @@
 #include "simplnx/DataStructure/DataArray.hpp"
 #include "simplnx/DataStructure/Geometry/ImageGeom.hpp"
 #include "simplnx/DataStructure/Geometry/TriangleGeom.hpp"
+#include "simplnx/Utilities/DataArrayUtilities.hpp"
 #include "simplnx/Utilities/FilterUtilities.hpp"
 #include "simplnx/Utilities/ParallelTaskAlgorithm.hpp"
 
@@ -130,9 +131,11 @@ public:
    * @param verticesBuffer Provides flat XYZ vertex coordinates.
    * @param faceLabelsBuffer Provides flat face labels.
    * @param triZRanges Provides triangle Z bounds.
+   * @param taskResult Stores the first output-store error.
    */
   ZSliceWorker(RegularGridSampleSurfaceMesh* algorithm, usize zSlice, usize xDim, usize yDim, usize numTriangles, usize numFaceLabelComps, FloatVec3 origin, FloatVec3 spacing,
-               const IGeometry::MeshIndexType* facesBuffer, const float32* verticesBuffer, const T* faceLabelsBuffer, const std::vector<TriangleZRange>& triZRanges)
+               const IGeometry::MeshIndexType* facesBuffer, const float32* verticesBuffer, const T* faceLabelsBuffer, const std::vector<TriangleZRange>& triZRanges,
+               CopyFromArray::ParallelTaskResult& taskResult)
   : m_Algorithm(algorithm)
   , m_ZSlice(zSlice)
   , m_XDim(xDim)
@@ -145,6 +148,7 @@ public:
   , m_VerticesBuffer(verticesBuffer)
   , m_FaceLabelsBuffer(faceLabelsBuffer)
   , m_TriZRanges(triZRanges)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -153,6 +157,10 @@ public:
    */
   void operator()() const
   {
+    if(m_TaskResult.shouldAbort())
+    {
+      return;
+    }
     usize cellsPerSlice = m_XDim * m_YDim;
     auto sliceBuffer = std::make_unique<T[]>(cellsPerSlice);
     std::fill(sliceBuffer.get(), sliceBuffer.get() + cellsPerSlice, T{0});
@@ -283,7 +291,11 @@ public:
     }
 
     // Generic DataStore writes stay behind the parent mutex.
-    m_Algorithm->sendThreadSafeSliceUpdate(m_ZSlice, sliceBuffer.get(), cellsPerSlice);
+    Result<> writeResult = m_Algorithm->sendThreadSafeSliceUpdate(m_ZSlice, sliceBuffer.get(), cellsPerSlice);
+    if(writeResult.invalid())
+    {
+      m_TaskResult.store(std::move(writeResult));
+    }
   }
 
 private:
@@ -299,6 +311,7 @@ private:
   const float32* m_VerticesBuffer;
   const T* m_FaceLabelsBuffer;
   const std::vector<TriangleZRange>& m_TriZRanges;
+  CopyFromArray::ParallelTaskResult& m_TaskResult;
 };
 
 /**
@@ -318,11 +331,11 @@ struct ZSliceFunctor
    * @param triangleGeom Provides mesh connectivity and vertices.
    * @param faceLabelsArrayPath Identifies source face labels.
    *
-   * The function does not inspect input bulk-read results.
+   * @return The first mesh-input bulk-read error.
    */
   template <typename T>
-  void operator()(RegularGridSampleSurfaceMesh* algorithm, DataStructure& dataStructure, const std::atomic_bool& shouldCancel, const IFilter::MessageHandler& messageHandler,
-                  const ImageGeom& imageGeom, const TriangleGeom& triangleGeom, const DataPath& faceLabelsArrayPath)
+  Result<> operator()(RegularGridSampleSurfaceMesh* algorithm, DataStructure& dataStructure, const std::atomic_bool& shouldCancel, const IFilter::MessageHandler& messageHandler,
+                      const ImageGeom& imageGeom, const TriangleGeom& triangleGeom, const DataPath& faceLabelsArrayPath)
   {
     SizeVec3 dims = imageGeom.getDimensions();
     FloatVec3 origin = imageGeom.getOrigin();
@@ -344,19 +357,31 @@ struct ZSliceFunctor
     // Materialize mesh inputs once to remove DataStore access from worker threads.
     usize facesCount = numTriangles * 3;
     auto facesBuffer = std::make_unique<IGeometry::MeshIndexType[]>(facesCount);
-    facesStore.copyIntoBuffer(0, nonstd::span<IGeometry::MeshIndexType>(facesBuffer.get(), facesCount));
+    Result<> readResult = facesStore.copyIntoBuffer(0, nonstd::span<IGeometry::MeshIndexType>(facesBuffer.get(), facesCount));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
 
     usize verticesCount = numVertices * 3;
     auto verticesBuffer = std::make_unique<float32[]>(verticesCount);
-    verticesStore.copyIntoBuffer(0, nonstd::span<float32>(verticesBuffer.get(), verticesCount));
+    readResult = verticesStore.copyIntoBuffer(0, nonstd::span<float32>(verticesBuffer.get(), verticesCount));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
 
     usize faceLabelsCount = numTriangles * numFaceLabelComps;
     auto faceLabelsBuffer = std::make_unique<T[]>(faceLabelsCount);
-    faceLabelsStore.copyIntoBuffer(0, nonstd::span<T>(faceLabelsBuffer.get(), faceLabelsCount));
+    readResult = faceLabelsStore.copyIntoBuffer(0, nonstd::span<T>(faceLabelsBuffer.get(), faceLabelsCount));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
 
     if(shouldCancel)
     {
-      return;
+      return {};
     }
 
     // Precompute Z bounds so each worker rejects nonintersecting triangles quickly.
@@ -379,23 +404,27 @@ struct ZSliceFunctor
 
     if(shouldCancel)
     {
-      return;
+      return {};
     }
 
     // Schedule Z slices while the borrowed mesh buffers remain alive.
     messageHandler({IFilter::Message::Type::Info, fmt::format("Sampling surface mesh using scanline rasterization ({} Z-slices)...", zDim)});
 
+    // Declared before the task runner so the runner's destructor joins every worker while this holder is still alive.
+    CopyFromArray::ParallelTaskResult taskResult;
     ParallelTaskAlgorithm taskAlgorithm;
     for(usize z = 0; z < zDim; z++)
     {
-      if(shouldCancel)
+      if(shouldCancel || taskResult.shouldAbort())
       {
         break;
       }
 
-      taskAlgorithm.execute(ZSliceWorker<T>(algorithm, z, xDim, yDim, numTriangles, numFaceLabelComps, origin, spacing, facesBuffer.get(), verticesBuffer.get(), faceLabelsBuffer.get(), triZRanges));
+      taskAlgorithm.execute(
+          ZSliceWorker<T>(algorithm, z, xDim, yDim, numTriangles, numFaceLabelComps, origin, spacing, facesBuffer.get(), verticesBuffer.get(), faceLabelsBuffer.get(), triZRanges, taskResult));
     }
     taskAlgorithm.wait();
+    return taskResult.takeResult();
   }
 };
 
@@ -420,8 +449,6 @@ Result<> RegularGridSampleSurfaceMesh::operator()()
   SizeVec3 dims = imageGeom.getDimensions();
   m_CellsPerSlice = dims[0] * dims[1];
 
-  ExecuteDataFunctionIntType(ZSliceFunctor{}, m_DataStructure.getDataAsUnsafe<IDataArray>(m_InputValues->SurfaceMeshFaceLabelsArrayPath)->getDataType(), this, m_DataStructure, m_ShouldCancel,
-                             m_MessageHandler, imageGeom, triangleGeom, m_InputValues->SurfaceMeshFaceLabelsArrayPath);
-
-  return {};
+  return ExecuteDataFunctionIntType(ZSliceFunctor{}, m_DataStructure.getDataAsUnsafe<IDataArray>(m_InputValues->SurfaceMeshFaceLabelsArrayPath)->getDataType(), this, m_DataStructure, m_ShouldCancel,
+                                    m_MessageHandler, imageGeom, triangleGeom, m_InputValues->SurfaceMeshFaceLabelsArrayPath);
 }

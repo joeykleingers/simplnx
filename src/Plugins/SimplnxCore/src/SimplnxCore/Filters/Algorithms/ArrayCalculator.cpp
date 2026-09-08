@@ -244,9 +244,10 @@ struct ReadChunkToFloat64Functor
    * @param sourceArray Contains the typed source values.
    * @param startIndex Identifies the first source value.
    * @param destBuffer Receives converted values.
+   * @return The source-store bulk-read result.
    */
   template <typename T>
-  void operator()(const IDataArray& sourceArray, usize startIndex, nonstd::span<float64> destBuffer)
+  Result<> operator()(const IDataArray& sourceArray, usize startIndex, nonstd::span<float64> destBuffer)
   {
     const auto& typedSource = dynamic_cast<const DataArray<T>&>(sourceArray);
     const auto& sourceStore = typedSource.getDataStoreRef();
@@ -254,11 +255,16 @@ struct ReadChunkToFloat64Functor
 
     // The bool vector specialization has no contiguous data. This buffer avoids that specialization.
     auto rawBuf = std::make_unique<T[]>(count);
-    sourceStore.copyIntoBuffer(startIndex, nonstd::span<T>(rawBuf.get(), count));
+    Result<> readResult = sourceStore.copyIntoBuffer(startIndex, nonstd::span<T>(rawBuf.get(), count));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       destBuffer[i] = static_cast<float64>(rawBuf[i]);
     }
+    return {};
   }
 };
 
@@ -278,9 +284,10 @@ struct WriteChunkFromFloat64Functor
    * @param outputPath Identifies the output array.
    * @param startIndex Identifies the first output value.
    * @param srcBuffer Supplies float64 values.
+   * @return The output-store bulk-write result.
    */
   template <typename T>
-  void operator()(DataStructure& ds, const DataPath& outputPath, usize startIndex, nonstd::span<const float64> srcBuffer)
+  Result<> operator()(DataStructure& ds, const DataPath& outputPath, usize startIndex, nonstd::span<const float64> srcBuffer)
   {
     auto& outputStore = ds.getDataRefAs<DataArray<T>>(outputPath).getDataStoreRef();
     const usize count = srcBuffer.size();
@@ -291,7 +298,7 @@ struct WriteChunkFromFloat64Functor
     {
       writeBuf[i] = static_cast<T>(srcBuffer[i]);
     }
-    outputStore.copyFromBuffer(startIndex, nonstd::span<const T>(writeBuf.get(), count));
+    return outputStore.copyFromBuffer(startIndex, nonstd::span<const T>(writeBuf.get(), count));
   }
 };
 
@@ -1955,11 +1962,19 @@ Result<> ArrayCalculatorParser::evaluateInto(DataStructure& dataStructure, const
         if(item.sourceDataType == DataType::float64)
         {
           const auto& typedArray = dynamic_cast<const Float64Array&>(*sourceArray);
-          typedArray.getDataStoreRef().copyIntoBuffer(tupleStart * numComps, nonstd::span<float64>(entry.buffer.data(), count));
+          Result<> readResult = typedArray.getDataStoreRef().copyIntoBuffer(tupleStart * numComps, nonstd::span<float64>(entry.buffer.data(), count));
+          if(readResult.invalid())
+          {
+            return readResult;
+          }
         }
         else
         {
-          ExecuteDataFunction(ReadChunkToFloat64Functor{}, item.sourceDataType, *sourceArray, tupleStart * numComps, nonstd::span<float64>(entry.buffer.data(), count));
+          Result<> readResult = ExecuteDataFunction(ReadChunkToFloat64Functor{}, item.sourceDataType, *sourceArray, tupleStart * numComps, nonstd::span<float64>(entry.buffer.data(), count));
+          if(readResult.invalid())
+          {
+            return readResult;
+          }
         }
         depth++;
         break;
@@ -2073,12 +2088,20 @@ Result<> ArrayCalculatorParser::evaluateInto(DataStructure& dataStructure, const
     if(outputDataType == DataType::float64)
     {
       auto& outputStore = dataStructure.getDataRefAs<Float64Array>(outputPath).getDataStoreRef();
-      outputStore.copyFromBuffer(tupleStart * outputNumComps, nonstd::span<const float64>(outWriteBuf.data(), tupleCount * outputNumComps));
+      Result<> writeResult = outputStore.copyFromBuffer(tupleStart * outputNumComps, nonstd::span<const float64>(outWriteBuf.data(), tupleCount * outputNumComps));
+      if(writeResult.invalid())
+      {
+        return writeResult;
+      }
     }
     else
     {
-      ExecuteDataFunction(WriteChunkFromFloat64Functor{}, outputDataType, dataStructure, outputPath, tupleStart * outputNumComps,
-                          nonstd::span<const float64>(outWriteBuf.data(), tupleCount * outputNumComps));
+      Result<> writeResult = ExecuteDataFunction(WriteChunkFromFloat64Functor{}, outputDataType, dataStructure, outputPath, tupleStart * outputNumComps,
+                                                 nonstd::span<const float64>(outWriteBuf.data(), tupleCount * outputNumComps));
+      if(writeResult.invalid())
+      {
+        return writeResult;
+      }
     }
   }
 

@@ -68,19 +68,42 @@ Result<> ReadH5EspritData::copyRawEbsdData(int index)
           eulerChunk[i * 3 + 1] = phi[chunkStart + i] * degToRad;
           eulerChunk[i * 3 + 2] = phi2[chunkStart + i] * degToRad;
         }
-        eulerStore.copyFromBuffer((offset + chunkStart) * 3, nonstd::span<const float32>(eulerChunk.data(), chunkCount * 3));
+        if(Result<> ioResult = eulerStore.copyFromBuffer((offset + chunkStart) * 3, nonstd::span<const float32>(eulerChunk.data(), chunkCount * 3)); ioResult.invalid())
+        {
+          return ConvertResult(std::move(ioResult));
+        }
       }
     }
 
-    // Each scalar channel uses one scan-sized transfer. These Result values are
-    // not inspected by the current API.
-    mad.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const float32>(m1, totalPoints));
-    nIndexBands.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(nIndBands, totalPoints));
-    phase.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(p1, totalPoints));
-    radonBandCount.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(radBandCnt, totalPoints));
-    radonQuality.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const float32>(radQual, totalPoints));
-    xBeam.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(xBm, totalPoints));
-    yBeam.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(yBm, totalPoints));
+    // Each scalar channel uses one scan-sized transfer.
+    if(Result<> ioResult = mad.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const float32>(m1, totalPoints)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = nIndexBands.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(nIndBands, totalPoints)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = phase.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(p1, totalPoints)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = radonBandCount.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(radBandCnt, totalPoints)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = radonQuality.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const float32>(radQual, totalPoints)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = xBeam.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(xBm, totalPoints)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = yBeam.getDataStoreRef().copyFromBuffer(offset, nonstd::span<const int32>(yBm, totalPoints)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   if(m_InputValues->ReadPatternData)
@@ -99,7 +122,10 @@ Result<> ReadH5EspritData::copyRawEbsdData(int index)
       pDimsV[1] = pDims[1];
       auto& patternData = m_DataStructure.getDataRefAs<UInt8Array>(m_InputValues->CellAttributeMatrixPath.createChildPath(ebsdlib::H5Esprit::RawPatterns));
       const usize numComponents = patternData.getNumberOfComponents();
-      patternData.getDataStoreRef().copyFromBuffer(offset * numComponents, nonstd::span<const uint8>(patternDataPtr, totalPoints * numComponents));
+      if(Result<> ioResult = patternData.getDataStoreRef().copyFromBuffer(offset * numComponents, nonstd::span<const uint8>(patternDataPtr, totalPoints * numComponents)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
   }
 

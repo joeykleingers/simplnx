@@ -69,7 +69,7 @@ void BuildOctantWithNumCells(DataStructure& ds)
         }
       }
     }
-    fidsRef.copyFromBuffer(iz * sliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(fidsRef.copyFromBuffer(iz * sliceSize, nonstd::span<const int32>(sliceBuffer.data(), sliceSize)));
   }
 
   auto* cellFeatureAM = AttributeMatrix::Create(ds, Constants::k_CellFeatureData, {static_cast<usize>(k_NumOctantFeatures + 1)}, imageGeom->getId());
@@ -80,7 +80,7 @@ void BuildOctantWithNumCells(DataStructure& ds)
   auto* numCells = DataArray<int32>::Create(ds, Constants::k_NumElements, numCellsStore, cellFeatureAM->getId());
   auto& numCellsRef = numCells->getDataStoreRef();
   std::vector<int32> localNumCells(featureCounts.begin(), featureCounts.end());
-  numCellsRef.copyFromBuffer(0, nonstd::span<const int32>(localNumCells.data(), localNumCells.size()));
+  SIMPLNX_RESULT_REQUIRE_VALID(numCellsRef.copyFromBuffer(0, nonstd::span<const int32>(localNumCells.data(), localNumCells.size())));
 }
 } // namespace
 

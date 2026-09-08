@@ -3,6 +3,7 @@
 #include "simplnx/DataStructure/AbstractDataStore.hpp"
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <map>
 #include <numeric>
@@ -158,13 +159,17 @@ public:
   }
 
   /**
-   * @brief Rejects tuple-shape changes.
-   * @param tupleShape Requested tuple shape.
-   * @throws std::runtime_error Always, because this store has no values.
+   * @brief Changes the placeholder tuple shape without accessing values.
+   * @param tupleShape New tuple dimensions in slowest-to-fastest order.
+   * @return Always valid because preflight placeholders contain no values.
+   *
+   * Preflight must resize metadata before execution materializes the data store.
    */
-  void resizeTuples(const ShapeType& tupleShape) override
+  [[nodiscard]] Result<> resizeTuples(const ShapeType& tupleShape) override
   {
-    throw std::runtime_error("EmptyDataStore::resizeTuples() is not implemented");
+    m_TupleShape = tupleShape;
+    m_NumTuples = std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<usize>(1), std::multiplies<>());
+    return {};
   }
 
   /**
@@ -193,60 +198,57 @@ public:
    * @brief Rejects bulk reads.
    * @param startIndex First requested flat value index.
    * @param buffer Destination buffer.
-   * @return Error because this store has no values.
+   * @return Error -6038 with the requested range because this store has no values.
    */
-  Result<> copyIntoBuffer(usize startIndex, nonstd::span<T> buffer) const override
+  [[nodiscard]] Result<> copyIntoBuffer(usize startIndex, nonstd::span<T> buffer) const override
   {
-    return MakeErrorResult(-6022, "EmptyDataStore bulk read is not supported: EmptyDataStore is a metadata-only placeholder used during preflight and must be replaced with a real DataStore or "
-                                  "out-of-core store before bulk I/O is attempted.");
+    return MakeErrorResult(-6038, fmt::format("EmptyDataStore bulk read [{}..{}) failed: the metadata-only preflight store has no values.", startIndex, startIndex + buffer.size()));
   }
 
   /**
    * @brief Rejects bulk writes.
    * @param startIndex First requested flat value index.
    * @param buffer Source buffer.
-   * @return Error because this store has no values.
+   * @return Error -6038 with the requested range because this store has no values.
    */
-  Result<> copyFromBuffer(usize startIndex, nonstd::span<const T> buffer) override
+  [[nodiscard]] Result<> copyFromBuffer(usize startIndex, nonstd::span<const T> buffer) override
   {
-    return MakeErrorResult(-6023, "EmptyDataStore bulk write is not supported: EmptyDataStore is a metadata-only placeholder used during preflight and must be replaced with a real DataStore or "
-                                  "out-of-core store before bulk I/O is attempted.");
+    return MakeErrorResult(-6038, fmt::format("EmptyDataStore bulk write [{}..{}) failed: the metadata-only preflight store has no values.", startIndex, startIndex + buffer.size()));
   }
 
   /**
-   * @brief Returns no extent values.
+   * @brief Rejects extent reads.
    * @param extent Requested tuple-space extent.
-   * @return Empty value vector because this store has no values.
+   * @return Error -6038 with the requested extent because this store has no values.
    */
-  std::vector<T> readExtent(const Extent& extent) const override
+  [[nodiscard]] Result<std::vector<T>> readExtent(const Extent& extent) const override
   {
-    return {};
+    return MakeErrorResult<std::vector<T>>(-6038, fmt::format("EmptyDataStore extent read min [{}], max [{}], stride [{}] failed: the metadata-only preflight store has no values.",
+                                                              fmt::join(extent.min, ", "), fmt::join(extent.max, ", "), fmt::join(extent.stride, ", ")));
   }
 
   /**
    * @brief Rejects caller-buffer extent reads.
    * @param extent Requested tuple-space extent.
    * @param destination Destination buffer.
-   * @throws std::runtime_error Always, because this store has no values.
+   * @return Error -6038 with the requested extent because this store has no values.
    */
-  void readExtentIntoBuffer(const Extent& extent, nonstd::span<T> destination) const override
+  [[nodiscard]] Result<> readExtentIntoBuffer(const Extent& extent, nonstd::span<T> destination) const override
   {
-    (void)extent;
-    (void)destination;
-    throw std::runtime_error("EmptyDataStore::readExtentIntoBuffer is not supported: EmptyDataStore is a metadata-only preflight placeholder");
+    return MakeErrorResult(-6038, fmt::format("EmptyDataStore extent read min [{}], max [{}], stride [{}] into {} values failed: the metadata-only preflight store has no values.",
+                                              fmt::join(extent.min, ", "), fmt::join(extent.max, ", "), fmt::join(extent.stride, ", "), destination.size()));
   }
 
   /**
-   * @brief Ignores extent writes.
+   * @brief Rejects extent writes.
    * @param extent Requested tuple-space extent.
    * @param data Source values.
-   *
-   * Preflight writes have no values to modify. Execution replaces this store
-   * before meaningful data access.
+   * @return Error -6038 with the requested extent because this store has no values.
    */
-  void writeExtent(const Extent& extent, nonstd::span<const T> data) override
+  [[nodiscard]] Result<> writeExtent(const Extent& extent, nonstd::span<const T> data) override
   {
-    // Preflight metadata stores do not retain values.
+    return MakeErrorResult(-6038, fmt::format("EmptyDataStore extent write min [{}], max [{}], stride [{}] from {} values failed: the metadata-only preflight store has no values.",
+                                              fmt::join(extent.min, ", "), fmt::join(extent.max, ", "), fmt::join(extent.stride, ", "), data.size()));
   }
 
   /**

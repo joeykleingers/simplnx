@@ -277,11 +277,17 @@ Result<> ComputeGBCDPoleFigureDirect::operator()()
   // in the hot loop.
   const usize gbcdTotalElements = gbcd.getSize();
   auto gbcdCache = std::make_unique<float64[]>(gbcdTotalElements);
-  gbcd.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float64>(gbcdCache.get(), gbcdTotalElements));
+  if(Result<> ioResult = gbcd.getDataStoreRef().copyIntoBuffer(0, nonstd::span<float64>(gbcdCache.get(), gbcdTotalElements)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   const usize numCrystalStructures = crystalStructures.getSize();
   auto crystalStructuresCache = std::make_unique<uint32[]>(numCrystalStructures);
-  crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.get(), numCrystalStructures));
+  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.get(), numCrystalStructures)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   // Pixels outside the stereographic unit disk retain zero intensity.
   const usize poleFigureSize = poleFigure.getSize();
@@ -341,7 +347,10 @@ Result<> ComputeGBCDPoleFigureDirect::operator()()
   dataAlg.execute(ComputeGBCDPoleFigureImpl(poleFigureCache.get(), {xPoints, yPoints}, orientOps, gbcdDeltas, gbcdLimits, gbcdSizes, gbcdCache.get(), m_InputValues->PhaseOfInterest,
                                             m_InputValues->MisorientationRotation));
 
-  poleFigure.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(poleFigureCache.get(), poleFigureSize));
+  if(Result<> ioResult = poleFigure.getDataStoreRef().copyFromBuffer(0, nonstd::span<const float64>(poleFigureCache.get(), poleFigureSize)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   return {};
 }

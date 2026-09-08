@@ -1,6 +1,7 @@
 #include "simplnx/DataStructure/DataArray.hpp"
 #include "simplnx/Common/Array.hpp"
 #include "simplnx/Core/Application.hpp"
+#include "simplnx/DataStructure/AttributeMatrix.hpp"
 #include "simplnx/DataStructure/DataStore.hpp"
 #include "simplnx/DataStructure/DataStructure.hpp"
 #include "simplnx/DataStructure/EmptyDataStore.hpp"
@@ -8,6 +9,7 @@
 #include "simplnx/Utilities/ArrayCreationUtilities.hpp"
 
 #include <catch2/catch.hpp>
+#include <fmt/ranges.h>
 
 #include <array>
 #include <cmath>
@@ -18,7 +20,23 @@ using namespace nx::core;
 namespace
 {
 constexpr StringLiteral k_BuildDir = SIMPLNX_BUILD_DIR;
-}
+
+class FailingResizeDataStore final : public DataStore<int32>
+{
+public:
+  using DataStore<int32>::DataStore;
+
+  /**
+   * @brief Returns an injected resize failure for AttributeMatrix contract testing.
+   * @param tupleShape Requested tuple dimensions.
+   * @return Error -6035 for every request.
+   */
+  [[nodiscard]] Result<> resizeTuples(const ShapeType& tupleShape) override
+  {
+    return MakeErrorResult(-6035, fmt::format("Test store resize to shape [{}] failed: injected failure", fmt::join(tupleShape, ", ")));
+  }
+};
+} // namespace
 
 TEST_CASE("Array")
 {
@@ -168,7 +186,7 @@ TEST_CASE("DataStore caller-owned extent buffers preserve values and validate be
   const Extent mainExtent({0, 0, 1}, {1, 2, 3}, {1, 2, 1});
   const std::vector<int32> expectedMain = {10, 11, 20, 21, 30, 31, 90, 91, 100, 101, 110, 111, 130, 131, 140, 141, 150, 151, 210, 211, 220, 221, 230, 231};
   std::vector<int32> mainValues(expectedMain.size(), -1);
-  dataStore.readExtentIntoBuffer(mainExtent, nonstd::span<int32>(mainValues.data(), mainValues.size()));
+  REQUIRE(dataStore.readExtentIntoBuffer(mainExtent, nonstd::span<int32>(mainValues.data(), mainValues.size())).valid());
   REQUIRE(mainValues == expectedMain);
 
   const Extent faceExtent({1, 1, 0}, {1, 2, 3});
@@ -180,15 +198,16 @@ TEST_CASE("DataStore caller-owned extent buffers preserve values and validate be
       nonstd::span<int32>(multiMain.data(), multiMain.size()),
       nonstd::span<int32>(faceValues.data(), faceValues.size()),
   };
-  dataStore.readExtentsIntoBuffers(nonstd::span<const Extent>(extents.data(), extents.size()), nonstd::span<nonstd::span<int32>>(destinations.data(), destinations.size()));
+  REQUIRE(dataStore.readExtentsIntoBuffers(nonstd::span<const Extent>(extents.data(), extents.size()), nonstd::span<nonstd::span<int32>>(destinations.data(), destinations.size())).valid());
   REQUIRE(multiMain == expectedMain);
   REQUIRE(faceValues == expectedFace);
 
   std::vector<int32> countMismatchValues(expectedMain.size(), -777);
   std::array<nonstd::span<int32>, 1> countMismatchDestination = {nonstd::span<int32>(countMismatchValues.data(), countMismatchValues.size())};
-  REQUIRE_THROWS_AS(
-      dataStore.readExtentsIntoBuffers(nonstd::span<const Extent>(extents.data(), extents.size()), nonstd::span<nonstd::span<int32>>(countMismatchDestination.data(), countMismatchDestination.size())),
-      std::invalid_argument);
+  Result<> countMismatchResult =
+      dataStore.readExtentsIntoBuffers(nonstd::span<const Extent>(extents.data(), extents.size()), nonstd::span<nonstd::span<int32>>(countMismatchDestination.data(), countMismatchDestination.size()));
+  REQUIRE(countMismatchResult.invalid());
+  REQUIRE(countMismatchResult.errors()[0].code == -6034);
   REQUIRE(countMismatchValues == std::vector<int32>(expectedMain.size(), -777));
 
   std::vector<int32> shortMain(expectedMain.size() - 1, -777);
@@ -197,9 +216,10 @@ TEST_CASE("DataStore caller-owned extent buffers preserve values and validate be
       nonstd::span<int32>(shortMain.data(), shortMain.size()),
       nonstd::span<int32>(untouchedFace.data(), untouchedFace.size()),
   };
-  REQUIRE_THROWS_AS(
-      dataStore.readExtentsIntoBuffers(nonstd::span<const Extent>(extents.data(), extents.size()), nonstd::span<nonstd::span<int32>>(sizeMismatchDestinations.data(), sizeMismatchDestinations.size())),
-      std::invalid_argument);
+  Result<> sizeMismatchResult =
+      dataStore.readExtentsIntoBuffers(nonstd::span<const Extent>(extents.data(), extents.size()), nonstd::span<nonstd::span<int32>>(sizeMismatchDestinations.data(), sizeMismatchDestinations.size()));
+  REQUIRE(sizeMismatchResult.invalid());
+  REQUIRE(sizeMismatchResult.errors()[0].code == -6034);
   REQUIRE(shortMain == std::vector<int32>(expectedMain.size() - 1, -777));
   REQUIRE(untouchedFace == std::vector<int32>(expectedFace.size(), -777));
 }
@@ -214,8 +234,44 @@ TEST_CASE("DataStore caller-owned extent buffers support two-dimensional stores"
 
   const Extent extent({0, 1}, {2, 3}, {2, 1});
   std::vector<int32> values(6, -1);
-  dataStore.readExtentIntoBuffer(extent, nonstd::span<int32>(values.data(), values.size()));
+  REQUIRE(dataStore.readExtentIntoBuffer(extent, nonstd::span<int32>(values.data(), values.size())).valid());
   REQUIRE(values == std::vector<int32>{1, 2, 3, 9, 10, 11});
+}
+
+TEST_CASE("DataStore::writeExtent rejects unsupported rank instead of silently succeeding", "[DataStore]")
+{
+  DataStore<int32> store(ShapeType{10, 10}, ShapeType{1}, 0);
+  std::vector<int32> data(4, 7);
+  Extent extent(std::vector<uint64>{0, 0}, std::vector<uint64>{1, 1}, std::vector<uint64>{1, 1});
+  Result<> result = store.writeExtent(extent, data);
+  REQUIRE(result.invalid());
+  REQUIRE(result.errors()[0].code == -6037);
+}
+
+TEST_CASE("AttributeMatrix::resizeTuples reports the failing child", "[AttributeMatrix]")
+{
+  DataStructure dataStructure;
+  auto* attributeMatrix = AttributeMatrix::Create(dataStructure, "AM", ShapeType{4});
+  REQUIRE(attributeMatrix != nullptr);
+  REQUIRE(DataArray<int32>::CreateWithStore<DataStore<int32>>(dataStructure, "first", ShapeType{4}, ShapeType{1}, attributeMatrix->getId()) != nullptr);
+  REQUIRE(DataArray<int32>::CreateWithStore<DataStore<int32>>(dataStructure, "second", ShapeType{4}, ShapeType{1}, attributeMatrix->getId()) != nullptr);
+
+  const auto children = attributeMatrix->findAllChildrenOfType<IArray>();
+  REQUIRE(children.size() == 2);
+  auto childIterator = children.begin();
+  auto* good = dynamic_cast<DataArray<int32>*>(childIterator->get());
+  REQUIRE(good != nullptr);
+  ++childIterator;
+  auto* bad = dynamic_cast<DataArray<int32>*>(childIterator->get());
+  REQUIRE(bad != nullptr);
+  bad->setDataStore(std::make_shared<FailingResizeDataStore>(ShapeType{4}, ShapeType{1}, 0));
+  const std::string badName = bad->getName();
+
+  Result<> result = attributeMatrix->resizeTuples(ShapeType{8});
+
+  REQUIRE(result.invalid());
+  REQUIRE(result.errors()[0].message.find(badName) != std::string::npos);
+  REQUIRE(good->getNumberOfTuples() == 8);
 }
 
 TEST_CASE("Copy DataStore", "DataArray")

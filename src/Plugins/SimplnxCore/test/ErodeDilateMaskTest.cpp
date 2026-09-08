@@ -61,7 +61,7 @@ void BuildTestData(DataStructure& dataStructure, usize dimX, usize dimY, usize d
         maskBuf[inSlice] = ((x * 7 + y * 13 + z * 29) % 3 != 0);
       }
     }
-    maskStore.copyFromBuffer(z * sliceSize, nonstd::span<const bool>(maskBuf.get(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(maskStore.copyFromBuffer(z * sliceSize, nonstd::span<const bool>(maskBuf.get(), sliceSize)));
   }
 }
 
@@ -73,7 +73,7 @@ usize CountTrueVoxels(const DataStructure& dataStructure, usize dimX, usize dimY
   usize count = 0;
   for(usize z = 0; z < dimZ; z++)
   {
-    mask.copyIntoBuffer(z * sliceSize, nonstd::span<bool>(buf.get(), sliceSize));
+    SIMPLNX_RESULT_REQUIRE_VALID(mask.copyIntoBuffer(z * sliceSize, nonstd::span<bool>(buf.get(), sliceSize)));
     for(usize i = 0; i < sliceSize; i++)
     {
       if(buf[i])

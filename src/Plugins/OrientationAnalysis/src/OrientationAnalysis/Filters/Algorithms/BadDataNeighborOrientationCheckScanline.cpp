@@ -151,7 +151,10 @@ Result<> BadDataNeighborOrientationCheckScanline::operator()()
   std::vector<uint32> localCrystalStructures(numCrystalStructures);
   {
     const auto& csStore = crystalStructures.getDataStoreRef();
-    csStore.copyIntoBuffer(0, nonstd::span<uint32>(localCrystalStructures.data(), numCrystalStructures));
+    if(Result<> ioResult = csStore.copyIntoBuffer(0, nonstd::span<uint32>(localCrystalStructures.data(), numCrystalStructures)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   // Validate indexes before orientationOps access. UnknownCrystalStructure remains a supported sentinel.
@@ -200,14 +203,17 @@ Result<> BadDataNeighborOrientationCheckScanline::operator()()
   std::vector<uint8> curMask(sliceSize);
   std::vector<uint8> nextMask(sliceSize);
 
-  auto loadMaskSlice = [&](usize offset, std::vector<uint8>& dest) {
+  auto loadMaskSlice = [&](usize offset, std::vector<uint8>& dest) -> Result<> {
     if(maskStorePtr != nullptr)
     {
-      maskStorePtr->copyIntoBuffer(offset, nonstd::span<uint8>(dest.data(), sliceSize));
+      return maskStorePtr->copyIntoBuffer(offset, nonstd::span<uint8>(dest.data(), sliceSize));
     }
-    else if(maskStoreBoolPtr != nullptr)
+    if(maskStoreBoolPtr != nullptr)
     {
-      maskStoreBoolPtr->copyIntoBuffer(offset, nonstd::span<bool>(boolSliceScratch.get(), sliceSize));
+      if(Result<> ioResult = maskStoreBoolPtr->copyIntoBuffer(offset, nonstd::span<bool>(boolSliceScratch.get(), sliceSize)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
       for(usize i = 0; i < sliceSize; i++)
       {
         dest[i] = boolSliceScratch[i] ? 1 : 0;
@@ -220,14 +226,21 @@ Result<> BadDataNeighborOrientationCheckScanline::operator()()
         dest[i] = maskCompare->isTrue(offset + i) ? 1 : 0;
       }
     }
+    return {};
   };
 
   // Each load issues one bulk read for quaternions, phases, and mask values.
-  auto loadSlice = [&](int64 z, std::vector<float32>& dstQuats, std::vector<int32>& dstPhases, std::vector<uint8>& dstMask) {
+  auto loadSlice = [&](int64 z, std::vector<float32>& dstQuats, std::vector<int32>& dstPhases, std::vector<uint8>& dstMask) -> Result<> {
     const usize offset = static_cast<usize>(z) * sliceSize;
-    quatsStore.copyIntoBuffer(offset * 4, nonstd::span<float32>(dstQuats.data(), quatSliceElems));
-    phasesStore.copyIntoBuffer(offset, nonstd::span<int32>(dstPhases.data(), sliceSize));
-    loadMaskSlice(offset, dstMask);
+    if(Result<> ioResult = quatsStore.copyIntoBuffer(offset * 4, nonstd::span<float32>(dstQuats.data(), quatSliceElems)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = phasesStore.copyIntoBuffer(offset, nonstd::span<int32>(dstPhases.data(), sliceSize)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    return loadMaskSlice(offset, dstMask);
   };
 
   // Recompute counts per pass to avoid a global random-write neighbor-count array.
@@ -244,10 +257,16 @@ Result<> BadDataNeighborOrientationCheckScanline::operator()()
       changed = false;
       passCount++;
 
-      loadSlice(0, curQuats, curPhases, curMask);
+      if(Result<> ioResult = loadSlice(0, curQuats, curPhases, curMask); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
       if(dimZ > 1)
       {
-        loadSlice(1, nextQuats, nextPhases, nextMask);
+        if(Result<> ioResult = loadSlice(1, nextQuats, nextPhases, nextMask); ioResult.invalid())
+        {
+          return ConvertResult(std::move(ioResult));
+        }
       }
 
       for(int64 zIdx = 0; zIdx < dimZ; zIdx++)
@@ -299,7 +318,10 @@ Result<> BadDataNeighborOrientationCheckScanline::operator()()
           const usize sliceOffset = static_cast<usize>(zIdx) * sliceSize;
           if(maskStorePtr != nullptr)
           {
-            maskStorePtr->copyFromBuffer(sliceOffset, nonstd::span<const uint8>(curMask.data(), sliceSize));
+            if(Result<> ioResult = maskStorePtr->copyFromBuffer(sliceOffset, nonstd::span<const uint8>(curMask.data(), sliceSize)); ioResult.invalid())
+            {
+              return ConvertResult(std::move(ioResult));
+            }
           }
           else if(maskStoreBoolPtr != nullptr)
           {
@@ -307,7 +329,10 @@ Result<> BadDataNeighborOrientationCheckScanline::operator()()
             {
               boolSliceScratch[i] = curMask[i] != 0;
             }
-            maskStoreBoolPtr->copyFromBuffer(sliceOffset, nonstd::span<const bool>(boolSliceScratch.get(), sliceSize));
+            if(Result<> ioResult = maskStoreBoolPtr->copyFromBuffer(sliceOffset, nonstd::span<const bool>(boolSliceScratch.get(), sliceSize)); ioResult.invalid())
+            {
+              return ConvertResult(std::move(ioResult));
+            }
           }
           else
           {
@@ -326,7 +351,10 @@ Result<> BadDataNeighborOrientationCheckScanline::operator()()
         std::swap(curMask, nextMask);
         if(zIdx + 2 < dimZ)
         {
-          loadSlice(zIdx + 2, nextQuats, nextPhases, nextMask);
+          if(Result<> ioResult = loadSlice(zIdx + 2, nextQuats, nextPhases, nextMask); ioResult.invalid())
+          {
+            return ConvertResult(std::move(ioResult));
+          }
         }
       }
     }

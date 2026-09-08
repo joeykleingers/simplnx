@@ -74,7 +74,7 @@ DataObject* TriangleGeom::shallowCopy()
 std::shared_ptr<DataObject> TriangleGeom::deepCopy(const DataPath& copyPath)
 {
   auto& dataStruct = getDataStructureRef();
-  // Don't construct with identifier since it will get created when inserting into data structure
+  // Construct without an identifier because insertion creates it.
   auto copy = std::shared_ptr<TriangleGeom>(new TriangleGeom(dataStruct, copyPath.getTargetName()));
   if(!dataStruct.containsData(copyPath) && dataStruct.insert(copy, copyPath.getParent()))
   {
@@ -189,7 +189,6 @@ Result<> TriangleGeom::findElementSizes(bool recalculate)
     if(triangleSizes == nullptr)
     {
       m_ElementSizesId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2230, "TriangleGeom Error: Unable to find or create a valid element sizes array or data store.");
     }
   }
@@ -197,7 +196,6 @@ Result<> TriangleGeom::findElementSizes(bool recalculate)
   GeometryHelpers::Topology::Find2DElementAreas(getFaces(), getVertices(), triangleSizes);
   m_ElementSizesId = triangleSizes->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -215,15 +213,18 @@ Result<> TriangleGeom::findElementsContainingVert(bool recalculate)
     if(trianglesContainingVert == nullptr)
     {
       m_CellContainingVertDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2231, "TriangleGeom Error: Unable to find or create a valid dynamic list array.");
     }
   }
 
-  GeometryHelpers::Connectivity::FindElementsContainingVert<uint16, MeshIndexType>(getFaces(), trianglesContainingVert, getNumberOfVertices());
+  auto findResult = GeometryHelpers::Connectivity::FindElementsContainingVert<uint16, MeshIndexType>(getFaces(), trianglesContainingVert, getNumberOfVertices());
+  if(findResult.invalid())
+  {
+    m_CellContainingVertDataArrayId.reset();
+    return findResult;
+  }
   m_CellContainingVertDataArrayId = trianglesContainingVert->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -247,17 +248,19 @@ Result<> TriangleGeom::findElementNeighbors(bool recalculate)
     if(triangleNeighbors == nullptr)
     {
       m_CellNeighborsDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2232, "TriangleGeom Error: Unable to find or create a dynamic list array.");
     }
   }
 
   m_CellNeighborsDataArrayId = triangleNeighbors->getId();
 
-  // No error value ( < 0) returned from below function ever
-  GeometryHelpers::Connectivity::FindElementNeighbors<uint16, MeshIndexType>(getFaces(), getElementsContainingVert(), triangleNeighbors, Type::Triangle);
+  auto findResult = GeometryHelpers::Connectivity::FindElementNeighbors<uint16, MeshIndexType>(getFaces(), getElementsContainingVert(), triangleNeighbors, Type::Triangle);
+  if(findResult.invalid())
+  {
+    m_CellNeighborsDataArrayId.reset();
+    return findResult;
+  }
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -277,14 +280,12 @@ Result<> TriangleGeom::findElementCentroids(bool recalculate)
   if(triangleCentroids == nullptr)
   {
     m_CellCentroidsDataArrayId.reset();
-    // Used to be error code `-1`
     return MakeErrorResult(-2233, "TriangleGeom Error: Unable to find or create a valid element centroids array or data store.");
   }
 
   GeometryHelpers::Topology::FindElementCentroids(getFaces(), getVertices(), triangleCentroids);
   m_CellCentroidsDataArrayId = triangleCentroids->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -321,15 +322,18 @@ Result<> TriangleGeom::findEdges(bool recalculate)
     if(edgeList == nullptr)
     {
       m_EdgeDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2234, "TriangleGeom Error: Unable to find or create a valid shared edges array or data store.");
     }
   }
 
-  GeometryHelpers::Connectivity::Find2DElementEdges(getFaces(), edgeList);
+  auto findResult = GeometryHelpers::Connectivity::Find2DElementEdges(getFaces(), edgeList);
+  if(findResult.invalid())
+  {
+    m_EdgeDataArrayId.reset();
+    return findResult;
+  }
   m_EdgeDataArrayId = edgeList->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -349,11 +353,15 @@ Result<> TriangleGeom::findUnsharedEdges(bool recalculate)
   if(unsharedEdgeList == nullptr)
   {
     m_UnsharedEdgeListId.reset();
-    // Used to be error code `-1`
     return MakeErrorResult(-2235, "TriangleGeom Error: Unable to find or create a valid unshared edges array or data store.");
   }
 
-  GeometryHelpers::Connectivity::Find2DUnsharedEdges(getFaces(), unsharedEdgeList);
+  auto findResult = GeometryHelpers::Connectivity::Find2DUnsharedEdges(getFaces(), unsharedEdgeList);
+  if(findResult.invalid())
+  {
+    m_UnsharedEdgeListId.reset();
+    return findResult;
+  }
   m_UnsharedEdgeListId = unsharedEdgeList->getId();
 
   return {};

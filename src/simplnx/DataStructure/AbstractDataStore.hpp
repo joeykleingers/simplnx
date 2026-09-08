@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <compare>
+#include <exception>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -699,9 +701,9 @@ public:
    * buffer. Implementations support in-memory and out-of-core storage.
    * @param startIndex First flat value index to read.
    * @param buffer Receives copied values.
-   * @return Error if the range is invalid or the store has no data.
+   * @return Valid on success. Error -6030 reports an invalid range, -6032 reports read I/O, and -6038 reports placeholder access.
    */
-  virtual Result<> copyIntoBuffer(usize startIndex, nonstd::span<T> buffer) const = 0;
+  [[nodiscard]] virtual Result<> copyIntoBuffer(usize startIndex, nonstd::span<T> buffer) const = 0;
 
   /**
    * @brief Copies caller-owned values into a contiguous value range.
@@ -710,9 +712,9 @@ public:
    * buffer. Implementations support in-memory and out-of-core storage.
    * @param startIndex First flat value index to write.
    * @param buffer Values to copy.
-   * @return Error if the range is invalid or the store has no data.
+   * @return Valid on success. Error -6031 reports an invalid range, -6033 reports write I/O, and -6038 reports placeholder access.
    */
-  virtual Result<> copyFromBuffer(usize startIndex, nonstd::span<const T> buffer) = 0;
+  [[nodiscard]] virtual Result<> copyFromBuffer(usize startIndex, nonstd::span<const T> buffer) = 0;
 
   /**
    * @brief Reads a tuple-space extent into a new value vector.
@@ -720,9 +722,9 @@ public:
    * Extent axes use getTupleShape() order. Values use row-major order with
    * components as the fastest-varying dimension.
    * @param extent Tuple-space extent with minimum, maximum, and stride values.
-   * @return Extent values, or an empty vector when the extent is not valid.
+   * @return Extent values on success. Error -6034 reports invalid extent arguments, -6032 reports read I/O, and -6038 reports placeholder access.
    */
-  virtual std::vector<T> readExtent(const Extent& extent) const = 0;
+  [[nodiscard]] virtual Result<std::vector<T>> readExtent(const Extent& extent) const = 0;
 
   /**
    * @brief Reads an N-dimensional extent into caller-owned storage.
@@ -732,10 +734,9 @@ public:
    *
    * @param extent N-dimensional tuple-space extent to read.
    * @param destination Receives exactly `extent.totalElements() * getNumberOfComponents()` values.
-   * @throws std::invalid_argument If the extent or destination size is invalid.
-   * @throws std::runtime_error If the store does not support data access.
+   * @return Valid on success. Error -6034 reports invalid arguments, -6032 reports read I/O, and -6038 reports placeholder access.
    */
-  virtual void readExtentIntoBuffer(const Extent& extent, nonstd::span<T> destination) const = 0;
+  [[nodiscard]] virtual Result<> readExtentIntoBuffer(const Extent& extent, nonstd::span<T> destination) const = 0;
 
   /**
    * @brief Reads related N-dimensional extents into caller-owned storage.
@@ -746,14 +747,13 @@ public:
    *
    * @param extents Tuple-space extents to read.
    * @param destinations One exact-sized destination for each extent, in input order.
-   * @throws std::invalid_argument If counts, extents, or destination sizes are invalid.
-   * @throws std::runtime_error If the store does not support extent reads.
+   * @return Valid on success. Error -6034 reports invalid arguments. A concrete-store read error propagates unchanged.
    */
-  virtual void readExtentsIntoBuffers(nonstd::span<const Extent> extents, nonstd::span<nonstd::span<T>> destinations) const
+  [[nodiscard]] virtual Result<> readExtentsIntoBuffers(nonstd::span<const Extent> extents, nonstd::span<nonstd::span<T>> destinations) const
   {
     if(extents.size() != destinations.size())
     {
-      throw std::invalid_argument(fmt::format("AbstractDataStore::readExtentsIntoBuffers: extent count ({}) does not match destination count ({})", extents.size(), destinations.size()));
+      return MakeErrorResult(-6034, fmt::format("AbstractDataStore extent read failed: extent count ({}) does not match destination count ({}).", extents.size(), destinations.size()));
     }
 
     const ShapeType& tupleShape = getTupleShape();
@@ -762,29 +762,53 @@ public:
       const Extent& extent = extents[extentIndex];
       if(extent.dimensions() != tupleShape.size())
       {
-        throw std::invalid_argument(
-            fmt::format("AbstractDataStore::readExtentsIntoBuffers: extent {} dimensions ({}) do not match tuple-shape dimensions ({})", extentIndex, extent.dimensions(), tupleShape.size()));
+        return MakeErrorResult(-6034,
+                               fmt::format("AbstractDataStore extent {} read failed: extent rank ({}) does not match tuple-shape rank ({}).", extentIndex, extent.dimensions(), tupleShape.size()));
       }
       for(usize dimension = 0; dimension < tupleShape.size(); ++dimension)
       {
         if(extent.stride[dimension] == 0 || extent.min[dimension] > extent.max[dimension] || extent.max[dimension] >= tupleShape[dimension])
         {
-          throw std::invalid_argument(fmt::format("AbstractDataStore::readExtentsIntoBuffers: extent {} dimension {} has min {}, max {}, stride {}, and tuple bound {}", extentIndex, dimension,
-                                                  extent.min[dimension], extent.max[dimension], extent.stride[dimension], tupleShape[dimension]));
+          return MakeErrorResult(-6034, fmt::format("AbstractDataStore extent {} read failed: dimension {} has range [{}..{}], stride {}, and tuple bound {}.", extentIndex, dimension,
+                                                    extent.min[dimension], extent.max[dimension], extent.stride[dimension], tupleShape[dimension]));
         }
       }
 
-      const usize requiredValues = static_cast<usize>(extent.totalElements()) * getNumberOfComponents();
+      usize requiredValues = 0;
+      try
+      {
+        const uint64 extentTuples = extent.totalElements();
+        const usize numComponents = getNumberOfComponents();
+        if(numComponents > 0 && extentTuples > std::numeric_limits<usize>::max() / numComponents)
+        {
+          return MakeErrorResult(-6034,
+                                 fmt::format("AbstractDataStore extent {} read failed: {} tuples with {} components exceed the addressable value count.", extentIndex, extentTuples, numComponents));
+        }
+        requiredValues = static_cast<usize>(extentTuples) * numComponents;
+      } catch(const std::exception& exception)
+      {
+        return MakeErrorResult(-6034, fmt::format("AbstractDataStore extent {} read failed: the extent element count is invalid: {}", extentIndex, exception.what()));
+      }
       if(destinations[extentIndex].size() != requiredValues)
       {
-        throw std::invalid_argument(fmt::format("AbstractDataStore::readExtentsIntoBuffers: destination {} has {} values; expected {}", extentIndex, destinations[extentIndex].size(), requiredValues));
+        return MakeErrorResult(-6034, fmt::format("AbstractDataStore extent {} read failed: destination has {} values; expected {}.", extentIndex, destinations[extentIndex].size(), requiredValues));
       }
     }
 
+    WarningCollection warnings;
     for(usize extentIndex = 0; extentIndex < extents.size(); ++extentIndex)
     {
-      readExtentIntoBuffer(extents[extentIndex], destinations[extentIndex]);
+      Result<> readResult = readExtentIntoBuffer(extents[extentIndex], destinations[extentIndex]);
+      if(readResult.invalid())
+      {
+        readResult.warnings().insert(readResult.warnings().begin(), std::make_move_iterator(warnings.begin()), std::make_move_iterator(warnings.end()));
+        return readResult;
+      }
+      warnings.insert(warnings.end(), std::make_move_iterator(readResult.warnings().begin()), std::make_move_iterator(readResult.warnings().end()));
     }
+    Result<> result;
+    result.warnings() = std::move(warnings);
+    return result;
   }
 
   /**
@@ -794,17 +818,28 @@ public:
    * override this method to share one backing-store traversal. Each result uses
    * the readExtent() layout and has the same order as its input extent.
    * @param extents Tuple-space extents to read.
-   * @return One value vector for each input extent.
+   * @return One value vector for each input extent. The first concrete-store read error propagates unchanged.
    */
-  virtual std::vector<std::vector<T>> readExtents(nonstd::span<const Extent> extents) const
+  [[nodiscard]] virtual Result<std::vector<std::vector<T>>> readExtents(nonstd::span<const Extent> extents) const
   {
     std::vector<std::vector<T>> results;
     results.reserve(extents.size());
+    WarningCollection warnings;
     for(const Extent& extent : extents)
     {
-      results.push_back(readExtent(extent));
+      Result<std::vector<T>> readResult = readExtent(extent);
+      if(readResult.invalid())
+      {
+        Result<std::vector<std::vector<T>>> invalidResult = ConvertInvalidResult<std::vector<std::vector<T>>>(std::move(readResult));
+        invalidResult.warnings().insert(invalidResult.warnings().begin(), std::make_move_iterator(warnings.begin()), std::make_move_iterator(warnings.end()));
+        return invalidResult;
+      }
+      warnings.insert(warnings.end(), std::make_move_iterator(readResult.warnings().begin()), std::make_move_iterator(readResult.warnings().end()));
+      results.push_back(std::move(readResult.value()));
     }
-    return results;
+    Result<std::vector<std::vector<T>>> result{std::move(results)};
+    result.warnings() = std::move(warnings);
+    return result;
   }
 
   /**
@@ -814,8 +849,9 @@ public:
    * components as the fastest-varying dimension.
    * @param extent Tuple-space extent with minimum, maximum, and stride values.
    * @param data Values to write. The span has `extent.totalElements() * getNumberOfComponents()` values.
+   * @return Valid on success. Error -6034 reports invalid arguments, -6033 reports write I/O, -6037 reports unsupported rank, and -6038 reports placeholder access.
    */
-  virtual void writeExtent(const Extent& extent, nonstd::span<const T> data) = 0;
+  [[nodiscard]] virtual Result<> writeExtent(const Extent& extent, nonstd::span<const T> data) = 0;
 
   value_type operator[](usize index) const
   {

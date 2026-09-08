@@ -83,13 +83,17 @@ public:
   }
 
   /**
-   * @brief Resizes the list store to the specified tuple shape.
-   * @param tupleShape The new shape of the tuple dimensions
+   * @brief Changes the placeholder tuple shape without accessing lists.
+   * @param tupleShape New tuple dimensions in slowest-to-fastest order.
+   * @return Always valid because preflight placeholders contain no list values.
+   *
+   * Preflight must resize metadata before execution materializes the list store.
    */
-  void resizeTuples(const ShapeType& tupleShape) override
+  [[nodiscard]] Result<> resizeTuples(const ShapeType& tupleShape) override
   {
     m_TupleShape = tupleShape;
     m_NumTuples = std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<size_t>(1), std::multiplies<>());
+    return {};
   }
 
   /**
@@ -223,7 +227,7 @@ public:
   }
 
   /**
-   * @brief Returns a const reference to the vector_type value found at the specified index. This cannot be used to edit the vector_type value found at the specified index.
+   * @brief Rejects indexed list access because the placeholder has no values.
    * @param grainId
    * @return vector_type
    */
@@ -233,7 +237,7 @@ public:
   }
 
   /**
-   * @brief Returns a const reference to the vector_type value found at the specified index. This cannot be used to edit the vector_type value found at the specified index.
+   * @brief Rejects indexed list access because the placeholder has no values.
    * @param grainId
    * @return vector_type
    */
@@ -275,7 +279,8 @@ public:
     }
     else
     {
-      resizeTuples(tupleDimsResult.value());
+      m_TupleShape = tupleDimsResult.value();
+      m_NumTuples = std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<size_t>(1), std::multiplies<>());
     }
   }
 

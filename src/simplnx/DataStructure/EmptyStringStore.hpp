@@ -58,10 +58,18 @@ public:
     return m_TupleShape;
   }
 
-  void resizeTuples(const ShapeType& tupleShape) override
+  /**
+   * @brief Changes the placeholder tuple shape without accessing values.
+   * @param tupleShape New tuple dimensions in slowest-to-fastest order.
+   * @return Always valid because preflight placeholders contain no values.
+   *
+   * Preflight must resize metadata before execution materializes the string store.
+   */
+  [[nodiscard]] Result<> resizeTuples(const ShapeType& tupleShape) override
   {
     m_TupleShape = tupleShape;
     m_NumTuples = std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<usize>(1), std::multiplies<>());
+    return {};
   }
 
   bool isPlaceholder() const override

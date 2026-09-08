@@ -72,9 +72,14 @@ void INodeGeometry2D::setFaceList(const SharedFaceList& faces)
   m_FaceListId = faces.getId();
 }
 
-void INodeGeometry2D::resizeFaceList(usize size)
+Result<> INodeGeometry2D::resizeFaceList(usize size)
 {
-  getFacesRef().getIDataStoreRef().resizeTuples({size});
+  Result<> resizeResult = getFacesRef().getIDataStoreRef().resizeTuples({size});
+  if(resizeResult.invalid())
+  {
+    resizeResult.errors()[0].message = fmt::format("Geometry '{}' failed to resize its face list to {} tuples: {}", getName(), size, resizeResult.errors()[0].message);
+  }
+  return resizeResult;
 }
 
 usize INodeGeometry2D::getNumberOfFaces() const

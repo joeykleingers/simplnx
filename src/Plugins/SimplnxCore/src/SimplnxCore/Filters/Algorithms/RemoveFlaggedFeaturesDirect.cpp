@@ -19,16 +19,19 @@ using namespace nx::core;
 namespace
 {
 /**
- * @brief Selects one majority face-neighbor source for each nonpositive voxel.
+ * @brief Selects one majority face-neighbor source for each negative voxel.
  * @param imageGeom Defines voxel dimensions.
  * @param featureIds Provides current Feature IDs.
  * @param storageArray Receives flat source-voxel indexes.
+ * @param replacementCount Receives the number of negative voxels that have a non-negative source.
+ * @param unresolvedCount Receives the number of negative voxels without a non-negative source.
  * @param shouldCancel Stops before later Z slices when true.
  * @param messageHelper Creates a throttled progress messenger.
- * @return True if any nonpositive Feature ID exists; false after cancellation or none.
+ * @return True if any negative Feature ID remains unresolved; false after cancellation or none.
  * @pre Flat voxel indexes fit in int32.
  */
-bool IdentifyNeighbors(ImageGeom& imageGeom, Int32AbstractDataStore& featureIds, std::vector<int32>& storageArray, const std::atomic_bool& shouldCancel, MessageHelper& messageHelper)
+bool IdentifyNeighbors(ImageGeom& imageGeom, Int32AbstractDataStore& featureIds, std::vector<int32>& storageArray, usize& replacementCount, usize& unresolvedCount,
+                       const std::atomic_bool& shouldCancel, MessageHelper& messageHelper)
 {
   ThrottledMessenger throttledMessenger = messageHelper.createThrottledMessenger();
 
@@ -45,6 +48,8 @@ bool IdentifyNeighbors(ImageGeom& imageGeom, Int32AbstractDataStore& featureIds,
   constexpr std::array<FaceNeighborType, k_NumFaceNeighbors> faceNeighborInternalIdx = initializeFaceNeighborInternalIdx();
 
   bool shouldLoop = false;
+  replacementCount = 0;
+  unresolvedCount = 0;
 
   auto progressIncrement = dims[2] / 100;
   usize progressCounter = 0;
@@ -72,16 +77,15 @@ bool IdentifyNeighbors(ImageGeom& imageGeom, Int32AbstractDataStore& featureIds,
       {
         int64 voxelIndex = kStride + jStride + xIdx;
         featureName = featureIds[voxelIndex];
-        if(featureName > 0)
+        if(featureName >= 0)
         {
           continue;
         }
-        shouldLoop = true;
-        int32 current;
+        int32 current = 0;
         int32 most = 0;
-        std::vector<int32> numHits(6, 0);
-        std::vector<int32> discoveredFeatures = {};
-        discoveredFeatures.reserve(6);
+        std::array<int32, k_NumFaceNeighbors> numHits = {};
+        std::array<int32, k_NumFaceNeighbors> discoveredFeatures = {};
+        usize discoveredFeatureCount = 0;
         // Check six face neighbors in the shared NeighborUtilities order.
         const std::array<bool, k_NumFaceNeighbors> isValidFaceNeighbor = computeValidFaceNeighbors(xIdx, yIdx, zIdx, dims);
         for(const auto& faceIndex : faceNeighborInternalIdx)
@@ -96,7 +100,7 @@ bool IdentifyNeighbors(ImageGeom& imageGeom, Int32AbstractDataStore& featureIds,
           if(feature >= 0)
           {
             bool found = false;
-            for(usize featIndex = 0; featIndex < discoveredFeatures.size(); featIndex++)
+            for(usize featIndex = 0; featIndex < discoveredFeatureCount; featIndex++)
             {
               if(discoveredFeatures[featIndex] == feature)
               {
@@ -113,9 +117,25 @@ bool IdentifyNeighbors(ImageGeom& imageGeom, Int32AbstractDataStore& featureIds,
             }
             if(!found)
             {
-              discoveredFeatures.push_back(feature);
+              discoveredFeatures[discoveredFeatureCount] = feature;
+              numHits[discoveredFeatureCount] = 1;
+              discoveredFeatureCount++;
+              if(most < 1)
+              {
+                most = 1;
+                storageArray[voxelIndex] = static_cast<int32>(neighborPoint);
+              }
             }
           }
+        }
+        if(storageArray[voxelIndex] >= 0)
+        {
+          replacementCount++;
+        }
+        else
+        {
+          shouldLoop = true;
+          unresolvedCount++;
         }
       }
     }
@@ -421,14 +441,16 @@ Result<> RemoveFlaggedFeaturesDirect::operator()()
 
     if(m_InputValues->FillRemovedFeatures)
     {
-      bool shouldLoop;
+      bool shouldLoop = false;
       usize count = 0;
       do
       {
         count++;
         m_MessageHandler(IFilter::ProgressMessage{IFilter::Message::Type::Info, fmt::format("Entering iteration number {}...", count)});
         std::fill(neighbors.begin(), neighbors.end(), -1);
-        shouldLoop = IdentifyNeighbors(imageGeom, featureIds, neighbors, m_ShouldCancel, messageHelper);
+        usize replacementCount = 0;
+        usize unresolvedCount = 0;
+        shouldLoop = IdentifyNeighbors(imageGeom, featureIds, neighbors, replacementCount, unresolvedCount, m_ShouldCancel, messageHelper);
 
         if(m_ShouldCancel)
         {
@@ -438,6 +460,11 @@ Result<> RemoveFlaggedFeaturesDirect::operator()()
         m_MessageHandler(IFilter::ProgressMessage{IFilter::Message::Type::Info, fmt::format("Filling bad voxels...")});
         std::vector<std::shared_ptr<IDataArray>> voxelArrays = GenerateDataArrayList(m_DataStructure, m_InputValues->FeatureIdsArrayPath, m_InputValues->IgnoredDataArrayPaths);
         FindVoxelArrays(featureIds, neighbors, voxelArrays, m_ShouldCancel);
+        if(replacementCount == 0 && shouldLoop)
+        {
+          m_MessageHandler(IFilter::Message::Type::Warning, fmt::format("Fill removed features: no progress after iteration {}; {} voxels remain unresolved", count, unresolvedCount));
+          break;
+        }
       } while(shouldLoop);
     }
 
@@ -448,10 +475,13 @@ Result<> RemoveFlaggedFeaturesDirect::operator()()
 
     m_MessageHandler(IFilter::ProgressMessage{IFilter::Message::Type::Info, fmt::format("Stripping excess inactive objects from model...")});
     DataPath featureGroupPath = m_InputValues->FlaggedFeaturesArrayPath.getParent();
-    if(!RemoveInactiveObjects(m_DataStructure, featureGroupPath, activeObjects, featureIds, flaggedFeatures->getNumberOfTuples(), m_MessageHandler, m_ShouldCancel))
+    Result<> removeResult = RemoveInactiveObjects(m_DataStructure, featureGroupPath, activeObjects, featureIds, flaggedFeatures->getNumberOfTuples(), m_MessageHandler, m_ShouldCancel);
+    if(removeResult.invalid())
     {
-      return MakeErrorResult(-45434, fmt::format("Failed to remove inactive objects from feature group at path '{}'.", featureGroupPath.toString()));
+      return removeResult;
     }
+    // RemoveInactiveObjects reports a cancelled compaction as success. No work follows this
+    // call, so a cancelled and a completed run both leave through the empty valid Result below.
   }
 
   return {};

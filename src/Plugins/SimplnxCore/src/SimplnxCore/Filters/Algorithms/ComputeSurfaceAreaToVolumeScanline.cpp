@@ -63,12 +63,19 @@ Result<> ComputeSurfaceAreaToVolumeScanline::operator()()
   std::vector<int32> curSlice(sliceSize, 0);
   std::vector<int32> nextSlice(sliceSize, 0);
 
-  // Current bulk-I/O Result values are not inspected. A failure can leave input
-  // buffers or output arrays incomplete while this method returns success.
-  featureIdsStore.copyIntoBuffer(0, nonstd::span<int32>(curSlice.data(), sliceSize));
+  // A bulk-I/O error stops the scan before later slices or output arrays change.
+  Result<> ioResult = featureIdsStore.copyIntoBuffer(0, nonstd::span<int32>(curSlice.data(), sliceSize));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
   if(zPoints > 1)
   {
-    featureIdsStore.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+    ioResult = featureIdsStore.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
 
   for(int64 z = 0; z < zPoints; z++)
@@ -148,14 +155,22 @@ Result<> ComputeSurfaceAreaToVolumeScanline::operator()()
     std::swap(curSlice, nextSlice);
     if(z + 2 < zPoints)
     {
-      featureIdsStore.copyIntoBuffer(static_cast<usize>(z + 2) * sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+      ioResult = featureIdsStore.copyIntoBuffer(static_cast<usize>(z + 2) * sliceSize, nonstd::span<int32>(nextSlice.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
 
   // Feature-level caches avoid per-value OOC access during metric calculation.
   const usize numFeaturesUSize = static_cast<usize>(numFeatures);
   std::vector<int32> localNumCells(numFeaturesUSize);
-  numCells.copyIntoBuffer(0, nonstd::span<int32>(localNumCells.data(), numFeaturesUSize));
+  ioResult = numCells.copyIntoBuffer(0, nonstd::span<int32>(localNumCells.data(), numFeaturesUSize));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
 
   std::vector<float32> localSurfaceAreaVolumeRatio(numFeaturesUSize, 0.0f);
 
@@ -165,7 +180,11 @@ Result<> ComputeSurfaceAreaToVolumeScanline::operator()()
     float32 featureVolume = voxelVol * localNumCells[i];
     localSurfaceAreaVolumeRatio[i] = featureSurfaceArea[i] / featureVolume;
   }
-  surfaceAreaVolumeRatio.copyFromBuffer(0, nonstd::span<const float32>(localSurfaceAreaVolumeRatio.data(), numFeaturesUSize));
+  ioResult = surfaceAreaVolumeRatio.copyFromBuffer(0, nonstd::span<const float32>(localSurfaceAreaVolumeRatio.data(), numFeaturesUSize));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
 
   if(m_InputValues->CalculateSphericity)
   {
@@ -179,7 +198,11 @@ Result<> ComputeSurfaceAreaToVolumeScanline::operator()()
       float32 featureVolume = voxelVol * localNumCells[i];
       localSphericity[i] = (thirdRootPi * std::pow((6.0f * featureVolume), 0.66666f)) / featureSurfaceArea[i];
     }
-    sphericity.copyFromBuffer(0, nonstd::span<const float32>(localSphericity.data(), numFeaturesUSize));
+    ioResult = sphericity.copyFromBuffer(0, nonstd::span<const float32>(localSphericity.data(), numFeaturesUSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
 
   return {};

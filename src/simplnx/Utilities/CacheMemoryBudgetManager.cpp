@@ -1,6 +1,7 @@
 #include "simplnx/Utilities/CacheMemoryBudgetManager.hpp"
 
 #include <algorithm>
+#include <limits>
 
 #include "simplnx/Utilities/MemoryUtilities.hpp"
 
@@ -248,6 +249,13 @@ void CacheMemoryBudgetManager::clear()
   m_PinnedBytes = 0;
 }
 
+/**
+ * @brief Makes room for an allocation under the shared cache budget.
+ * @param needed Requested allocation size in bytes.
+ * @return Handles removed through direct entry eviction.
+ *
+ * A delegated handler receives the absolute byte deficit at the time of the call.
+ */
 std::vector<CacheMemoryBudgetManager::AllocationHandle> CacheMemoryBudgetManager::makeRoom(uint64 needed)
 {
   std::vector<AllocationHandle> evicted;
@@ -277,8 +285,11 @@ std::vector<CacheMemoryBudgetManager::AllocationHandle> CacheMemoryBudgetManager
     if(handlerIter != m_SubsystemHandlers.end())
     {
       // A delegated subsystem releases entries later. Avoid duplicate requests while its accounting is pending.
-      const uint64 targetExistingBytes = needed >= m_BudgetBytes ? 0 : m_BudgetBytes - needed;
-      const uint64 deficit = m_UsedBytes - targetExistingBytes;
+      const uint64 existingDeficit = m_UsedBytes > m_BudgetBytes ? m_UsedBytes - m_BudgetBytes : 0;
+      const uint64 remainingBudget = m_UsedBytes < m_BudgetBytes ? m_BudgetBytes - m_UsedBytes : 0;
+      const uint64 requestDeficit = needed - remainingBudget;
+      const uint64 maxDeficit = std::numeric_limits<uint64>::max();
+      const uint64 deficit = requestDeficit > maxDeficit - existingDeficit ? maxDeficit : existingDeficit + requestDeficit;
       handlerIter->second(deficit);
       break;
     }

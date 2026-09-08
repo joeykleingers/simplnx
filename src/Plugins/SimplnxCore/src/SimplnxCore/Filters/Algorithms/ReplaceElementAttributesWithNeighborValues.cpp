@@ -159,13 +159,14 @@ struct ExecuteTemplate
    * @param shouldCancel Signals cancellation between complete passes.
    * @param messageHandler Receives progress messages.
    *
-   * Each sibling array commits one destination slice at a time. Bulk-I/O results
-   * are discarded. Loop mode has no pass limit and can fail to terminate when a
-   * failed value has no passing face neighbor.
+   * @return The first comparison-array or sibling-array bulk-I/O error.
+   *
+   * Each sibling array commits one destination slice at a time. Loop mode has no
+   * pass limit and can fail to terminate when a failed value has no passing face neighbor.
    */
   template <typename T>
-  void operator()(const ImageGeom& imageGeom, IDataArray* inputIDataArray, int32 comparisonAlgorithm, float32 ThresholdValue, bool loopUntilDone, const std::atomic_bool& shouldCancel,
-                  const IFilter::MessageHandler& messageHandler)
+  Result<> operator()(const ImageGeom& imageGeom, IDataArray* inputIDataArray, int32 comparisonAlgorithm, float32 ThresholdValue, bool loopUntilDone, const std::atomic_bool& shouldCancel,
+                      const IFilter::MessageHandler& messageHandler)
   {
     const auto& inputStore = inputIDataArray->template getIDataStoreRefAs<AbstractDataStore<T>>();
 
@@ -212,7 +213,7 @@ struct ExecuteTemplate
 
     auto readInputSlice = [&](int64 z, usize slot) {
       const usize zOffset = static_cast<usize>(z) * sliceSize;
-      inputStore.copyIntoBuffer(zOffset, nonstd::span<T>(inputSlices[slot].get(), sliceSize));
+      return inputStore.copyIntoBuffer(zOffset, nonstd::span<T>(inputSlices[slot].get(), sliceSize));
     };
 
     // Map each face direction to its comparison-buffer slot.
@@ -224,14 +225,22 @@ struct ExecuteTemplate
       count = 0;
       if(shouldCancel)
       {
-        break;
+        return {};
       }
 
       // A new pass reads the comparison array after prior tuple transfers.
-      readInputSlice(0, 1);
+      Result<> ioResult = readInputSlice(0, 1);
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
       if(dims[2] > 1)
       {
-        readInputSlice(1, 2);
+        ioResult = readInputSlice(1, 2);
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
 
       auto progIncrement = static_cast<int64>(totalPoints / 50);
@@ -247,7 +256,11 @@ struct ExecuteTemplate
           std::swap(inputSlices[1], inputSlices[2]);
           if(zIdx + 1 < dims[2])
           {
-            readInputSlice(zIdx + 1, 2);
+            ioResult = readInputSlice(zIdx + 1, 2);
+            if(ioResult.invalid())
+            {
+              return ioResult;
+            }
           }
         }
 
@@ -307,7 +320,11 @@ struct ExecuteTemplate
           {
             continue;
           }
-          SliceBufferedTransferOneZ(*dataArrayPtr, sliceBestNeighbor, sliceSize, static_cast<usize>(zIdx), dimZ);
+          Result<> transferResult = SliceBufferedTransferOneZ(*dataArrayPtr, sliceBestNeighbor, sliceSize, static_cast<usize>(zIdx), dimZ);
+          if(transferResult.invalid())
+          {
+            return transferResult;
+          }
         }
 
         // Reuse the mark buffer for the next destination slice.
@@ -316,7 +333,7 @@ struct ExecuteTemplate
 
       if(shouldCancel)
       {
-        break;
+        return {};
       }
 
       // count records failed values, including values without a passing source.
@@ -325,6 +342,7 @@ struct ExecuteTemplate
         keepGoing = true;
       }
     }
+    return {};
   }
 };
 
@@ -351,8 +369,6 @@ Result<> ReplaceElementAttributesWithNeighborValues::operator()()
   auto* srcIDataArray = m_DataStructure.getDataAs<IDataArray>(m_InputValues->InputArrayPath);
   const auto& imageGeom = m_DataStructure.getDataRefAs<ImageGeom>(m_InputValues->SelectedImageGeometryPath);
 
-  ExecuteDataFunction(ExecuteTemplate{}, srcIDataArray->getDataType(), imageGeom, srcIDataArray, m_InputValues->SelectedComparison, m_InputValues->MinConfidence, m_InputValues->Loop, m_ShouldCancel,
-                      m_MessageHandler);
-
-  return {};
+  return ExecuteDataFunction(ExecuteTemplate{}, srcIDataArray->getDataType(), imageGeom, srcIDataArray, m_InputValues->SelectedComparison, m_InputValues->MinConfidence, m_InputValues->Loop,
+                             m_ShouldCancel, m_MessageHandler);
 }

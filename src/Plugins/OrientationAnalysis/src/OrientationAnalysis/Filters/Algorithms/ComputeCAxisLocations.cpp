@@ -51,6 +51,7 @@ Result<> ComputeCAxisLocations::operator()()
     result.warnings().push_back({-3523, "Finding the c-axis locations requires Hexagonal-Low 6/m or Hexagonal-High 6/mmm type crystal structures. All calculations for non Hexagonal phases will be "
                                         "skipped and a NaN value inserted."});
   }
+  auto mergeWarnings = [&result](Result<> ioResult) { return MergeResults(std::move(result), std::move(ioResult)); };
 
   const auto& quaternions = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath);
   const auto& cellPhases = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->CellPhasesArrayPath);
@@ -61,7 +62,10 @@ Result<> ComputeCAxisLocations::operator()()
   // The local ensemble cache avoids repeated cell-loop access.
   const usize numPhases = crystalStructures.getNumberOfTuples();
   std::vector<uint32> crystalStructuresBuf(numPhases);
-  crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresBuf.data(), numPhases));
+  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresBuf.data(), numPhases)); ioResult.invalid())
+  {
+    return mergeWarnings(std::move(ioResult));
+  }
 
   constexpr usize k_ChunkSize = 65536;
   const Eigen::Vector3f cAxis{0.0f, 0.0f, 1.0f};
@@ -84,8 +88,14 @@ Result<> ComputeCAxisLocations::operator()()
     std::vector<int32> phaseBuf(chunkCount);
     std::vector<float32> outputBuf(chunkCount * 3);
 
-    quatStore.copyIntoBuffer(chunkStart * 4, nonstd::span<float32>(quatBuf.data(), chunkCount * 4));
-    phaseStore.copyIntoBuffer(chunkStart, nonstd::span<int32>(phaseBuf.data(), chunkCount));
+    if(Result<> ioResult = quatStore.copyIntoBuffer(chunkStart * 4, nonstd::span<float32>(quatBuf.data(), chunkCount * 4)); ioResult.invalid())
+    {
+      return mergeWarnings(std::move(ioResult));
+    }
+    if(Result<> ioResult = phaseStore.copyIntoBuffer(chunkStart, nonstd::span<int32>(phaseBuf.data(), chunkCount)); ioResult.invalid())
+    {
+      return mergeWarnings(std::move(ioResult));
+    }
 
     for(usize i = 0; i < chunkCount; i++)
     {
@@ -112,7 +122,10 @@ Result<> ComputeCAxisLocations::operator()()
       }
     }
 
-    outputStore.copyFromBuffer(chunkStart * 3, nonstd::span<const float32>(outputBuf.data(), chunkCount * 3));
+    if(Result<> ioResult = outputStore.copyFromBuffer(chunkStart * 3, nonstd::span<const float32>(outputBuf.data(), chunkCount * 3)); ioResult.invalid())
+    {
+      return mergeWarnings(std::move(ioResult));
+    }
   }
   return result;
 }

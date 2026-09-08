@@ -71,7 +71,7 @@ DataObject* HexahedralGeom::shallowCopy()
 std::shared_ptr<DataObject> HexahedralGeom::deepCopy(const DataPath& copyPath)
 {
   auto& dataStruct = getDataStructureRef();
-  // Don't construct with identifier since it will get created when inserting into data structure
+  // Construct without an identifier because insertion creates it.
   auto copy = std::shared_ptr<HexahedralGeom>(new HexahedralGeom(dataStruct, copyPath.getTargetName()));
   if(!dataStruct.containsData(copyPath) && dataStruct.insert(copy, copyPath.getParent()))
   {
@@ -211,7 +211,6 @@ Result<> HexahedralGeom::findElementSizes(bool recalculate)
     if(hexSizes == nullptr)
     {
       m_ElementSizesId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2530, "HexahedralGeom Error: Unable to find or create a valid element sizes array or data store.");
     }
   }
@@ -219,7 +218,6 @@ Result<> HexahedralGeom::findElementSizes(bool recalculate)
   m_ElementSizesId = hexSizes->getId();
   GeometryHelpers::Topology::FindHexVolumes<uint64>(getPolyhedra(), getVertices(), hexSizes);
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -237,15 +235,18 @@ Result<> HexahedralGeom::findElementsContainingVert(bool recalculate)
     if(hexasControllingVert == nullptr)
     {
       m_CellContainingVertDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2531, "HexahedralGeom Error: Unable to find or create a valid dynamic list array.");
     }
   }
 
   m_CellContainingVertDataArrayId = hexasControllingVert->getId();
-  GeometryHelpers::Connectivity::FindElementsContainingVert<uint16, MeshIndexType>(getPolyhedra(), hexasControllingVert, getNumberOfVertices());
+  auto findResult = GeometryHelpers::Connectivity::FindElementsContainingVert<uint16, MeshIndexType>(getPolyhedra(), hexasControllingVert, getNumberOfVertices());
+  if(findResult.invalid())
+  {
+    m_CellContainingVertDataArrayId.reset();
+    return findResult;
+  }
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -269,17 +270,19 @@ Result<> HexahedralGeom::findElementNeighbors(bool recalculate)
     if(hexNeighbors == nullptr)
     {
       m_CellNeighborsDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2532, "HexahedralGeom Error: Unable to find or create a dynamic list array.");
     }
   }
 
   m_CellNeighborsDataArrayId = hexNeighbors->getId();
 
-  // No error value ( < 0) returned from below function ever
-  GeometryHelpers::Connectivity::FindElementNeighbors<uint16, MeshIndexType>(getPolyhedra(), getElementsContainingVert(), hexNeighbors, Type::Hexahedral);
+  auto findResult = GeometryHelpers::Connectivity::FindElementNeighbors<uint16, MeshIndexType>(getPolyhedra(), getElementsContainingVert(), hexNeighbors, Type::Hexahedral);
+  if(findResult.invalid())
+  {
+    m_CellNeighborsDataArrayId.reset();
+    return findResult;
+  }
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -298,7 +301,6 @@ Result<> HexahedralGeom::findElementCentroids(bool recalculate)
     if(hexCentroids == nullptr)
     {
       m_CellCentroidsDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2533, "HexahedralGeom Error: Unable to find or create a valid element centroids array or data store.");
     }
   }
@@ -306,7 +308,6 @@ Result<> HexahedralGeom::findElementCentroids(bool recalculate)
   m_CellCentroidsDataArrayId = hexCentroids->getId();
   GeometryHelpers::Topology::FindElementCentroids<uint64>(getPolyhedra(), getVertices(), hexCentroids);
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -366,15 +367,18 @@ Result<> HexahedralGeom::findEdges(bool recalculate)
     if(edgeList == nullptr)
     {
       m_EdgeDataArrayId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2534, "HexahedralGeom Error: Unable to find or create a valid shared edges array or data store.");
     }
   }
 
-  GeometryHelpers::Connectivity::FindHexEdges<uint64>(getPolyhedra(), edgeList);
+  auto findResult = GeometryHelpers::Connectivity::FindHexEdges<uint64>(getPolyhedra(), edgeList);
+  if(findResult.invalid())
+  {
+    m_EdgeDataArrayId.reset();
+    return findResult;
+  }
   m_EdgeDataArrayId = edgeList->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -392,15 +396,18 @@ Result<> HexahedralGeom::findFaces(bool recalculate)
     if(quadList == nullptr)
     {
       m_FaceListId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2535, "HexahedralGeom Error: Unable to find or create a valid shared faces array or data store.");
     }
   }
 
-  GeometryHelpers::Connectivity::FindHexFaces<uint64>(getPolyhedra(), quadList);
+  auto findResult = GeometryHelpers::Connectivity::FindHexFaces<uint64>(getPolyhedra(), quadList);
+  if(findResult.invalid())
+  {
+    m_FaceListId.reset();
+    return findResult;
+  }
   m_FaceListId = quadList->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -419,15 +426,18 @@ Result<> HexahedralGeom::findUnsharedEdges(bool recalculate)
     if(unsharedEdgeList == nullptr)
     {
       m_UnsharedEdgeListId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2536, "HexahedralGeom Error: Unable to find or create a valid unshared edges array or data store.");
     }
   }
 
-  GeometryHelpers::Connectivity::FindUnsharedHexEdges<uint64>(getPolyhedra(), unsharedEdgeList);
+  auto findResult = GeometryHelpers::Connectivity::FindUnsharedHexEdges<uint64>(getPolyhedra(), unsharedEdgeList);
+  if(findResult.invalid())
+  {
+    m_UnsharedEdgeListId.reset();
+    return findResult;
+  }
   m_UnsharedEdgeListId = unsharedEdgeList->getId();
 
-  // Used to be error code `1`
   return {};
 }
 
@@ -446,14 +456,17 @@ Result<> HexahedralGeom::findUnsharedFaces(bool recalculate)
     if(unsharedQuadList == nullptr)
     {
       m_UnsharedFaceListId.reset();
-      // Used to be error code `-1`
       return MakeErrorResult(-2537, "HexahedralGeom Error: Unable to find or create a valid unshared faces array or data store.");
     }
   }
 
-  GeometryHelpers::Connectivity::FindUnsharedHexFaces<uint64>(getPolyhedra(), unsharedQuadList);
+  auto findResult = GeometryHelpers::Connectivity::FindUnsharedHexFaces<uint64>(getPolyhedra(), unsharedQuadList);
+  if(findResult.invalid())
+  {
+    m_UnsharedFaceListId.reset();
+    return findResult;
+  }
   m_UnsharedFaceListId = unsharedQuadList->getId();
 
-  // Used to be error code `1`
   return {};
 }

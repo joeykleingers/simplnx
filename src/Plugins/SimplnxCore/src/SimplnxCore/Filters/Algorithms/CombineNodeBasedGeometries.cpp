@@ -107,13 +107,21 @@ Result<> CombineGeometryElements(DataStructure& ds, NodeGeomType* outputGeomPtr,
 
   // Resize the vertex/cell array
   auto* array = getArray(outputGeomPtr);
-  array->resizeTuples({totalTuples});
+  Result<> resizeResult = array->resizeTuples({totalTuples});
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   // Resize the vertex/cell attribute matrix
   auto* attrMatrix = getAttrMatrix(outputGeomPtr);
   if(attrMatrix != nullptr)
   {
-    attrMatrix->resizeTuples({totalTuples});
+    resizeResult = attrMatrix->resizeTuples({totalTuples});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
   }
 
   // For each array name in the map, concatenate all the arrays from the input geometries

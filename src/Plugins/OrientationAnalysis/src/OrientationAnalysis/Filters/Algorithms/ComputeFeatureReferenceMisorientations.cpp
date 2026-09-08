@@ -82,14 +82,20 @@ Result<> ComputeFeatureReferenceMisorientations::operator()()
   // The local ensemble cache avoids cell-loop store access.
   const usize numXtalEntries = crystalStructures.getNumberOfTuples();
   std::vector<uint32> localCrystalStructures(numXtalEntries);
-  crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(localCrystalStructures.data(), numXtalEntries));
+  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(localCrystalStructures.data(), numXtalEntries)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   // Average quaternions stay local for random feature access.
   std::vector<float32> localAvgQuats;
   if(m_InputValues->ReferenceOrientation == 0 && avgQuatsPtr != nullptr)
   {
     localAvgQuats.resize(totalFeatures * 4);
-    avgQuatsPtr->getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(localAvgQuats.data(), totalFeatures * 4));
+    if(Result<> ioResult = avgQuatsPtr->getDataStoreRef().copyIntoBuffer(0, nonstd::span<float32>(localAvgQuats.data(), totalFeatures * 4)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   std::vector<usize> centerVoxels(totalFeatures, 0);
@@ -115,8 +121,14 @@ Result<> ComputeFeatureReferenceMisorientations::operator()()
         return {};
       }
       const usize count = std::min(k_ChunkTuples, totalVoxels - offset);
-      featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(fidBuf->data(), count));
-      gbDistStore.copyIntoBuffer(offset, nonstd::span<float32>(distBuf->data(), count));
+      if(Result<> ioResult = featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(fidBuf->data(), count)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
+      if(Result<> ioResult = gbDistStore.copyIntoBuffer(offset, nonstd::span<float32>(distBuf->data(), count)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
       for(usize i = 0; i < count; i++)
       {
         const int32 featureId = (*fidBuf)[i];
@@ -141,7 +153,10 @@ Result<> ComputeFeatureReferenceMisorientations::operator()()
     for(usize i = 1; i < totalFeatures; i++)
     {
       std::array<float32, 4> qBuf = {};
-      quatsStore.copyIntoBuffer(centerVoxels[i] * 4, nonstd::span<float32>(qBuf.data(), qBuf.size()));
+      if(Result<> ioResult = quatsStore.copyIntoBuffer(centerVoxels[i] * 4, nonstd::span<float32>(qBuf.data(), qBuf.size())); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
       centerQuats[i * 4 + 0] = qBuf[0];
       centerQuats[i * 4 + 1] = qBuf[1];
       centerQuats[i * 4 + 2] = qBuf[2];
@@ -165,9 +180,18 @@ Result<> ComputeFeatureReferenceMisorientations::operator()()
       return {};
     }
     const usize count = std::min(k_ChunkTuples, totalVoxels - offset);
-    featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf->data(), count));
-    phasesStore.copyIntoBuffer(offset, nonstd::span<int32>(phasesBuf->data(), count));
-    quatsStore.copyIntoBuffer(offset * 4, nonstd::span<float32>(quatsBuf->data(), count * 4));
+    if(Result<> ioResult = featureIdsStore.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf->data(), count)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = phasesStore.copyIntoBuffer(offset, nonstd::span<int32>(phasesBuf->data(), count)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
+    if(Result<> ioResult = quatsStore.copyIntoBuffer(offset * 4, nonstd::span<float32>(quatsBuf->data(), count * 4)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
     std::fill_n(misoBuf->data(), count, 0.0f);
 
     for(usize i = 0; i < count; i++)
@@ -198,7 +222,10 @@ Result<> ComputeFeatureReferenceMisorientations::operator()()
         avgMisorientationSums[featureId] += misoValue;
       }
     }
-    misoStore.copyFromBuffer(offset, nonstd::span<const float32>(misoBuf->data(), count));
+    if(Result<> ioResult = misoStore.copyFromBuffer(offset, nonstd::span<const float32>(misoBuf->data(), count)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
 
   avgReferenceMisorientation[0] = 0.0f;

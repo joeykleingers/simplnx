@@ -178,6 +178,26 @@ TEST_CASE("CacheMemoryBudgetManager registered handler receives free request on 
   mgr.clear();
 }
 
+TEST_CASE("CacheMemoryBudgetManager registered handler receives absolute deficit for oversized request", "[CacheMemoryBudgetManager]")
+{
+  auto& mgr = CacheMemoryBudgetManager::instance();
+  mgr.clear();
+  mgr.setBudgetBytes(64);
+
+  uint64 reportedDeficit = 0;
+  mgr.registerSubsystem("oversized", [&reportedDeficit](uint64 bytesToFree) { reportedDeficit = bytesToFree; });
+
+  auto [existingHandle, initialEvictions] = mgr.allocate("oversized", "existing", 64, []() {});
+  REQUIRE(initialEvictions.empty());
+  auto [oversizedHandle, oversizedEvictions] = mgr.allocate("oversized", "request", 100, []() {});
+
+  REQUIRE(oversizedEvictions.empty());
+  REQUIRE(reportedDeficit == 100);
+
+  mgr.registerSubsystem("oversized", [](uint64) {});
+  mgr.clear();
+}
+
 TEST_CASE("CacheMemoryBudgetManager unregistered subsystem still uses per-entry eviction", "[CacheMemoryBudgetManager]")
 {
   auto& mgr = CacheMemoryBudgetManager::instance();

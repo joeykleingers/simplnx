@@ -63,7 +63,6 @@ std::vector<usize> ComputeAxisSrcIndices(usize destDimSize, float64 destOriginCo
  * X-contiguous rows make destination writes sequential. Consecutive destination
  * rows that map to the same source row reuse one bulk read. Working memory is
  * proportional to source and destination X dimensions, not total cell count.
- * Bulk-I/O results are discarded.
  */
 template <typename T>
 class ResampleImageGeomArrayImpl
@@ -77,17 +76,19 @@ public:
    * @param srcImageGeom Supplies source grid coordinates.
    * @param destImageGeom Supplies destination grid coordinates.
    * @param shouldCancel Signals cancellation between destination Z slices.
+   * @param taskResult Stores the first error from all array tasks.
    * @pre algorithm is not null.
    * @pre All arguments outlive this task.
    */
   ResampleImageGeomArrayImpl(ResampleImageGeom* algorithm, const IDataArray& srcArray, IDataArray& destArray, const ImageGeom& srcImageGeom, const ImageGeom& destImageGeom,
-                             const std::atomic_bool& shouldCancel)
+                             const std::atomic_bool& shouldCancel, CopyFromArray::ParallelTaskResult& taskResult)
   : m_AlgorithmPtr(algorithm)
   , m_SrcArray(srcArray)
   , m_DestArray(destArray)
   , m_SrcImageGeom(srcImageGeom)
   , m_DestImageGeom(destImageGeom)
   , m_ShouldCancel(shouldCancel)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -133,7 +134,7 @@ public:
 
     for(usize z = 0; z < destDims[2]; z++)
     {
-      if(m_ShouldCancel)
+      if(m_ShouldCancel || m_TaskResult.shouldAbort())
       {
         return;
       }
@@ -150,7 +151,12 @@ public:
           if(!haveCachedSrcRow || yIndex != cachedYIndex || zIndex != cachedZIndex)
           {
             const usize srcRowStart = ((srcDims[0] * srcDims[1] * zIndex) + (srcDims[0] * yIndex)) * numComponents;
-            srcDataStore.copyIntoBuffer(srcRowStart, nonstd::span<T>(srcRowBuffer.get(), srcRowLength));
+            Result<> readResult = srcDataStore.copyIntoBuffer(srcRowStart, nonstd::span<T>(srcRowBuffer.get(), srcRowLength));
+            if(readResult.invalid())
+            {
+              m_TaskResult.store(std::move(readResult));
+              return;
+            }
             cachedYIndex = yIndex;
             cachedZIndex = zIndex;
             haveCachedSrcRow = true;
@@ -180,7 +186,12 @@ public:
 
         // Publish the complete destination row with one store operation.
         const usize destRowStart = ((z * destDims[1] * destDims[0]) + (y * destDims[0])) * numComponents;
-        destDataStore.copyFromBuffer(destRowStart, nonstd::span<const T>(destRowBuffer.get(), destRowLength));
+        Result<> writeResult = destDataStore.copyFromBuffer(destRowStart, nonstd::span<const T>(destRowBuffer.get(), destRowLength));
+        if(writeResult.invalid())
+        {
+          m_TaskResult.store(std::move(writeResult));
+          return;
+        }
 
         processedVoxels += destDims[0];
         counter += destDims[0];
@@ -202,6 +213,7 @@ private:
   const ImageGeom& m_SrcImageGeom;
   const ImageGeom& m_DestImageGeom;
   const std::atomic_bool& m_ShouldCancel;
+  CopyFromArray::ParallelTaskResult& m_TaskResult;
 };
 } // namespace
 
@@ -235,6 +247,8 @@ Result<> ResampleImageGeom::operator()()
   usize arrayIndex = 0;
   usize totalArrays = srcCellDataAM.getSize();
 
+  // Declared before the task runner so the runner's destructor joins every worker while this holder is still alive.
+  CopyFromArray::ParallelTaskResult taskResult;
   ParallelTaskAlgorithm taskRunner;
   taskRunner.setParallelizationEnabled(true);
 
@@ -251,10 +265,15 @@ Result<> ResampleImageGeom::operator()()
     auto& newDataArray = dynamic_cast<IDataArray&>(destCellDataAM.at(srcName));
     m_MessageHandler(fmt::format("Resampling Data Array: '{}' ({}/{})", srcName, arrayIndex, totalArrays));
 
-    ExecuteParallelFunction<ResampleImageGeomArrayImpl>(oldDataArray.getDataType(), taskRunner, this, oldDataArray, newDataArray, selectedImageGeom, destImageGeom, m_ShouldCancel);
+    ExecuteParallelFunction<ResampleImageGeomArrayImpl>(oldDataArray.getDataType(), taskRunner, this, oldDataArray, newDataArray, selectedImageGeom, destImageGeom, m_ShouldCancel, taskResult);
   }
 
   taskRunner.wait();
+  Result<> arrayResult = taskResult.takeResult();
+  if(arrayResult.invalid())
+  {
+    return arrayResult;
+  }
 
   if(m_ShouldCancel)
   {

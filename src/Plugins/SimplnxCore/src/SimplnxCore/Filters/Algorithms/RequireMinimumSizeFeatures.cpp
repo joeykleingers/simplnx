@@ -61,8 +61,13 @@ Result<> RequireMinimumSizeFeatures::operator()()
   }
 
   Error errorReturn = {0, ""};
-  std::vector<bool> activeObjects =
+  Result<std::vector<bool>> activeObjectsResult =
       removeSmallFeatures(featureIdsStoreRef, featureNumCellsStoreRef, featurePhases, m_InputValues->PhaseNumber, m_InputValues->ApplySinglePhase, m_InputValues->MinAllowedFeaturesSize, errorReturn);
+  if(activeObjectsResult.invalid())
+  {
+    return ConvertResult(std::move(activeObjectsResult));
+  }
+  std::vector<bool> activeObjects = std::move(activeObjectsResult.value());
 
   if(errorReturn.code < 0)
   {
@@ -98,9 +103,15 @@ Result<> RequireMinimumSizeFeatures::operator()()
   std::string message = fmt::format("Feature Count Changed: Previous: {} New: {}", currentFeatureCount, count);
   m_MessageHandler(nx::core::IFilter::Message{nx::core::IFilter::Message::Type::Info, message});
 
-  // Cell IDs already use the shared compaction map. Skip another cell pass and
-  // compact only the feature-level arrays. The current return value is ignored.
-  nx::core::RemoveInactiveObjects(m_DataStructure, cellFeatureGroupPath, activeObjects, featureIdsStoreRef, currentFeatureCount, m_MessageHandler, m_ShouldCancel, /*cellFeatureIdsRenumbered=*/true);
+  // Cell IDs already use the shared compaction map. Skip another cell pass and compact only the feature-level arrays.
+  Result<> removeResult = nx::core::RemoveInactiveObjects(m_DataStructure, cellFeatureGroupPath, activeObjects, featureIdsStoreRef, currentFeatureCount, m_MessageHandler, m_ShouldCancel,
+                                                          /*cellFeatureIdsRenumbered=*/true);
+  if(removeResult.invalid())
+  {
+    return removeResult;
+  }
+  // RemoveInactiveObjects reports a cancelled compaction as success. No work follows this
+  // call, so a cancelled and a completed run both leave through the empty valid Result below.
 
   return {};
 }
@@ -110,9 +121,9 @@ Result<> RequireMinimumSizeFeatures::assignBadVoxels(SizeVec3 dimensions)
   return FillBadVoxels(m_DataStructure, m_InputValues->FeatureIdsPath, dimensions, {}, std::nullopt, m_MessageHandler, m_ShouldCancel);
 }
 
-std::vector<bool> RequireMinimumSizeFeatures::removeSmallFeatures(Int32AbstractDataStore& featureIdsStoreRef, const Int32AbstractDataStore& featureNumCellsStoreRef,
-                                                                  const Int32AbstractDataStore* featurePhases, int32 phaseNumber, bool applyToSinglePhase, int64 minAllowedFeatureSize,
-                                                                  Error& errorReturn)
+Result<std::vector<bool>> RequireMinimumSizeFeatures::removeSmallFeatures(Int32AbstractDataStore& featureIdsStoreRef, const Int32AbstractDataStore& featureNumCellsStoreRef,
+                                                                          const Int32AbstractDataStore* featurePhases, int32 phaseNumber, bool applyToSinglePhase, int64 minAllowedFeatureSize,
+                                                                          Error& errorReturn)
 {
   MessageHelper messageHelper(m_MessageHandler);
   messageHelper.sendMessage(fmt::format("Removing small features...."));
@@ -157,15 +168,14 @@ std::vector<bool> RequireMinimumSizeFeatures::removeSmallFeatures(Int32AbstractD
   if(!good)
   {
     errorReturn = Error{-1, "The minimum size is larger than the largest Feature.  All Features would be removed"};
-    return activeObjects;
+    return {std::move(activeObjects)};
   }
 
   // Use the same stable mapping that later compacts feature arrays.
   const FeatureRenumbering renumbering = ComputeFeatureRenumbering(activeObjects);
   const std::vector<size_t>& newNames = renumbering.newNames;
 
-  // Fuse marking and renumbering because both operations require the same cell
-  // read. Write only chunks that change. Current bulk-I/O results are discarded.
+  // Fuse marking and renumbering because both operations require the same cell read. Write only chunks that change.
   auto featureIdBuf = std::make_unique<int32[]>(k_ChunkTuples);
   for(usize offset = 0; offset < totalPoints; offset += k_ChunkTuples)
   {
@@ -174,7 +184,11 @@ std::vector<bool> RequireMinimumSizeFeatures::removeSmallFeatures(Int32AbstractD
       return {};
     }
     const usize count = std::min(k_ChunkTuples, totalPoints - offset);
-    featureIdsStoreRef.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), count));
+    Result<> ioResult = featureIdsStoreRef.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), count));
+    if(ioResult.invalid())
+    {
+      return ConvertInvalidResult<std::vector<bool>>(std::move(ioResult));
+    }
 
     bool modified = false;
     for(usize i = 0; i < count; i++)
@@ -190,8 +204,12 @@ std::vector<bool> RequireMinimumSizeFeatures::removeSmallFeatures(Int32AbstractD
     }
     if(modified)
     {
-      featureIdsStoreRef.copyFromBuffer(offset, nonstd::span<const int32>(featureIdBuf.get(), count));
+      ioResult = featureIdsStoreRef.copyFromBuffer(offset, nonstd::span<const int32>(featureIdBuf.get(), count));
+      if(ioResult.invalid())
+      {
+        return ConvertInvalidResult<std::vector<bool>>(std::move(ioResult));
+      }
     }
   }
-  return activeObjects;
+  return {std::move(activeObjects)};
 }

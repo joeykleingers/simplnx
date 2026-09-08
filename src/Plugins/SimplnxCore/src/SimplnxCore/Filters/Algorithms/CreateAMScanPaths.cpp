@@ -353,8 +353,16 @@ Result<> CreateAMScanPaths::operator()()
   usize numCADLayerEdges = CADLayers.getNumberOfEdges();
 
   auto& hatchesEdgeGeom = m_DataStructure.getDataRefAs<EdgeGeom>(m_InputValues->HatchDataContainerName);
-  hatchesEdgeGeom.resizeEdgeList(0ULL);
-  hatchesEdgeGeom.resizeVertexList(0ULL);
+  Result<> resizeResult = hatchesEdgeGeom.resizeEdgeList(0ULL);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
+  resizeResult = hatchesEdgeGeom.resizeVertexList(0ULL);
+  if(resizeResult.invalid())
+  {
+    return resizeResult;
+  }
 
   AbstractDataStore<INodeGeometry0D::SharedVertexList::value_type>& hatchVertsDataStore = hatchesEdgeGeom.getVertices()->getDataStoreRef();
   AbstractDataStore<INodeGeometry1D::SharedEdgeList::value_type>& hatchesDataStore = hatchesEdgeGeom.getEdges()->getDataStoreRef();
@@ -423,10 +431,26 @@ Result<> CreateAMScanPaths::operator()()
       currentNumVerts = currentNumVerts + lineSegmentVector.size() * 2;
       currentNumEdges = currentNumEdges + lineSegmentVector.size();
     }
-    hatchesEdgeGeom.resizeVertexList(currentNumVerts);
-    hatchesEdgeGeom.resizeEdgeList(currentNumEdges);
-    hatchesEdgeGeom.getVertexAttributeMatrix()->resizeTuples({currentNumVerts});
-    hatchesEdgeGeom.getEdgeAttributeMatrix()->resizeTuples({currentNumEdges});
+    resizeResult = hatchesEdgeGeom.resizeVertexList(currentNumVerts);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = hatchesEdgeGeom.resizeEdgeList(currentNumEdges);
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = hatchesEdgeGeom.getVertexAttributeMatrix()->resizeTuples({currentNumVerts});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
+    resizeResult = hatchesEdgeGeom.getEdgeAttributeMatrix()->resizeTuples({currentNumEdges});
+    if(resizeResult.invalid())
+    {
+      return resizeResult;
+    }
 
     int32 currentSliceId = 0;
     // Current output writes use per-value store access and can be slow for

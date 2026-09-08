@@ -20,8 +20,10 @@
 #include <EbsdLib/IO/TSL/AngConstants.h>
 
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <nonstd/span.hpp>
@@ -120,6 +122,52 @@ TEST_CASE("OrientationAnalysis::WriteINLFileFilter: Valid Filter Execution", "[O
   ::CompareResults();
 
   UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}
+
+TEST_CASE("OrientationAnalysis::WriteINLFileFilter: cancellation leaves the existing output untouched", "[OrientationAnalysis][WriteINLFileFilter]")
+{
+  UnitTest::LoadPlugins();
+
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  CAPTURE(scenario);
+  UnitTest::AlgorithmTestScope scope(scenario);
+
+  const nx::core::UnitTest::TestFileSentinel testDataSentinel(nx::core::unit_test::k_TestFilesDir, "INL_writer.tar.gz", "INL_writer");
+  DataStructure dataStructure = UnitTest::LoadDataStructure(fs::path(fmt::format("{}/INL_writer/6_6_INL_writer.dream3d", unit_test::k_TestFilesDir)));
+
+  const fs::path outputPath = fs::temp_directory_path() / "nx_cancel_inl_writer.inl";
+  auto outputFileGuard = MakeScopeGuard([&outputPath]() noexcept {
+    std::error_code errorCode;
+    fs::remove(outputPath, errorCode);
+  });
+  const std::string sentinel = "PRE-EXISTING USER OUTPUT";
+  {
+    std::ofstream outputStream(outputPath, std::ios::binary | std::ios::trunc);
+    REQUIRE(outputStream.is_open());
+    outputStream << sentinel;
+  }
+
+  WriteINLFileFilter filter;
+  Arguments args;
+  args.insertOrAssign(WriteINLFileFilter::k_OutputFile_Key, std::make_any<FileSystemPathParameter::ValueType>(outputPath));
+  args.insertOrAssign(WriteINLFileFilter::k_ImageGeomPath_Key, std::make_any<DataPath>(DataPath({Constants::k_SmallIN100})));
+  args.insertOrAssign(WriteINLFileFilter::k_FeatureIdsArrayPath_Key, std::make_any<DataPath>(DataPath({Constants::k_SmallIN100, Constants::k_EbsdScanData, Constants::k_FeatureIds})));
+  args.insertOrAssign(WriteINLFileFilter::k_CellPhasesArrayPath_Key, std::make_any<DataPath>(DataPath({Constants::k_SmallIN100, Constants::k_EbsdScanData, Constants::k_Phases})));
+  args.insertOrAssign(WriteINLFileFilter::k_CellEulerAnglesArrayPath_Key, std::make_any<DataPath>(DataPath({Constants::k_SmallIN100, Constants::k_EbsdScanData, Constants::k_EulerAngles})));
+  args.insertOrAssign(WriteINLFileFilter::k_CrystalStructuresArrayPath_Key, std::make_any<DataPath>(DataPath({Constants::k_SmallIN100, Constants::k_Phase_Data, Constants::k_CrystalStructures})));
+  args.insertOrAssign(WriteINLFileFilter::k_MaterialNameArrayPath_Key, std::make_any<DataPath>(DataPath({Constants::k_SmallIN100, Constants::k_Phase_Data, ::k_MaterialName})));
+  args.insertOrAssign(WriteINLFileFilter::k_NumFeaturesArrayPath_Key, std::make_any<DataPath>(DataPath({Constants::k_SmallIN100, Constants::k_Phase_Data, ::k_NumFeatures})));
+
+  std::atomic_bool shouldCancel = false;
+  IFilter::MessageHandler cancelOnFirstMessage{[&shouldCancel](const IFilter::Message&) { shouldCancel.store(true); }};
+  auto executeResult = scope.executeFilter(filter, dataStructure, args, nullptr, cancelOnFirstMessage, shouldCancel);
+
+  REQUIRE(shouldCancel.load());
+  REQUIRE(executeResult.result.invalid());
+  std::ifstream inputStream(outputPath, std::ios::binary);
+  REQUIRE(inputStream.is_open());
+  const std::string contents((std::istreambuf_iterator<char>(inputStream)), std::istreambuf_iterator<char>());
+  REQUIRE(contents == sentinel);
 }
 
 TEST_CASE("OrientationAnalysis::WriteINLFileFilter: SIMPL Backwards Compatibility", "[OrientationAnalysis][WriteINLFileFilter][BackwardsCompatibility]")

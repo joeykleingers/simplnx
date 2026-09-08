@@ -37,7 +37,10 @@ Result<> ComputeAvgCAxes::operator()()
   const auto& crystalStructuresStoreRef = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath)->getDataStoreRef();
   const usize numCrystalStructures = crystalStructuresStoreRef.getSize();
   auto crystalStructuresCache = std::make_unique<uint32[]>(numCrystalStructures);
-  crystalStructuresStoreRef.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.get(), numCrystalStructures));
+  if(Result<> ioResult = crystalStructuresStoreRef.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.get(), numCrystalStructures)); ioResult.invalid())
+  {
+    return ConvertResult(std::move(ioResult));
+  }
 
   bool allPhasesHexagonal = true;
   bool noPhasesHexagonal = true;
@@ -60,6 +63,7 @@ Result<> ComputeAvgCAxes::operator()()
   {
     result.warnings().push_back({-76403, "Non Hexagonal phases were found. All calculations for non Hexagonal phases will be skipped and a NaN value inserted."});
   }
+  auto mergeWarnings = [&result](Result<> ioResult) { return MergeResults(std::move(result), std::move(ioResult)); };
 
   // Cell data uses chunked bulk I/O to avoid per-element OOC access.
   const auto& featureIdsStoreRef = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeatureIdsArrayPath)->getDataStoreRef();
@@ -97,9 +101,18 @@ Result<> ComputeAvgCAxes::operator()()
 
     const usize chunkTuples = std::min(k_ChunkSize, totalPoints - tupleIdx);
 
-    featureIdsStoreRef.copyIntoBuffer(tupleIdx, nonstd::span<int32>(featureIdsChunk.get(), chunkTuples));
-    cellPhasesStoreRef.copyIntoBuffer(tupleIdx, nonstd::span<int32>(cellPhasesChunk.get(), chunkTuples));
-    quatsStoreRef.copyIntoBuffer(tupleIdx * 4, nonstd::span<float32>(quatsChunk.get(), chunkTuples * 4));
+    if(Result<> ioResult = featureIdsStoreRef.copyIntoBuffer(tupleIdx, nonstd::span<int32>(featureIdsChunk.get(), chunkTuples)); ioResult.invalid())
+    {
+      return mergeWarnings(std::move(ioResult));
+    }
+    if(Result<> ioResult = cellPhasesStoreRef.copyIntoBuffer(tupleIdx, nonstd::span<int32>(cellPhasesChunk.get(), chunkTuples)); ioResult.invalid())
+    {
+      return mergeWarnings(std::move(ioResult));
+    }
+    if(Result<> ioResult = quatsStoreRef.copyIntoBuffer(tupleIdx * 4, nonstd::span<float32>(quatsChunk.get(), chunkTuples * 4)); ioResult.invalid())
+    {
+      return mergeWarnings(std::move(ioResult));
+    }
 
     for(usize t = 0; t < chunkTuples; t++)
     {
@@ -178,7 +191,10 @@ Result<> ComputeAvgCAxes::operator()()
     }
   }
 
-  avgCAxesStoreRef.copyFromBuffer(0, nonstd::span<const float32>(avgCAxesCache.get(), avgCAxesElements));
+  if(Result<> ioResult = avgCAxesStoreRef.copyFromBuffer(0, nonstd::span<const float32>(avgCAxesCache.get(), avgCAxesElements)); ioResult.invalid())
+  {
+    return mergeWarnings(std::move(ioResult));
+  }
 
   return result;
 }

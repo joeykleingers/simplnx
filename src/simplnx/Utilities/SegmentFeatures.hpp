@@ -95,10 +95,11 @@ public:
    * @brief Applies a random permutation to positive feature IDs after segmentation.
    * @param featureIds Provides and receives output labels. Feature ID 0 remains background.
    * @param totalFeatures Specifies generated positive features.
+   * @return Error from the first bulk store operation that fails.
    *
-   * This method does not check cancellation or return DataStore errors.
+   * This method does not check cancellation.
    */
-  void randomizeFeatureIds(Int32Array* featureIds, uint64 totalFeatures);
+  [[nodiscard]] Result<> randomizeFeatureIds(Int32Array* featureIds, uint64 totalFeatures);
 
   /**
    * @class CompareFunctor

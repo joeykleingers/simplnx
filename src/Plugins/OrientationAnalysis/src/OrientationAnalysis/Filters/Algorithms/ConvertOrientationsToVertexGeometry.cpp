@@ -126,7 +126,10 @@ Result<> ConvertOrientationsToVertexGeometry::operator()()
   {
     const usize numCrystalStructures = crystalStructuresArray->getNumberOfTuples();
     crystalStructuresCache.resize(numCrystalStructures);
-    crystalStructuresArray->getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures));
+    if(Result<> ioResult = crystalStructuresArray->getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
   }
   const std::vector<ebsdlib::LaueOps::Pointer> ops = ebsdlib::LaueOps::GetAllOrientationOps();
 
@@ -160,11 +163,17 @@ Result<> ConvertOrientationsToVertexGeometry::operator()()
 
     if(inputArrayF32 != nullptr)
     {
-      inputArrayF32->getDataStoreRef().copyIntoBuffer(tupleIdx * inNumComps, nonstd::span<float32>(inBuffer.get(), inElemCount));
+      if(Result<> ioResult = inputArrayF32->getDataStoreRef().copyIntoBuffer(tupleIdx * inNumComps, nonstd::span<float32>(inBuffer.get(), inElemCount)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
     else
     {
-      inputArrayF64->getDataStoreRef().copyIntoBuffer(tupleIdx * inNumComps, nonstd::span<float64>(f64Buffer.get(), inElemCount));
+      if(Result<> ioResult = inputArrayF64->getDataStoreRef().copyIntoBuffer(tupleIdx * inNumComps, nonstd::span<float64>(f64Buffer.get(), inElemCount)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
       std::transform(f64Buffer.get(), f64Buffer.get() + inElemCount, inBuffer.get(), [](float64 value) { return static_cast<float32>(value); });
     }
 
@@ -172,7 +181,10 @@ Result<> ConvertOrientationsToVertexGeometry::operator()()
 
     if(m_InputValues->ConvertToFundamentalZone)
     {
-      phasesArray->getDataStoreRef().copyIntoBuffer(tupleIdx, nonstd::span<int32>(phasesBuffer.get(), chunkTuples));
+      if(Result<> ioResult = phasesArray->getDataStoreRef().copyIntoBuffer(tupleIdx, nonstd::span<int32>(phasesBuffer.get(), chunkTuples)); ioResult.invalid())
+      {
+        return ConvertResult(std::move(ioResult));
+      }
     }
 
     for(usize t = 0; t < chunkTuples; ++t)
@@ -193,7 +205,10 @@ Result<> ConvertOrientationsToVertexGeometry::operator()()
       outVertBuffer[outOff + 2] = static_cast<float32>(st[2]);
     }
 
-    verticesStoreRef.copyFromBuffer(tupleIdx * 3, nonstd::span<const float32>(outVertBuffer.get(), chunkTuples * 3));
+    if(Result<> ioResult = verticesStoreRef.copyFromBuffer(tupleIdx * 3, nonstd::span<const float32>(outVertBuffer.get(), chunkTuples * 3)); ioResult.invalid())
+    {
+      return ConvertResult(std::move(ioResult));
+    }
 
     tupleIdx += chunkTuples;
   }
@@ -210,7 +225,10 @@ Result<> ConvertOrientationsToVertexGeometry::operator()()
     ExecuteDataFunction(CopyDataFunctor{}, sourceDataArrayPtr->getDataType(), sourceDataArrayPtr, destinationDataArrayPtr);
     // This does not resize anything (at least it had better not), but is
     // a round-about way to set the Tuple Shape on the destination array
-    destinationDataArrayPtr->resizeTuples(verticesTupleShape);
+    if(Result<> resizeResult = destinationDataArrayPtr->resizeTuples(verticesTupleShape); resizeResult.invalid())
+    {
+      return ConvertResult(std::move(resizeResult));
+    }
   }
 
   return {};

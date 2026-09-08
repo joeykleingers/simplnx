@@ -83,13 +83,12 @@ void AddUniqueNeighbor(std::array<int32, 6>& coordination, usize& coordinationCo
  * @param dims Supplies image dimensions.
  * @param shouldCancel Signals cancellation between Z slices.
  * @param hasBlockedCells Receives whether a non-positive Feature ID exists.
- * @return True after all seed slices are written. Returns false after cancellation.
+ * @return The first bulk-I/O error. Cancellation returns success.
  *
- * Three Feature ID slices bound resident source memory. Current bulk-I/O Result
- * values are not inspected. Completed seed slices remain after cancellation.
+ * Three Feature ID slices bound resident source memory. Completed seed slices remain after cancellation.
  */
 template <typename T>
-bool InitializeSeeds(const Int32AbstractDataStore& featureIds, const DistanceStoreArray<T>& distanceStores, const SizeVec3& dims, const std::atomic_bool& shouldCancel, bool& hasBlockedCells)
+Result<> InitializeSeeds(const Int32AbstractDataStore& featureIds, const DistanceStoreArray<T>& distanceStores, const SizeVec3& dims, const std::atomic_bool& shouldCancel, bool& hasBlockedCells)
 {
   const usize dimX = dims[0];
   const usize dimY = dims[1];
@@ -108,10 +107,18 @@ bool InitializeSeeds(const Int32AbstractDataStore& featureIds, const DistanceSto
     }
   }
 
-  featureIds.copyIntoBuffer(0, nonstd::span<int32>(currentFeatureIds.data(), sliceSize));
+  Result<> ioResult = featureIds.copyIntoBuffer(0, nonstd::span<int32>(currentFeatureIds.data(), sliceSize));
+  if(ioResult.invalid())
+  {
+    return ioResult;
+  }
   if(dimZ > 1)
   {
-    featureIds.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextFeatureIds.data(), sliceSize));
+    ioResult = featureIds.copyIntoBuffer(sliceSize, nonstd::span<int32>(nextFeatureIds.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
 
   hasBlockedCells = false;
@@ -119,7 +126,7 @@ bool InitializeSeeds(const Int32AbstractDataStore& featureIds, const DistanceSto
   {
     if(shouldCancel)
     {
-      return false;
+      return {};
     }
 
     for(usize mapIndex = 0; mapIndex < k_MapCount; mapIndex++)
@@ -190,7 +197,11 @@ bool InitializeSeeds(const Int32AbstractDataStore& featureIds, const DistanceSto
     {
       if(distanceStores[mapIndex] != nullptr)
       {
-        distanceStores[mapIndex]->copyFromBuffer(sliceOffset, nonstd::span<const T>(outputSlices[mapIndex].data(), sliceSize));
+        ioResult = distanceStores[mapIndex]->copyFromBuffer(sliceOffset, nonstd::span<const T>(outputSlices[mapIndex].data(), sliceSize));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
     }
 
@@ -198,10 +209,14 @@ bool InitializeSeeds(const Int32AbstractDataStore& featureIds, const DistanceSto
     std::swap(currentFeatureIds, nextFeatureIds);
     if(zIndex + 2 < dimZ)
     {
-      featureIds.copyIntoBuffer((zIndex + 2) * sliceSize, nonstd::span<int32>(nextFeatureIds.data(), sliceSize));
+      ioResult = featureIds.copyIntoBuffer((zIndex + 2) * sliceSize, nonstd::span<int32>(nextFeatureIds.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
   }
-  return true;
+  return {};
 }
 
 /**
@@ -231,12 +246,12 @@ void ConsiderDistance(T neighborDistance, T& currentDistance)
  * @param distances Stores the map to transform.
  * @param dims Supplies image dimensions.
  * @param shouldCancel Signals cancellation between Z slices.
- * @return True after both sweeps. Returns false after cancellation.
+ * @return The first bulk-I/O error. Cancellation returns success.
  *
- * The sweeps retain two slices. Current bulk-I/O Result values are not inspected.
+ * The sweeps retain two slices.
  */
 template <typename T>
-bool TransformDistanceWithoutObstacles(AbstractDataStore<T>& distances, const SizeVec3& dims, const std::atomic_bool& shouldCancel)
+Result<> TransformDistanceWithoutObstacles(AbstractDataStore<T>& distances, const SizeVec3& dims, const std::atomic_bool& shouldCancel)
 {
   const usize dimX = dims[0];
   const usize dimY = dims[1];
@@ -250,11 +265,15 @@ bool TransformDistanceWithoutObstacles(AbstractDataStore<T>& distances, const Si
   {
     if(shouldCancel)
     {
-      return false;
+      return {};
     }
 
     const usize sliceOffset = zIndex * sliceSize;
-    distances.copyIntoBuffer(sliceOffset, nonstd::span<T>(currentSlice.data(), sliceSize));
+    Result<> ioResult = distances.copyIntoBuffer(sliceOffset, nonstd::span<T>(currentSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     for(usize yIndex = 0; yIndex < dimY; yIndex++)
     {
       const usize rowOffset = yIndex * dimX;
@@ -276,7 +295,11 @@ bool TransformDistanceWithoutObstacles(AbstractDataStore<T>& distances, const Si
         }
       }
     }
-    distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentSlice.data(), sliceSize));
+    ioResult = distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     std::swap(previousSlice, currentSlice);
   }
 
@@ -285,12 +308,16 @@ bool TransformDistanceWithoutObstacles(AbstractDataStore<T>& distances, const Si
   {
     if(shouldCancel)
     {
-      return false;
+      return {};
     }
 
     const usize zIndex = reverseZ - 1;
     const usize sliceOffset = zIndex * sliceSize;
-    distances.copyIntoBuffer(sliceOffset, nonstd::span<T>(currentSlice.data(), sliceSize));
+    Result<> ioResult = distances.copyIntoBuffer(sliceOffset, nonstd::span<T>(currentSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     for(usize reverseY = dimY; reverseY > 0; reverseY--)
     {
       const usize yIndex = reverseY - 1;
@@ -314,10 +341,14 @@ bool TransformDistanceWithoutObstacles(AbstractDataStore<T>& distances, const Si
         }
       }
     }
-    distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentSlice.data(), sliceSize));
+    ioResult = distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentSlice.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     std::swap(nextSlice, currentSlice);
   }
-  return true;
+  return {};
 }
 
 /**
@@ -354,12 +385,11 @@ void ConsiderLabeledDistance(T neighborDistance, int64 neighborSeed, T& currentD
  * @param totalVoxels Identifies the number of map values.
  * @param sliceSize Limits resident buffer size.
  * @param shouldCancel Signals cancellation between buffers.
- * @return True after initialization. Returns false after cancellation.
+ * @return The first bulk-I/O error. Cancellation returns success.
  *
- * Current bulk-I/O Result values are not inspected.
  */
 template <typename T>
-bool InitializeNearestSeeds(const AbstractDataStore<T>& distances, AbstractDataStore<int64>& nearestSeeds, usize totalVoxels, usize sliceSize, const std::atomic_bool& shouldCancel)
+Result<> InitializeNearestSeeds(const AbstractDataStore<T>& distances, AbstractDataStore<int64>& nearestSeeds, usize totalVoxels, usize sliceSize, const std::atomic_bool& shouldCancel)
 {
   std::vector<T> distanceBuffer(sliceSize);
   std::vector<int64> seedBuffer(sliceSize);
@@ -367,17 +397,25 @@ bool InitializeNearestSeeds(const AbstractDataStore<T>& distances, AbstractDataS
   {
     if(shouldCancel)
     {
-      return false;
+      return {};
     }
     const usize count = std::min(sliceSize, totalVoxels - offset);
-    distances.copyIntoBuffer(offset, nonstd::span<T>(distanceBuffer.data(), count));
+    Result<> ioResult = distances.copyIntoBuffer(offset, nonstd::span<T>(distanceBuffer.data(), count));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     for(usize index = 0; index < count; index++)
     {
       seedBuffer[index] = distanceBuffer[index] == static_cast<T>(0) ? static_cast<int64>(offset + index) : static_cast<int64>(-1);
     }
-    nearestSeeds.copyFromBuffer(offset, nonstd::span<const int64>(seedBuffer.data(), count));
+    ioResult = nearestSeeds.copyFromBuffer(offset, nonstd::span<const int64>(seedBuffer.data(), count));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
-  return true;
+  return {};
 }
 
 /**
@@ -387,12 +425,11 @@ bool InitializeNearestSeeds(const AbstractDataStore<T>& distances, AbstractDataS
  * @param nearestSeeds Stores nearest-seed indices.
  * @param dims Supplies image dimensions.
  * @param shouldCancel Signals cancellation between Z slices.
- * @return True after both sweeps. Returns false after cancellation.
+ * @return The first bulk-I/O error. Cancellation returns success.
  *
- * Current bulk-I/O Result values are not inspected.
  */
 template <typename T>
-bool TransformLabeledDistanceWithoutObstacles(AbstractDataStore<T>& distances, AbstractDataStore<int64>& nearestSeeds, const SizeVec3& dims, const std::atomic_bool& shouldCancel)
+Result<> TransformLabeledDistanceWithoutObstacles(AbstractDataStore<T>& distances, AbstractDataStore<int64>& nearestSeeds, const SizeVec3& dims, const std::atomic_bool& shouldCancel)
 {
   const usize dimX = dims[0];
   const usize dimY = dims[1];
@@ -408,12 +445,20 @@ bool TransformLabeledDistanceWithoutObstacles(AbstractDataStore<T>& distances, A
   {
     if(shouldCancel)
     {
-      return false;
+      return {};
     }
 
     const usize sliceOffset = zIndex * sliceSize;
-    distances.copyIntoBuffer(sliceOffset, nonstd::span<T>(currentDistance.data(), sliceSize));
-    nearestSeeds.copyIntoBuffer(sliceOffset, nonstd::span<int64>(currentSeed.data(), sliceSize));
+    Result<> ioResult = distances.copyIntoBuffer(sliceOffset, nonstd::span<T>(currentDistance.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
+    ioResult = nearestSeeds.copyIntoBuffer(sliceOffset, nonstd::span<int64>(currentSeed.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     for(usize yIndex = 0; yIndex < dimY; yIndex++)
     {
       const usize rowOffset = yIndex * dimX;
@@ -436,8 +481,16 @@ bool TransformLabeledDistanceWithoutObstacles(AbstractDataStore<T>& distances, A
         }
       }
     }
-    distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentDistance.data(), sliceSize));
-    nearestSeeds.copyFromBuffer(sliceOffset, nonstd::span<const int64>(currentSeed.data(), sliceSize));
+    ioResult = distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentDistance.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
+    ioResult = nearestSeeds.copyFromBuffer(sliceOffset, nonstd::span<const int64>(currentSeed.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     std::swap(previousDistance, currentDistance);
     std::swap(previousSeed, currentSeed);
   }
@@ -448,13 +501,21 @@ bool TransformLabeledDistanceWithoutObstacles(AbstractDataStore<T>& distances, A
   {
     if(shouldCancel)
     {
-      return false;
+      return {};
     }
 
     const usize zIndex = reverseZ - 1;
     const usize sliceOffset = zIndex * sliceSize;
-    distances.copyIntoBuffer(sliceOffset, nonstd::span<T>(currentDistance.data(), sliceSize));
-    nearestSeeds.copyIntoBuffer(sliceOffset, nonstd::span<int64>(currentSeed.data(), sliceSize));
+    Result<> ioResult = distances.copyIntoBuffer(sliceOffset, nonstd::span<T>(currentDistance.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
+    ioResult = nearestSeeds.copyIntoBuffer(sliceOffset, nonstd::span<int64>(currentSeed.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     for(usize reverseY = dimY; reverseY > 0; reverseY--)
     {
       const usize yIndex = reverseY - 1;
@@ -479,12 +540,20 @@ bool TransformLabeledDistanceWithoutObstacles(AbstractDataStore<T>& distances, A
         }
       }
     }
-    distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentDistance.data(), sliceSize));
-    nearestSeeds.copyFromBuffer(sliceOffset, nonstd::span<const int64>(currentSeed.data(), sliceSize));
+    ioResult = distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentDistance.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
+    ioResult = nearestSeeds.copyFromBuffer(sliceOffset, nonstd::span<const int64>(currentSeed.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     std::swap(nextDistance, currentDistance);
     std::swap(nextSeed, currentSeed);
   }
-  return true;
+  return {};
 }
 
 /**
@@ -495,14 +564,13 @@ bool TransformLabeledDistanceWithoutObstacles(AbstractDataStore<T>& distances, A
  * @param featureIds Supplies blocked-cell markers.
  * @param dims Supplies image dimensions.
  * @param shouldCancel Signals cancellation between layers or slices.
- * @return True after propagation reaches a fixed point. Returns false after cancellation.
+ * @return The first bulk-I/O error. Cancellation returns success.
  *
  * Layer-synchronous propagation prevents distances from crossing blocked cells.
- * Current bulk-I/O Result values are not inspected.
  */
 template <typename T>
-bool PropagateAroundBlockedCells(AbstractDataStore<T>& distances, AbstractDataStore<int64>* nearestSeeds, const Int32AbstractDataStore& featureIds, const SizeVec3& dims,
-                                 const std::atomic_bool& shouldCancel)
+Result<> PropagateAroundBlockedCells(AbstractDataStore<T>& distances, AbstractDataStore<int64>* nearestSeeds, const Int32AbstractDataStore& featureIds, const SizeVec3& dims,
+                                     const std::atomic_bool& shouldCancel)
 {
   const usize dimX = dims[0];
   const usize dimY = dims[1];
@@ -528,21 +596,37 @@ bool PropagateAroundBlockedCells(AbstractDataStore<T>& distances, AbstractDataSt
   {
     if(shouldCancel)
     {
-      return false;
+      return {};
     }
 
     bool changed = false;
-    distances.copyIntoBuffer(0, nonstd::span<T>(currentDistance.data(), sliceSize));
+    Result<> ioResult = distances.copyIntoBuffer(0, nonstd::span<T>(currentDistance.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     if(dimZ > 1)
     {
-      distances.copyIntoBuffer(sliceSize, nonstd::span<T>(nextDistance.data(), sliceSize));
+      ioResult = distances.copyIntoBuffer(sliceSize, nonstd::span<T>(nextDistance.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
     }
     if(nearestSeeds != nullptr)
     {
-      nearestSeeds->copyIntoBuffer(0, nonstd::span<int64>(currentSeed.data(), sliceSize));
+      ioResult = nearestSeeds->copyIntoBuffer(0, nonstd::span<int64>(currentSeed.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
       if(dimZ > 1)
       {
-        nearestSeeds->copyIntoBuffer(sliceSize, nonstd::span<int64>(nextSeed.data(), sliceSize));
+        ioResult = nearestSeeds->copyIntoBuffer(sliceSize, nonstd::span<int64>(nextSeed.data(), sliceSize));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
     }
 
@@ -551,11 +635,15 @@ bool PropagateAroundBlockedCells(AbstractDataStore<T>& distances, AbstractDataSt
     {
       if(shouldCancel)
       {
-        return false;
+        return {};
       }
 
       const usize sliceOffset = zIndex * sliceSize;
-      featureIds.copyIntoBuffer(sliceOffset, nonstd::span<int32>(currentFeatureIds.data(), sliceSize));
+      ioResult = featureIds.copyIntoBuffer(sliceOffset, nonstd::span<int32>(currentFeatureIds.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
       for(usize yIndex = 0; yIndex < dimY; yIndex++)
       {
         const usize rowOffset = yIndex * dimX;
@@ -614,10 +702,18 @@ bool PropagateAroundBlockedCells(AbstractDataStore<T>& distances, AbstractDataSt
         }
       }
 
-      distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentDistance.data(), sliceSize));
+      ioResult = distances.copyFromBuffer(sliceOffset, nonstd::span<const T>(currentDistance.data(), sliceSize));
+      if(ioResult.invalid())
+      {
+        return ioResult;
+      }
       if(nearestSeeds != nullptr)
       {
-        nearestSeeds->copyFromBuffer(sliceOffset, nonstd::span<const int64>(currentSeed.data(), sliceSize));
+        ioResult = nearestSeeds->copyFromBuffer(sliceOffset, nonstd::span<const int64>(currentSeed.data(), sliceSize));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
       }
 
       std::swap(previousDistance, currentDistance);
@@ -629,17 +725,25 @@ bool PropagateAroundBlockedCells(AbstractDataStore<T>& distances, AbstractDataSt
       }
       if(zIndex + 2 < dimZ)
       {
-        distances.copyIntoBuffer((zIndex + 2) * sliceSize, nonstd::span<T>(nextDistance.data(), sliceSize));
+        ioResult = distances.copyIntoBuffer((zIndex + 2) * sliceSize, nonstd::span<T>(nextDistance.data(), sliceSize));
+        if(ioResult.invalid())
+        {
+          return ioResult;
+        }
         if(nearestSeeds != nullptr)
         {
-          nearestSeeds->copyIntoBuffer((zIndex + 2) * sliceSize, nonstd::span<int64>(nextSeed.data(), sliceSize));
+          ioResult = nearestSeeds->copyIntoBuffer((zIndex + 2) * sliceSize, nonstd::span<int64>(nextSeed.data(), sliceSize));
+          if(ioResult.invalid())
+          {
+            return ioResult;
+          }
         }
       }
     }
 
     if(!changed)
     {
-      return true;
+      return {};
     }
     propagationDistance++;
   }
@@ -652,12 +756,11 @@ bool PropagateAroundBlockedCells(AbstractDataStore<T>& distances, AbstractDataSt
  * @param dims Supplies image dimensions.
  * @param spacing Supplies image spacing.
  * @param shouldCancel Signals cancellation between Z slices.
- * @return True after conversion. Returns false after cancellation.
+ * @return The first bulk-I/O error. Cancellation returns success.
  *
- * Current bulk-I/O Result values are not inspected.
  */
-bool ConvertToEuclideanDistances(Float32AbstractDataStore& distances, const AbstractDataStore<int64>& nearestSeeds, const SizeVec3& dims, const FloatVec3& spacing,
-                                 const std::atomic_bool& shouldCancel)
+Result<> ConvertToEuclideanDistances(Float32AbstractDataStore& distances, const AbstractDataStore<int64>& nearestSeeds, const SizeVec3& dims, const FloatVec3& spacing,
+                                     const std::atomic_bool& shouldCancel)
 {
   const usize dimX = dims[0];
   const usize dimY = dims[1];
@@ -672,12 +775,20 @@ bool ConvertToEuclideanDistances(Float32AbstractDataStore& distances, const Abst
   {
     if(shouldCancel)
     {
-      return false;
+      return {};
     }
 
     const usize sliceOffset = zIndex * sliceSize;
-    distances.copyIntoBuffer(sliceOffset, nonstd::span<float32>(distanceBuffer.data(), sliceSize));
-    nearestSeeds.copyIntoBuffer(sliceOffset, nonstd::span<int64>(seedBuffer.data(), sliceSize));
+    Result<> ioResult = distances.copyIntoBuffer(sliceOffset, nonstd::span<float32>(distanceBuffer.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
+    ioResult = nearestSeeds.copyIntoBuffer(sliceOffset, nonstd::span<int64>(seedBuffer.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
     for(usize yIndex = 0; yIndex < dimY; yIndex++)
     {
       const usize rowOffset = yIndex * dimX;
@@ -702,9 +813,13 @@ bool ConvertToEuclideanDistances(Float32AbstractDataStore& distances, const Abst
         distanceBuffer[sliceIndex] = static_cast<float32>(std::sqrt(xDistance * xDistance + yDistance * yDistance + zDistance * zDistance));
       }
     }
-    distances.copyFromBuffer(sliceOffset, nonstd::span<const float32>(distanceBuffer.data(), sliceSize));
+    ioResult = distances.copyFromBuffer(sliceOffset, nonstd::span<const float32>(distanceBuffer.data(), sliceSize));
+    if(ioResult.invalid())
+    {
+      return ioResult;
+    }
   }
-  return true;
+  return {};
 }
 
 /**
@@ -713,10 +828,10 @@ bool ConvertToEuclideanDistances(Float32AbstractDataStore& distances, const Abst
  * @param dataStructure Contains the ImageGeom, Feature IDs, and output maps.
  * @param inputValues Selects map types and required paths.
  * @param shouldCancel Signals cancellation at phase checkpoints.
- * @return Success.
+ * @return The first bulk-I/O error, or an empty valid Result on completion and on cancellation.
  *
  * Float32 maps use a temporary nearest-seed DataStore selected by the active storage policy.
- * Current bulk-I/O Result values are not inspected. Cancellation leaves completed map ranges.
+ * Cancellation returns at the next phase boundary and leaves completed map ranges in place.
  */
 template <typename T>
 Result<> ExecuteScanline(DataStructure& dataStructure, const ComputeEuclideanDistMapInputValues& inputValues, const std::atomic_bool& shouldCancel)
@@ -729,7 +844,12 @@ Result<> ExecuteScanline(DataStructure& dataStructure, const ComputeEuclideanDis
   DistanceStoreArray<T> distanceStores = GetDistanceStores<T>(dataStructure, inputValues);
 
   bool hasBlockedCells = false;
-  if(!InitializeSeeds(featureIds, distanceStores, dims, shouldCancel, hasBlockedCells))
+  Result<> operationResult = InitializeSeeds(featureIds, distanceStores, dims, shouldCancel, hasBlockedCells);
+  if(operationResult.invalid())
+  {
+    return operationResult;
+  }
+  if(shouldCancel)
   {
     return {};
   }
@@ -746,16 +866,28 @@ Result<> ExecuteScanline(DataStructure& dataStructure, const ComputeEuclideanDis
       return {};
     }
 
+    // Each phase helper returns an empty valid Result when it stops on cancellation, so the flag is
+    // retested after every phase. This keeps a cancelled run from allocating scratch storage or
+    // entering a later phase on partially filled data.
     if constexpr(std::is_same_v<T, int32>)
     {
       if(hasBlockedCells)
       {
-        if(!PropagateAroundBlockedCells(*distanceStore, nullptr, featureIds, dims, shouldCancel))
+        operationResult = PropagateAroundBlockedCells(*distanceStore, nullptr, featureIds, dims, shouldCancel);
+        if(operationResult.invalid())
         {
-          return {};
+          return operationResult;
         }
       }
-      else if(!TransformDistanceWithoutObstacles(*distanceStore, dims, shouldCancel))
+      else
+      {
+        operationResult = TransformDistanceWithoutObstacles(*distanceStore, dims, shouldCancel);
+        if(operationResult.invalid())
+        {
+          return operationResult;
+        }
+      }
+      if(shouldCancel)
       {
         return {};
       }
@@ -764,24 +896,43 @@ Result<> ExecuteScanline(DataStructure& dataStructure, const ComputeEuclideanDis
     {
       const DataPath scratchPath = inputValues.FeatureIdsArrayPath.getParent().createChildPath("__ComputeEuclideanDistMapNearestSeedScratch");
       auto nearestSeeds = DataStoreUtilities::CreateDataStore<int64>(dataStructure, scratchPath, featureIds.getTupleShape(), {1}, IDataAction::Mode::Execute);
-      if(!InitializeNearestSeeds(*distanceStore, *nearestSeeds, totalVoxels, sliceSize, shouldCancel))
+      operationResult = InitializeNearestSeeds(*distanceStore, *nearestSeeds, totalVoxels, sliceSize, shouldCancel);
+      if(operationResult.invalid())
+      {
+        return operationResult;
+      }
+      if(shouldCancel)
       {
         return {};
       }
 
       if(hasBlockedCells)
       {
-        if(!PropagateAroundBlockedCells(*distanceStore, nearestSeeds.get(), featureIds, dims, shouldCancel))
+        operationResult = PropagateAroundBlockedCells(*distanceStore, nearestSeeds.get(), featureIds, dims, shouldCancel);
+        if(operationResult.invalid())
         {
-          return {};
+          return operationResult;
         }
       }
-      else if(!TransformLabeledDistanceWithoutObstacles(*distanceStore, *nearestSeeds, dims, shouldCancel))
+      else
+      {
+        operationResult = TransformLabeledDistanceWithoutObstacles(*distanceStore, *nearestSeeds, dims, shouldCancel);
+        if(operationResult.invalid())
+        {
+          return operationResult;
+        }
+      }
+      if(shouldCancel)
       {
         return {};
       }
 
-      if(!ConvertToEuclideanDistances(*distanceStore, *nearestSeeds, dims, imageGeom.getSpacing(), shouldCancel))
+      operationResult = ConvertToEuclideanDistances(*distanceStore, *nearestSeeds, dims, imageGeom.getSpacing(), shouldCancel);
+      if(operationResult.invalid())
+      {
+        return operationResult;
+      }
+      if(shouldCancel)
       {
         return {};
       }

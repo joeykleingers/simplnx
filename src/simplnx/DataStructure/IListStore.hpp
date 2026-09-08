@@ -1,6 +1,7 @@
 #pragma once
 
 #include "simplnx/Common/Aliases.hpp"
+#include "simplnx/Common/Result.hpp"
 #include "simplnx/Common/Types.hpp"
 
 #include <vector>
@@ -49,8 +50,11 @@ public:
   /**
    * @brief Changes the tuple shape.
    * @param tupleShape New tuple dimensions in slowest-to-fastest order.
+   * @return Valid on success. A resize failure returns error -6035.
+   *
+   * Callers must inspect the result because a failed resize can retain the prior list shape.
    */
-  virtual void resizeTuples(const ShapeType& tupleShape) = 0;
+  [[nodiscard]] virtual Result<> resizeTuples(const ShapeType& tupleShape) = 0;
 
   /**
    * @brief Removes all list values.

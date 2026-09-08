@@ -70,7 +70,7 @@ Result<> ValidateFeatureIdsInScanlinePass(const std::string& featureIdsName, con
  * @param shouldCancel Signals cancellation between chunks or features.
  * @return Success, or an element-size, Feature ID, or feature-count error.
  *
- * The scan traverses global raster order. Current Feature ID bulk-I/O Result values are not inspected.
+ * The scan traverses global raster order and returns the first Feature ID bulk-I/O error.
  */
 Result<> ProcessImageGeom(ImageGeom& imageGeom, Float32AbstractDataStore& volumes, Float32AbstractDataStore& equivalentDiameters, Int32AbstractDataStore& numElements,
                           const Int32AbstractDataStore& featureIds, const std::string& featureIdsName, const DataPath& featureAttributeMatrixPath, const bool saveElementSizes,
@@ -96,7 +96,11 @@ Result<> ProcessImageGeom(ImageGeom& imageGeom, Float32AbstractDataStore& volume
     }
 
     const usize count = std::min(k_ChunkTuples, numVoxels - offset);
-    featureIds.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), count));
+    Result<> readResult = featureIds.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), count));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       const int32 featureId = featureIdBuf[i];
@@ -207,7 +211,7 @@ Result<> ProcessImageGeom(ImageGeom& imageGeom, Float32AbstractDataStore& volume
  * @param shouldCancel Signals cancellation between chunks or features.
  * @return Success, or an element-size, Feature ID, or feature-count error.
  *
- * Feature IDs and element sizes use matching chunks. Current bulk-I/O Result values are not inspected.
+ * Feature IDs and element sizes use matching chunks. The function returns the first bulk-I/O error.
  */
 Result<> ProcessRectGridGeom(RectGridGeom& rectGridGeom, Float32AbstractDataStore& volumes, Float32AbstractDataStore& equivalentDiameters, Int32AbstractDataStore& numElements,
                              const Int32AbstractDataStore& featureIds, const std::string& featureIdsName, const DataPath& featureAttributeMatrixPath, const bool saveElementSizes,
@@ -246,8 +250,16 @@ Result<> ProcessRectGridGeom(RectGridGeom& rectGridGeom, Float32AbstractDataStor
     }
 
     const usize count = std::min(k_ChunkTuples, numVoxels - offset);
-    featureIds.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), count));
-    elemSizes.copyIntoBuffer(offset, nonstd::span<float32>(elemSizeBuf.get(), count));
+    Result<> readResult = featureIds.copyIntoBuffer(offset, nonstd::span<int32>(featureIdBuf.get(), count));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
+    readResult = elemSizes.copyIntoBuffer(offset, nonstd::span<float32>(elemSizeBuf.get(), count));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
     for(usize i = 0; i < count; i++)
     {
       const int32 voxelFeatureId = featureIdBuf[i];

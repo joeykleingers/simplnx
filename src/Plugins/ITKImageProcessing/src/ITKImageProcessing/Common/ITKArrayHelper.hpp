@@ -27,8 +27,11 @@
 #include <fmt/core.h>
 #include <fmt/ranges.h>
 
+#include <exception>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
+#include <typeinfo>
 #include <vector>
 
 namespace nx::core::ITK
@@ -1029,40 +1032,59 @@ Result<OutputActions> DataCheck(const DataStructure& dataStructure, const DataPa
  * @param filterCreationFunctor Creates the selected ITK filter.
  * @param shouldCancel Supplies cancellation state to an ITK progress observer.
  * @param progressObserver Optional ITK progress observer.
- * @return Filter measurements, success, or an ITK and dispatch error.
- * @pre The input and output stores have concrete in-memory DataStore dynamic types.
+ * @return Filter measurements, success, or a dispatch or execution error.
+ * @pre The input store has a concrete in-memory DataStore dynamic type.
  * @pre The referenced arrays, geometry, cancellation flag, and observer outlive this call.
  *
- * The method rejects an OutOfCore input store. It does not check the output
- * store type before ITKFilterFunctor casts it to DataStore. Only ITK exceptions
- * become Result errors; other C++ exceptions propagate.
+ * The method rejects an OutOfCore input store and any output store that is not
+ * in memory. It converts ITK and standard exceptions to Result errors.
  */
 template <class ArrayOptionsT, template <class> class OutputT = detail::DefaultOutput_t, class FilterCreationFunctorT>
 Result<detail::ITKFilterFunctorResult_t<FilterCreationFunctorT>> Execute(DataStructure& dataStructure, const DataPath& inputArrayPath, const DataPath& imageGeomPath, const DataPath& outputArrayPath,
                                                                          FilterCreationFunctorT&& filterCreationFunctor, const std::atomic_bool& shouldCancel,
                                                                          const itk::ProgressObserver::Pointer progressObserver = nullptr)
 {
-  auto& imageGeom = dataStructure.getDataRefAs<ImageGeom>(imageGeomPath);
-  auto& inputArray = dataStructure.getDataRefAs<IDataArray>(inputArrayPath);
-  auto& outputArray = dataStructure.getDataRefAs<IDataArray>(outputArrayPath);
-  auto& inputDataStore = inputArray.getIDataStoreRef();
-  auto& outputDataStore = outputArray.getIDataStoreRef();
-
   using ResultT = detail::ITKFilterFunctorResult_t<FilterCreationFunctorT>;
-
-  // ITK imports a contiguous pointer and cannot consume a disk-backed store.
-  if(inputArray.getStoreType() == IDataStore::StoreType::OutOfCore)
-  {
-    return MakeErrorResult(Constants::k_OutOfCoreDataNotSupported, fmt::format("Input Array '{}' utilizes out-of-core data. This is not supported within ITK filters.", inputArrayPath.toString()));
-  }
+  std::string imageDimensions = "unavailable";
 
   try
   {
+    auto& imageGeom = dataStructure.getDataRefAs<ImageGeom>(imageGeomPath);
+    imageDimensions = StringUtilities::formatDimensions3D(imageGeom.getDimensions());
+    auto& inputArray = dataStructure.getDataRefAs<IDataArray>(inputArrayPath);
+    auto& outputArray = dataStructure.getDataRefAs<IDataArray>(outputArrayPath);
+    auto& inputDataStore = inputArray.getIDataStoreRef();
+    auto& outputDataStore = outputArray.getIDataStoreRef();
+
+    // ITK imports a contiguous pointer and cannot consume a disk-backed store.
+    if(inputArray.getStoreType() == IDataStore::StoreType::OutOfCore)
+    {
+      return MakeErrorResult(Constants::k_OutOfCoreDataNotSupported, fmt::format("Input Array '{}' utilizes out-of-core data. This is not supported within ITK filters.", inputArrayPath.toString()));
+    }
+
+    const IDataStore::StoreType outputStoreType = outputArray.getStoreType();
+    if(outputStoreType != IDataStore::StoreType::InMemory)
+    {
+      const std::string_view outputStoreTypeName = outputStoreType == IDataStore::StoreType::OutOfCore ? "OutOfCore" : "Empty";
+      return MakeErrorResult<ResultT>(-6039, fmt::format("Output array '{}' uses store type '{}'. ITK execution requires an InMemory output store for Image Geometry '{}' with dimensions ({}).",
+                                                         outputArrayPath.toString(), outputStoreTypeName, imageGeomPath.toString(), imageDimensions));
+    }
+
     return ArraySwitchFunc<detail::ITKFilterFunctor, ArrayOptionsT, ResultT, OutputT>(inputDataStore, imageGeom, -1, inputDataStore, imageGeom, outputDataStore, shouldCancel, progressObserver,
                                                                                       filterCreationFunctor);
   } catch(const itk::ExceptionObject& exception)
   {
-    return MakeErrorResult<ResultT>(-222, exception.GetDescription());
+    return MakeErrorResult<ResultT>(-222, fmt::format("ITK execution from input array '{}' to output array '{}' for Image Geometry '{}' with dimensions ({}) failed: {}", inputArrayPath.toString(),
+                                                      outputArrayPath.toString(), imageGeomPath.toString(), imageDimensions, exception.GetDescription()));
+  } catch(const std::bad_cast& exception)
+  {
+    return MakeErrorResult<ResultT>(
+        -6039, fmt::format("ITK execution from input array '{}' to output array '{}' for Image Geometry '{}' with dimensions ({}) failed because a store has an unexpected concrete type: {}",
+                           inputArrayPath.toString(), outputArrayPath.toString(), imageGeomPath.toString(), imageDimensions, exception.what()));
+  } catch(const std::exception& exception)
+  {
+    return MakeErrorResult<ResultT>(-222, fmt::format("ITK execution from input array '{}' to output array '{}' for Image Geometry '{}' with dimensions ({}) failed: {}", inputArrayPath.toString(),
+                                                      outputArrayPath.toString(), imageGeomPath.toString(), imageDimensions, exception.what()));
   }
 }
 } // namespace nx::core::ITK

@@ -136,9 +136,11 @@ Result<> TransferMarkedSliceForArray(IDataArray& dataArray, const std::vector<in
  * @param imageGeom Defines voxel dimensions.
  * @param featureIdsStore Provides Feature IDs for neighbor votes.
  * @param voxelArrays Provides and receives each retained cell array.
+ * @param replacementCount Receives the number of negative voxels that have a non-negative source.
+ * @param unresolvedCount Receives the number of negative voxels without a non-negative source.
  * @param shouldCancel Stops before later Z slices when true.
  * @param messageHelper Creates a throttled progress messenger.
- * @return First bulk-I/O error, or whether any nonpositive Feature ID exists.
+ * @return First bulk-I/O error, or whether any negative Feature ID remains unresolved.
  *
  * Three input slices preserve the Feature-ID state at iteration start. Two mark
  * slices keep writes behind the vote frontier. This order prevents earlier writes
@@ -147,10 +149,12 @@ Result<> TransferMarkedSliceForArray(IDataArray& dataArray, const std::vector<in
  * Face neighbors use the direct algorithm's order. The first feature to exceed
  * the current vote count wins. A later tie does not replace that feature.
  */
-Result<bool> IdentifyAndFillNeighborsScanline(const ImageGeom& imageGeom, Int32AbstractDataStore& featureIdsStore, const std::vector<std::shared_ptr<IDataArray>>& voxelArrays,
-                                              const std::atomic_bool& shouldCancel, MessageHelper& messageHelper)
+Result<bool> IdentifyAndFillNeighborsScanline(const ImageGeom& imageGeom, Int32AbstractDataStore& featureIdsStore, const std::vector<std::shared_ptr<IDataArray>>& voxelArrays, usize& replacementCount,
+                                              usize& unresolvedCount, const std::atomic_bool& shouldCancel, MessageHelper& messageHelper)
 {
   ThrottledMessenger throttledMessenger = messageHelper.createThrottledMessenger();
+  replacementCount = 0;
+  unresolvedCount = 0;
 
   const SizeVec3 uDims = imageGeom.getDimensions();
   const int64 dimX = static_cast<int64>(uDims[0]);
@@ -231,11 +235,10 @@ Result<bool> IdentifyAndFillNeighborsScanline(const ImageGeom& imageGeom, Int32A
         const int64 sliceIndex = rowOffset + xIdx;
         const int64 voxelIndex = kStride + sliceIndex;
         const int32 featureName = curSlice[sliceIndex];
-        if(featureName > 0)
+        if(featureName >= 0)
         {
           continue;
         }
-        shouldLoop = true;
 
         int32 current = 0;
         int32 most = 0;
@@ -243,8 +246,7 @@ Result<bool> IdentifyAndFillNeighborsScanline(const ImageGeom& imageGeom, Int32A
         std::array<int32, 6> discoveredFeatures = {0, 0, 0, 0, 0, 0};
         usize discoveredFeatureCount = 0;
 
-        // Preserve the direct algorithm's vote rule. Only negative destinations
-        // receive a source mark, although zero IDs still request another iteration.
+        // Preserve the direct algorithm's vote rule for negative destinations.
         auto considerNeighbor = [&](int32 feature, int64 neighborGlobalIndex) {
           if(feature < 0)
           {
@@ -268,7 +270,13 @@ Result<bool> IdentifyAndFillNeighborsScanline(const ImageGeom& imageGeom, Int32A
             }
           }
           discoveredFeatures[discoveredFeatureCount] = feature;
+          numHits[discoveredFeatureCount] = 1;
           discoveredFeatureCount++;
+          if(most < 1)
+          {
+            most = 1;
+            curMarks[sliceIndex] = neighborGlobalIndex;
+          }
         };
 
         // Check face neighbors in direct-path order: -Z, -Y, -X, +X, +Y, +Z.
@@ -295,6 +303,15 @@ Result<bool> IdentifyAndFillNeighborsScanline(const ImageGeom& imageGeom, Int32A
         if(zIdx < dimZ - 1)
         {
           considerNeighbor(nextSlice[sliceIndex], voxelIndex + dimX * dimY);
+        }
+        if(curMarks[sliceIndex] >= 0)
+        {
+          replacementCount++;
+        }
+        else
+        {
+          shouldLoop = true;
+          unresolvedCount++;
         }
       }
     }
@@ -682,7 +699,7 @@ Result<> RemoveFlaggedFeaturesScanline::operator()()
 
     if(m_InputValues->FillRemovedFeatures)
     {
-      bool shouldLoop;
+      bool shouldLoop = false;
       usize count = 0;
       do
       {
@@ -692,7 +709,9 @@ Result<> RemoveFlaggedFeaturesScanline::operator()()
         // Rebuild the retained cell-array list for each convergence iteration.
         // Feature IDs must remain in this list for negative IDs to be replaced.
         std::vector<std::shared_ptr<IDataArray>> voxelArrays = GenerateDataArrayList(m_DataStructure, m_InputValues->FeatureIdsArrayPath, m_InputValues->IgnoredDataArrayPaths);
-        auto fillResult = IdentifyAndFillNeighborsScanline(imageGeom, featureIds, voxelArrays, m_ShouldCancel, messageHelper);
+        usize replacementCount = 0;
+        usize unresolvedCount = 0;
+        auto fillResult = IdentifyAndFillNeighborsScanline(imageGeom, featureIds, voxelArrays, replacementCount, unresolvedCount, m_ShouldCancel, messageHelper);
         if(fillResult.invalid())
         {
           return ConvertResult(std::move(fillResult));
@@ -702,6 +721,11 @@ Result<> RemoveFlaggedFeaturesScanline::operator()()
         if(m_ShouldCancel)
         {
           return {};
+        }
+        if(replacementCount == 0 && shouldLoop)
+        {
+          m_MessageHandler(IFilter::Message::Type::Warning, fmt::format("Fill removed features: no progress after iteration {}; {} voxels remain unresolved", count, unresolvedCount));
+          break;
         }
       } while(shouldLoop);
     }
@@ -722,11 +746,14 @@ Result<> RemoveFlaggedFeaturesScanline::operator()()
     {
       return {};
     }
-    if(!RemoveInactiveObjects(m_DataStructure, featureGroupPath, activeObjects, featureIds, flaggedFeatures->getNumberOfTuples(), m_MessageHandler, m_ShouldCancel,
-                              /*cellFeatureIdsRenumbered=*/true))
+    Result<> removeResult = RemoveInactiveObjects(m_DataStructure, featureGroupPath, activeObjects, featureIds, flaggedFeatures->getNumberOfTuples(), m_MessageHandler, m_ShouldCancel,
+                                                  /*cellFeatureIdsRenumbered=*/true);
+    if(removeResult.invalid())
     {
-      return MakeErrorResult(-45434, fmt::format("Failed to remove inactive objects from feature group at path '{}'.", featureGroupPath.toString()));
+      return removeResult;
     }
+    // RemoveInactiveObjects reports a cancelled compaction as success. No work follows this
+    // call, so a cancelled and a completed run both leave through the empty valid Result below.
   }
 
   return {};
