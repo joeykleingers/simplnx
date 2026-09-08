@@ -52,13 +52,17 @@ TEST_CASE("Test Loading Plugins")
     IFilter::UniquePointer filter = filterListPtr->createFilter(k_TestFilterHandle);
     REQUIRE(filter != nullptr);
     REQUIRE(filter->humanName() == "Test Filter");
-    filter->execute(dataStructure, {});
+    // Test Filter declares a generated file list whose default input path is empty, so
+    // preflight rejects an empty argument set. The execution still has to report that.
+    SIMPLNX_RESULT_REQUIRE_INVALID(filter->execute(dataStructure, {}).result);
   }
   {
     IFilter::UniquePointer filter2 = filterListPtr->createFilter(k_Test2FilterHandle);
     REQUIRE(filter2 != nullptr);
     REQUIRE(filter2->humanName() == "Test Filter 2");
-    filter2->execute(dataStructure, {});
+    // Test Filter 2 accepts every default argument, so executing it from the loaded plugin
+    // must succeed.
+    SIMPLNX_RESULT_REQUIRE_VALID(filter2->execute(dataStructure, {}).result);
   }
 
   UnitTest::CheckArraysInheritTupleDims(dataStructure);
@@ -96,13 +100,17 @@ TEST_CASE("Test Singleton")
     IFilter::UniquePointer filter = filterListPtr->createFilter(k_TestFilterHandle);
     REQUIRE(filter != nullptr);
     REQUIRE(filter->humanName() == "Test Filter");
-    filter->execute(dataStructure, {});
+    // Test Filter declares a generated file list whose default input path is empty, so
+    // preflight rejects an empty argument set. The execution still has to report that.
+    SIMPLNX_RESULT_REQUIRE_INVALID(filter->execute(dataStructure, {}).result);
   }
   {
     IFilter::UniquePointer filter2 = filterListPtr->createFilter(k_Test2FilterHandle);
     REQUIRE(filter2 != nullptr);
     REQUIRE(filter2->humanName() == "Test Filter 2");
-    filter2->execute(dataStructure, {});
+    // Test Filter 2 accepts every default argument, so executing it from the loaded plugin
+    // must succeed.
+    SIMPLNX_RESULT_REQUIRE_VALID(filter2->execute(dataStructure, {}).result);
   }
 
   Application::DeleteInstance();

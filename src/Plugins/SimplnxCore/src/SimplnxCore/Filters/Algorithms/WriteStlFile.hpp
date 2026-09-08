@@ -10,6 +10,8 @@
 #include "simplnx/Parameters/FileSystemPathParameter.hpp"
 #include "simplnx/Parameters/StringParameter.hpp"
 
+#include <atomic>
+
 namespace nx::core
 {
 
@@ -53,8 +55,11 @@ struct SIMPLNXCORE_EXPORT WriteStlFileInputValues
  * Grouped modes build resident triangle-index buckets before parallel file writes.
  * Source geometry and label stores use direct per-value access.
  *
+ * Every stdio failure becomes an error, and no temporary file is committed once a
+ * worker has reported one, so a truncated STL cannot replace a destination file.
+ *
  * Each file uses an AtomicFile. Multi-file commits occur sequentially and are not
- * atomic as a group. Some stdio failures are not returned.
+ * atomic as a group.
  */
 class SIMPLNXCORE_EXPORT WriteStlFile
 {
@@ -90,10 +95,22 @@ public:
   const std::atomic_bool& getCancel();
 
   /**
-   * @brief Merges one worker result while holding the shared result mutex.
-   * @param result Provides a warning or error from one file task.
+   * @brief Latches one worker result while holding the shared result mutex.
+   * @param result Provides the warnings and any error from one file task.
+   *
+   * The first error is kept so that a later worker cannot bury the original cause,
+   * while every warning from every worker is collected.
    */
   void sendThreadSafeProgressMessage(Result<>&& result);
+
+  /**
+   * @brief Returns a copy of the latched worker result.
+   * @return The first worker error with every collected warning, or the collected
+   * warnings when no worker failed.
+   *
+   * Callers must consult this before committing any temporary file.
+   */
+  [[nodiscard]] Result<> getWorkerResult() const;
 
 private:
   DataStructure& m_DataStructure;
@@ -102,7 +119,14 @@ private:
   const IFilter::MessageHandler& m_MessageHandler;
   mutable std::mutex m_ProgressMessage_Mutex;
 
-  mutable bool m_HasErrors = false;
+  /**
+   * @brief Records that one worker has already reported an error.
+   *
+   * The scheduling loops read this flag without holding m_ProgressMessage_Mutex so that
+   * they stop queueing new file tasks, so the flag is atomic. Every write happens under
+   * that mutex, which keeps it in step with m_Result.
+   */
+  mutable std::atomic_bool m_HasErrors{false};
   Result<> m_Result;
 };
 

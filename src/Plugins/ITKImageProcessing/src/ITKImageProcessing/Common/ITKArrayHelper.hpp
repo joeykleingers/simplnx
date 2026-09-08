@@ -1037,7 +1037,9 @@ Result<OutputActions> DataCheck(const DataStructure& dataStructure, const DataPa
  * @pre The referenced arrays, geometry, cancellation flag, and observer outlive this call.
  *
  * The method rejects an OutOfCore input store and any output store that is not
- * in memory. It converts ITK and standard exceptions to Result errors.
+ * in memory. It converts ITK and standard exceptions to Result errors, except for
+ * std::bad_alloc, which is rethrown so IFilter::execute can report the actionable
+ * out-of-memory message.
  */
 template <class ArrayOptionsT, template <class> class OutputT = detail::DefaultOutput_t, class FilterCreationFunctorT>
 Result<detail::ITKFilterFunctorResult_t<FilterCreationFunctorT>> Execute(DataStructure& dataStructure, const DataPath& inputArrayPath, const DataPath& imageGeomPath, const DataPath& outputArrayPath,
@@ -1076,6 +1078,12 @@ Result<detail::ITKFilterFunctorResult_t<FilterCreationFunctorT>> Execute(DataStr
   {
     return MakeErrorResult<ResultT>(-222, fmt::format("ITK execution from input array '{}' to output array '{}' for Image Geometry '{}' with dimensions ({}) failed: {}", inputArrayPath.toString(),
                                                       outputArrayPath.toString(), imageGeomPath.toString(), imageDimensions, exception.GetDescription()));
+  } catch(const std::bad_alloc&)
+  {
+    // IFilter::execute turns an allocation failure into the actionable -272 message that
+    // names out-of-core storage as the remedy. Catching it here as a generic exception
+    // would replace that with an opaque "failed: std::bad_alloc".
+    throw;
   } catch(const std::bad_cast& exception)
   {
     return MakeErrorResult<ResultT>(

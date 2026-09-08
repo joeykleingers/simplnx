@@ -622,7 +622,10 @@ Result<> PrintDataSetsToMultipleFiles(const std::vector<DataPath>& objectPaths, 
     }
     if(shouldCancel)
     {
-      return {};
+      // Earlier loop iterations already committed their files, so a cancellation here
+      // leaves a partially published file set. Reporting success would let the caller
+      // treat that partial set as the complete output.
+      return MakeErrorResult(-1, "Filter cancelled");
     }
     Result<> commitResult = atomicFile.commit();
     if(commitResult.invalid())

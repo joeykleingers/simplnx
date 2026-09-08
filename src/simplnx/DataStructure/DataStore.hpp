@@ -92,7 +92,11 @@ public:
   , m_NumTuples(std::accumulate(m_TupleShape.cbegin(), m_TupleShape.cend(), static_cast<usize>(1), std::multiplies<>()))
   , m_InitValue(initValue)
   {
-    m_Data = std::make_unique<value_type[]>(this->getSize());
+    // new value_type[n] leaves the buffer uninitialized. std::make_unique would
+    // value-initialize it, adding a full pass over every byte of a store the caller is
+    // about to overwrite, and it would turn a read of a never-written element into a
+    // plausible zero instead of visible garbage.
+    m_Data = std::unique_ptr<value_type[]>(new value_type[this->getSize()]);
     if(m_InitValue.has_value())
     {
       std::fill_n(data(), this->getSize(), *m_InitValue);
@@ -263,7 +267,10 @@ public:
         return {};
       }
 
-      auto data = std::make_unique<value_type[]>(newSize);
+      // new value_type[n] leaves the buffer uninitialized. Every element is then either
+      // copied from the previous buffer or set to the initialization or mudflap value, so
+      // value-initializing here would only repeat that work.
+      std::unique_ptr<value_type[]> data(new value_type[newSize]);
       if(m_Data != nullptr)
       {
         for(usize valueIndex = 0; valueIndex < newSize && valueIndex < oldSize; ++valueIndex)

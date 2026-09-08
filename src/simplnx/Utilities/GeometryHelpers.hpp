@@ -280,7 +280,7 @@ template <typename T, typename K>
  * @param elemsContainingVert Provides candidate elements for each vertex.
  * @param dynamicList Receives neighbors for each element.
  * @param geometryType Selects required shared-vertex count.
- * @return Error for an unsupported geometry type or the first failed connectivity read.
+ * @return Error -56810 for an unsupported geometry type, or the first failed connectivity read.
  *
  * Outer connectivity reads use chunks. Candidate reads outside the active chunk
  * use one bulk read.
@@ -328,8 +328,10 @@ template <typename T, typename K>
 
   if(numSharedVerts == 0)
   {
-    return MakeErrorResult(-1, fmt::format("Cannot find element neighbors for unsupported geometry type value '{}'. Supported types are Edge, Triangle, Quad, Tetrahedral, and Hexahedral.",
-                                           static_cast<int32>(geometryType)));
+    // Code -1 is IFilter::execute's cancellation code, so this uses the geometry family
+    // instead and a caller can tell an unsupported geometry from a cancelled pipeline.
+    return MakeErrorResult(-56810, fmt::format("Cannot find element neighbors for unsupported geometry type value '{}'. Supported types are Edge, Triangle, Quad, Tetrahedral, and Hexahedral.",
+                                               static_cast<int32>(geometryType)));
   }
 
   dynamicList->allocateLists(linkCount);

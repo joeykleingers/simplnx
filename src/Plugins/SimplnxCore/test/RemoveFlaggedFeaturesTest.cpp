@@ -13,6 +13,7 @@
 #include "simplnx/Utilities/AlgorithmDispatch.hpp"
 #include "simplnx/Utilities/DataStoreUtilities.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <catch2/catch.hpp>
@@ -293,11 +294,18 @@ TEST_CASE("SimplnxCore::RemoveFlaggedFeatures: fill terminates with background z
     // The fixture contains background Feature IDs. Fill mode never turns a zero into another id.
     DataStructure dataStructure = CreateFlaggedFeaturesFixture();
     REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath));
-    const auto& idsBefore = dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath);
+
+    // The filter overwrites the array in place, so the expected values are copied out first.
+    std::vector<int32> idsBefore;
     usize zerosBefore = 0;
-    for(usize i = 0; i < idsBefore.getNumberOfTuples(); ++i)
     {
-      zerosBefore += idsBefore[i] == 0 ? 1 : 0;
+      const auto& idsBeforeArray = dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath);
+      idsBefore.resize(idsBeforeArray.getNumberOfTuples());
+      for(usize i = 0; i < idsBeforeArray.getNumberOfTuples(); ++i)
+      {
+        idsBefore[i] = idsBeforeArray[i];
+        zerosBefore += idsBefore[i] == 0 ? 1 : 0;
+      }
     }
     REQUIRE(zerosBefore > 0);
 
@@ -306,28 +314,64 @@ TEST_CASE("SimplnxCore::RemoveFlaggedFeatures: fill terminates with background z
     args.insertOrAssign(RemoveFlaggedFeaturesFilter::k_FillRemovedFeatures_Key, std::make_any<bool>(true));
 
     std::atomic_bool cancel = false;
-    // The watchdog cancels after 30 seconds so a nonterminating loop cannot block the test process.
+    std::atomic_bool finished = false;
+    std::atomic_bool timedOut = false;
+    // The watchdog cancels after 30 seconds so a nonterminating fill loop cannot block the test
+    // process. It watches its own `finished` flag and raises `timedOut` itself, so a slow machine
+    // cannot leave `cancel` set after a successful run and turn that into a spurious failure.
     std::thread watchdog([&]() {
-      for(int32 i = 0; i < 300 && !cancel.load(); ++i)
+      for(int32 i = 0; i < 300; ++i)
       {
+        if(finished.load())
+        {
+          return;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
+      // The filter can finish during the last sleep, so the flag is checked once more before a
+      // completed run is turned into a timeout.
+      if(finished.load())
+      {
+        return;
+      }
+      timedOut = true;
       cancel = true;
     });
     auto result = scope.executeFilter(filter, dataStructure, args, nullptr, IFilter::MessageHandler{}, cancel);
-    const bool timedOut = cancel.load();
-    cancel = true;
+    finished = true;
     watchdog.join();
-    REQUIRE_FALSE(timedOut);
+    REQUIRE_FALSE(timedOut.load());
     SIMPLNX_RESULT_REQUIRE_VALID(result.result);
 
     REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath));
     const auto& idsAfter = dataStructure.getDataRefAs<Int32Array>(k_FeatureIdsPath);
+    REQUIRE(idsAfter.getNumberOfTuples() == idsBefore.size());
+
+    // Feature 3 is the only flagged feature in the fixture and it occupies exactly these voxels,
+    // so every other voxel must come back untouched.
+    const std::array<usize, 2> filledVoxels = {13, 14};
+
+    usize negativesAfter = 0;
     usize zerosAfter = 0;
     for(usize i = 0; i < idsAfter.getNumberOfTuples(); ++i)
     {
+      negativesAfter += idsAfter[i] < 0 ? 1 : 0;
       zerosAfter += idsAfter[i] == 0 ? 1 : 0;
-      REQUIRE(idsAfter[i] >= 0);
+      if(std::find(filledVoxels.cbegin(), filledVoxels.cend(), i) == filledVoxels.cend())
+      {
+        REQUIRE(idsAfter[i] == idsBefore[i]);
+      }
+    }
+
+    // The fill loop marks each removed voxel with a negative ID and replaces it from a neighbor.
+    // A negative ID left behind means the loop stopped before it converged.
+    REQUIRE(negativesAfter == 0);
+    for(usize filledIndex : filledVoxels)
+    {
+      // Feature 2 and the background border these voxels, so the fill value is one of the
+      // surviving Feature IDs and never the removed feature.
+      REQUIRE(idsAfter[filledIndex] >= 0);
+      REQUIRE(idsAfter[filledIndex] <= 2);
     }
     // Background is a valid fill source, so removed voxels next to background become zero and the count can grow.
     REQUIRE(zerosAfter >= zerosBefore);

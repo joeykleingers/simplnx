@@ -7,6 +7,7 @@
 
 #include "simplnx/DataStructure/DataArray.hpp"
 #include "simplnx/DataStructure/Geometry/ImageGeom.hpp"
+#include "simplnx/Utilities/DataArrayUtilities.hpp"
 #include "simplnx/Utilities/DataGroupUtilities.hpp"
 #include "simplnx/Utilities/FilterUtilities.hpp"
 #include "simplnx/Utilities/MaskCompareUtilities.hpp"
@@ -497,15 +498,17 @@ public:
    * @param minVoxelVector Specifies inclusive minimum voxel indexes.
    * @param maxVoxelVector Specifies inclusive maximum voxel indexes.
    * @param createdImgGeomPath Identifies the cropped ImageGeom.
+   * @param taskResult Receives the delegated preflight or execute failure.
    */
   RunCropImageGeometryImpl(DataStructure& dataStructure, const std::atomic_bool& shouldCancel, const DataPath& imageGeometryPath, const std::vector<uint64>& minVoxelVector,
-                           const std::vector<uint64>& maxVoxelVector, const DataPath& createdImgGeomPath)
+                           const std::vector<uint64>& maxVoxelVector, const DataPath& createdImgGeomPath, CopyFromArray::ParallelTaskResult& taskResult)
   : m_DataStructure(dataStructure)
   , m_ShouldCancel(shouldCancel)
   , m_ImageGeometryPath(imageGeometryPath)
   , m_MinVoxelVector(minVoxelVector)
   , m_MaxVoxelVector(maxVoxelVector)
   , m_CreatedImgGeomPath(createdImgGeomPath)
+  , m_TaskResult(taskResult)
   {
   }
 
@@ -515,10 +518,11 @@ public:
   ~RunCropImageGeometryImpl() = default;
 
   /**
-   * @brief Preflights and executes the delegated crop.
+   * @brief Preflights and executes the delegated crop, latching any failure.
    *
-   * The task throws after a preflight failure. The implementation does not inspect
-   * the execute result and can therefore ignore an execution failure.
+   * ParallelTaskAlgorithm tasks cannot return a value, so the delegated filter's
+   * preflight and execute errors travel through the shared first-error holder and
+   * stop the caller before it reports success.
    */
   void operator()() const
   {
@@ -538,7 +542,22 @@ public:
     auto preflightResult = filter.preflight(m_DataStructure, args);
     if(preflightResult.outputActions.invalid())
     {
-      throw std::runtime_error("Preflight failed when cropping the geometry in extract flagged features!");
+      // The delegated filter reports the real cause, so its own errors are kept and each one is
+      // prefixed with this call's context instead of being buried behind a second error object.
+      Result<> delegatedResult = ConvertResult(std::move(preflightResult.outputActions));
+      if(delegatedResult.valid() || delegatedResult.errors().empty())
+      {
+        // Defensive: the delegated preflight reported a failure without any error to explain it.
+        m_TaskResult.store(MakeErrorResult(-45440, fmt::format("RemoveFlaggedFeatures: cropping '{}' from '{}' failed: the delegated crop preflight reported a failure without a cause.",
+                                                               m_CreatedImgGeomPath.toString(), m_ImageGeometryPath.toString())));
+        return;
+      }
+      for(Error& error : delegatedResult.errors())
+      {
+        error.message = fmt::format("RemoveFlaggedFeatures: cropping '{}' from '{}' failed: {}", m_CreatedImgGeomPath.toString(), m_ImageGeometryPath.toString(), error.message);
+      }
+      m_TaskResult.store(std::move(delegatedResult));
+      return;
     }
 
     if(m_ShouldCancel)
@@ -547,9 +566,23 @@ public:
     }
 
     auto executeResult = filter.execute(m_DataStructure, args);
-    if(preflightResult.outputActions.invalid())
+    if(executeResult.result.invalid())
     {
-      throw std::runtime_error("Execute failed when cropping the geometry in extract flagged features!");
+      // The delegated filter reports the real cause, so its own errors are kept and each one is
+      // prefixed with this call's context instead of being buried behind a second error object.
+      Result<> delegatedResult = std::move(executeResult.result);
+      if(delegatedResult.errors().empty())
+      {
+        // Defensive: the delegated execution reported a failure without any error to explain it.
+        m_TaskResult.store(MakeErrorResult(-45441, fmt::format("RemoveFlaggedFeatures: cropping '{}' from '{}' failed: the delegated crop execution reported a failure without a cause.",
+                                                               m_CreatedImgGeomPath.toString(), m_ImageGeometryPath.toString())));
+        return;
+      }
+      for(Error& error : delegatedResult.errors())
+      {
+        error.message = fmt::format("RemoveFlaggedFeatures: cropping '{}' from '{}' failed: {}", m_CreatedImgGeomPath.toString(), m_ImageGeometryPath.toString(), error.message);
+      }
+      m_TaskResult.store(std::move(delegatedResult));
     }
   }
 
@@ -560,6 +593,7 @@ private:
   const std::vector<uint64>& m_MinVoxelVector;
   const std::vector<uint64>& m_MaxVoxelVector;
   const DataPath& m_CreatedImgGeomPath;
+  CopyFromArray::ParallelTaskResult& m_TaskResult;
 };
 } // namespace
 
@@ -615,7 +649,22 @@ Result<> RemoveFlaggedFeaturesScanline::operator()()
       auto preflightResult = filter.preflight(m_DataStructure, args);
       if(preflightResult.outputActions.invalid())
       {
-        throw std::runtime_error("Preflight failed when cropping the geometry in extract flagged features!");
+        // The delegated filter reports the real cause, so its own errors are kept and each one is
+        // prefixed with this call's context instead of being buried behind a second error object.
+        Result<> delegatedResult = ConvertResult(std::move(preflightResult.outputActions));
+        if(delegatedResult.valid() || delegatedResult.errors().empty())
+        {
+          // Defensive: the delegated preflight reported a failure without any error to explain it.
+          return MakeErrorResult(-45442, fmt::format("RemoveFlaggedFeatures: computing the feature bounds at '{}' from Feature Ids '{}' failed: the ComputeFeatureRect preflight reported a "
+                                                     "failure without a cause.",
+                                                     m_InputValues->TempBoundsPath.toString(), m_InputValues->FeatureIdsArrayPath.toString()));
+        }
+        for(Error& error : delegatedResult.errors())
+        {
+          error.message = fmt::format("RemoveFlaggedFeatures: computing the feature bounds at '{}' from Feature Ids '{}' failed: {}", m_InputValues->TempBoundsPath.toString(),
+                                      m_InputValues->FeatureIdsArrayPath.toString(), error.message);
+        }
+        return delegatedResult;
       }
 
       if(m_ShouldCancel)
@@ -624,10 +673,24 @@ Result<> RemoveFlaggedFeaturesScanline::operator()()
       }
 
       auto executeResult = filter.execute(m_DataStructure, args);
-      // Only preflight status controls this path. The delegated execute result is not inspected.
-      if(preflightResult.outputActions.invalid())
+      if(executeResult.result.invalid())
       {
-        throw std::runtime_error("Execute failed when cropping the geometry in extract flagged features!");
+        // The delegated filter reports the real cause, so its own errors are kept and each one is
+        // prefixed with this call's context instead of being buried behind a second error object.
+        Result<> delegatedResult = std::move(executeResult.result);
+        if(delegatedResult.errors().empty())
+        {
+          // Defensive: the delegated execution reported a failure without any error to explain it.
+          return MakeErrorResult(-45443, fmt::format("RemoveFlaggedFeatures: computing the feature bounds at '{}' from Feature Ids '{}' failed: the ComputeFeatureRect execution reported a "
+                                                     "failure without a cause.",
+                                                     m_InputValues->TempBoundsPath.toString(), m_InputValues->FeatureIdsArrayPath.toString()));
+        }
+        for(Error& error : delegatedResult.errors())
+        {
+          error.message = fmt::format("RemoveFlaggedFeatures: computing the feature bounds at '{}' from Feature Ids '{}' failed: {}", m_InputValues->TempBoundsPath.toString(),
+                                      m_InputValues->FeatureIdsArrayPath.toString(), error.message);
+        }
+        return delegatedResult;
       }
     }
 
@@ -637,6 +700,10 @@ Result<> RemoveFlaggedFeaturesScanline::operator()()
     {
       return {};
     }
+
+    // Declared before the runner so the runner's destructor joins every task while the
+    // holder is still alive.
+    CopyFromArray::ParallelTaskResult cropTaskResult;
 
     ParallelTaskAlgorithm taskRunner;
     // Crop tasks mutate DataStructure and borrow loop-local bounds. Synchronous
@@ -664,9 +731,22 @@ Result<> RemoveFlaggedFeaturesScanline::operator()()
       DataPath createdImgGeomPath({fmt::format(fmt::runtime("{}-{:0" + paddingWidth + "d}"), m_InputValues->CreatedImageGeometryPrefix, i)});
 
       m_MessageHandler(IFilter::ProgressMessage{IFilter::Message::Type::Info, fmt::format("Now Extracting Feature {}", i)});
-      taskRunner.execute(RunCropImageGeometryImpl(m_DataStructure, m_ShouldCancel, m_InputValues->ImageGeometryPath, minVoxels, maxVoxels, createdImgGeomPath));
+      taskRunner.execute(RunCropImageGeometryImpl(m_DataStructure, m_ShouldCancel, m_InputValues->ImageGeometryPath, minVoxels, maxVoxels, createdImgGeomPath, cropTaskResult));
+
+      // Stop scheduling crops once one has failed, so the failure is reported instead of
+      // being buried behind later work.
+      if(cropTaskResult.shouldAbort())
+      {
+        break;
+      }
     }
     taskRunner.wait();
+
+    Result<> cropResult = cropTaskResult.takeResult();
+    if(cropResult.invalid())
+    {
+      return cropResult;
+    }
 
     m_MessageHandler(IFilter::ProgressMessage{IFilter::Message::Type::Info, fmt::format("All Features Successfully Extracted")});
   }

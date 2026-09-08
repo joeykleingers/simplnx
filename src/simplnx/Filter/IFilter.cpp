@@ -275,17 +275,44 @@ IFilter::ExecuteResult IFilter::execute(DataStructure& dataStructure, const Argu
     {
       message = "A filter ran out of memory while executing.";
     }
-    return {MakeErrorResult(-272, std::move(message))};
+    return ExecuteResult{MergeResults(std::move(preflightActionsResult), MakeErrorResult(-272, std::move(message))), std::move(preflightResult.outputValues)};
   } catch(const std::exception& e)
   {
     // Backstop for any other exception that escapes executeImpl. Every storage failure has to
     // reach the user, so an escaped exception becomes an execution error instead of terminating
-    // the process or being reported as success.
-    executeImplResult = MakeErrorResult(-2, fmt::format("{}: unhandled exception during execution: {}", name(), e.what()));
-  }
-  if(shouldCancel)
+    // the process or being reported as success. Formatting the detailed message allocates and
+    // calls back into the filter, so a nested fallback protects this handler.
+    std::string message;
+    try
+    {
+      message = fmt::format("{}: unhandled exception during execution: {}", name(), e.what());
+    } catch(...)
+    {
+      message = "A filter reported an unhandled exception during execution.";
+    }
+    executeImplResult = MakeErrorResult(-2, std::move(message));
+  } catch(...)
   {
-    return {MakeErrorResult(-1, "Filter cancelled")};
+    // Backstop for a throw that does not derive from std::exception, such as an HDF5 C++
+    // exception, a third-party library type, or a bare throw. Without this the exception
+    // escapes into std::terminate and the user never learns why the pipeline stopped.
+    // Formatting the detailed message allocates and calls back into the filter, so a nested
+    // fallback protects this handler.
+    std::string message;
+    try
+    {
+      message = fmt::format("{}: unhandled non-standard exception during execution", name());
+    } catch(...)
+    {
+      message = "A filter reported an unhandled non-standard exception during execution.";
+    }
+    executeImplResult = MakeErrorResult(-2, std::move(message));
+  }
+  // A cancellation must not bury a failure that already happened, so the cancellation
+  // error is only reported when execution itself succeeded.
+  if(shouldCancel && executeImplResult.valid())
+  {
+    return ExecuteResult{MergeResults(std::move(preflightActionsResult), MakeErrorResult(-1, "Filter cancelled")), std::move(preflightResult.outputValues)};
   }
 
   Result<> preflightActionsExecuteResult = MergeResults(std::move(preflightActionsResult), std::move(executeImplResult));

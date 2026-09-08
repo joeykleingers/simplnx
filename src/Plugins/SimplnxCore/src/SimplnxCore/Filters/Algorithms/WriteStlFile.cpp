@@ -11,7 +11,10 @@
 #include "simplnx/Utilities/ParallelTaskAlgorithm.hpp"
 #include "simplnx/Utilities/StringUtilities.hpp"
 
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <unordered_map>
 
 namespace fs = std::filesystem;
@@ -94,8 +97,43 @@ struct LimitBoundAtomicFileFactory
 };
 
 /**
+ * @brief Rewrites the final triangle count into the file header and closes the file.
+ * @param filePtr Owns the open binary STL file. This function always closes it.
+ * @param path Identifies the file in error messages.
+ * @param triCount Specifies how many triangle records were written.
+ * @return The first seek, write, or close error, or success.
+ *
+ * A binary STL is only readable when the 4 byte count at offset 80 matches the number
+ * of triangle records, so each of these failures leaves an unusable file that must not
+ * be committed over the destination.
+ */
+[[nodiscard]] Result<> FinalizeStlFile(FILE* filePtr, const fs::path& path, int32 triCount)
+{
+  if(fseek(filePtr, 80L, SEEK_SET) != 0)
+  {
+    // Capture errno before fclose or message formatting can overwrite it.
+    const int savedErrno = errno;
+    fclose(filePtr);
+    return MakeErrorResult(-27882, fmt::format("Error writing STL file '{}': unable to seek to the triangle count at byte offset 80. Cause: {}", path.string(), std::strerror(savedErrno)));
+  }
+  if(fwrite(reinterpret_cast<char*>(&triCount), 1, 4, filePtr) != 4)
+  {
+    // Capture errno before fclose or message formatting can overwrite it.
+    const int savedErrno = errno;
+    fclose(filePtr);
+    return MakeErrorResult(-27883, fmt::format("Error writing STL file '{}': unable to write the triangle count {} at byte offset 80. Cause: {}", path.string(), triCount, std::strerror(savedErrno)));
+  }
+  if(fclose(filePtr) != 0)
+  {
+    // Capture errno before message formatting can overwrite it.
+    const int savedErrno = errno;
+    return MakeErrorResult(-27887, fmt::format("Error writing STL file '{}': unable to flush and close the file after {} triangles. Cause: {}", path.string(), triCount, std::strerror(savedErrno)));
+  }
+  return {};
+}
+
+/**
  * @brief Writes one triangle range to a binary STL temporary file.
- * @param filter Receives thread-safe worker warnings.
  * @param path Identifies the temporary output.
  * @param endValue Specifies the exclusive last triangle.
  * @param header Specifies up to 80 header bytes.
@@ -103,13 +141,13 @@ struct LimitBoundAtomicFileFactory
  * @param vertices Provides flat XYZ coordinates.
  * @param shouldCancel Stops before later triangles when true.
  * @param startValue Specifies the first triangle.
- * @return Header warning or success after completion or cancellation.
+ * @return The first open, write, seek, or close error, or success carrying any header warning.
  *
- * Triangle write failures go to filter and can produce a truncated temporary file.
- * Most header, seek, count, and close results are not inspected.
+ * Every stdio failure becomes an error, because a truncated temporary file must never
+ * reach the destination through a commit.
  */
-Result<> SingleWriteOutStl(WriteStlFile* filter, const fs::path& path, const IGeometry::MeshIndexType endValue, std::string header, const TriStore& triangles, const VertexStore& vertices,
-                           const std::atomic_bool& shouldCancel, const IGeometry::MeshIndexType startValue = 0)
+[[nodiscard]] Result<> SingleWriteOutStl(const fs::path& path, const IGeometry::MeshIndexType endValue, std::string header, const TriStore& triangles, const VertexStore& vertices,
+                                         const std::atomic_bool& shouldCancel, const IGeometry::MeshIndexType startValue = 0)
 {
   Result<> result;
 
@@ -118,7 +156,10 @@ Result<> SingleWriteOutStl(WriteStlFile* filter, const fs::path& path, const IGe
 
   if(filePtr == nullptr)
   {
-    return {MakeWarningVoidResult(-27886, fmt::format("Error Opening STL File. Unable to create temp file at path '{}' for original file '{}'", path.string(), path.filename().string()))};
+    // Capture errno before message formatting can overwrite it.
+    const int savedErrno = errno;
+    return MakeErrorResult(
+        -27886, fmt::format("Error opening STL file: unable to create the temporary file '{}' for output file '{}'. Cause: {}", path.string(), path.filename().string(), std::strerror(savedErrno)));
   }
 
   int32 triCount = 0;
@@ -139,12 +180,23 @@ Result<> SingleWriteOutStl(WriteStlFile* filter, const fs::path& path, const IGe
       headLength = static_cast<size_t>(header.length());
     }
 
-    // std::string c_str = header;
     memcpy(stlFileHeader.data(), header.data(), headLength);
-    fwrite(stlFileHeader.data(), 1, 80, filePtr);
+    if(fwrite(stlFileHeader.data(), 1, 80, filePtr) != 80)
+    {
+      // Capture errno before fclose or message formatting can overwrite it.
+      const int savedErrno = errno;
+      fclose(filePtr);
+      return MakeErrorResult(-27880, fmt::format("Error writing STL file '{}': unable to write the 80 byte header. Cause: {}", path.string(), std::strerror(savedErrno)));
+    }
   }
 
-  fwrite(&triCount, 1, 4, filePtr);
+  if(fwrite(&triCount, 1, 4, filePtr) != 4)
+  {
+    // Capture errno before fclose or message formatting can overwrite it.
+    const int savedErrno = errno;
+    fclose(filePtr);
+    return MakeErrorResult(-27881, fmt::format("Error writing STL file '{}': unable to write the 4 byte triangle count placeholder. Cause: {}", path.string(), std::strerror(savedErrno)));
+  }
   triCount = 0;
 
   size_t totalWritten = 0;
@@ -163,10 +215,8 @@ Result<> SingleWriteOutStl(WriteStlFile* filter, const fs::path& path, const IGe
   {
     if(shouldCancel)
     {
-      fseek(filePtr, 80L, SEEK_SET);
-      fwrite(reinterpret_cast<char*>(&triCount), 1, 4, filePtr);
-      fclose(filePtr);
-      return result;
+      // The header warning collected above must survive any finalize error.
+      return MergeResults(std::move(result), FinalizeStlFile(filePtr, path, triCount));
     }
 
     IGeometry::MeshIndexType nId0 = triangles[triangle * 3];
@@ -201,18 +251,17 @@ Result<> SingleWriteOutStl(WriteStlFile* filter, const fs::path& path, const IGe
     totalWritten = fwrite(data.data(), 1, 50, filePtr);
     if(totalWritten != 50)
     {
+      // Capture errno before fclose or message formatting can overwrite it.
+      const int savedErrno = errno;
       fclose(filePtr);
-      filter->sendThreadSafeProgressMessage({MakeWarningVoidResult(
-          -27873, fmt::format("Error Writing STL File '{}': Not enough bytes written for triangle {}. Only {} bytes written of 50 bytes", path.filename().string(), triCount, totalWritten))});
-      break;
+      return MakeErrorResult(
+          -27885, fmt::format("Error writing STL file '{}': only {} of the 50 bytes for triangle {} were written. Cause: {}", path.string(), totalWritten, triCount, std::strerror(savedErrno)));
     }
     triCount++;
   }
 
-  fseek(filePtr, 80L, SEEK_SET);
-  fwrite(reinterpret_cast<char*>(&triCount), 1, 4, filePtr);
-  fclose(filePtr);
-  return result;
+  // The header warning collected above must survive any finalize error.
+  return MergeResults(std::move(result), FinalizeStlFile(filePtr, path, triCount));
 }
 
 /**
@@ -224,7 +273,7 @@ class SingleOutWrapper
 public:
   /**
    * @brief Creates one borrowed range writer.
-   * @param filter Receives worker warnings.
+   * @param filter Receives the worker result.
    * @param path Identifies the temporary output.
    * @param endValue Specifies the exclusive last triangle.
    * @param header Specifies the STL header.
@@ -251,11 +300,14 @@ public:
   ~SingleOutWrapper() = default;
 
   /**
-   * @brief Writes the captured triangle range.
+   * @brief Writes the captured triangle range and latches its result in the filter.
+   *
+   * ParallelTaskAlgorithm cannot return a value, so the result travels through the
+   * filter's first-error holder instead.
    */
   void operator()() const
   {
-    SingleWriteOutStl(m_Filter, m_Path, m_EndValue, m_Header, m_Triangles, m_Vertices, m_ShouldCancel, m_StartValue);
+    m_Filter->sendThreadSafeProgressMessage(SingleWriteOutStl(m_Path, m_EndValue, m_Header, m_Triangles, m_Vertices, m_ShouldCancel, m_StartValue));
   }
 
 private:
@@ -312,7 +364,7 @@ class MultiWriteStlFileImpl
 public:
   /**
    * @brief Creates one borrowed group writer.
-   * @param filter Receives thread-safe warnings.
+   * @param filter Receives the worker result.
    * @param limitBoundAtomicFile Owns the destination sequence.
    * @param header Specifies the STL header.
    * @param triangles Provides flat triangle connectivity.
@@ -343,32 +395,40 @@ public:
   ~MultiWriteStlFileImpl() = default;
 
   /**
-   * @brief Starts writing at the first temporary file.
+   * @brief Starts writing at the first temporary file and latches the result in the filter.
+   *
+   * ParallelTaskAlgorithm cannot return a value, so the result travels through the
+   * filter's first-error holder instead.
    */
   void operator()() const
   {
     // The factory guarantees a valid first AtomicFile.
-    write(m_LimitBoundAtomicFile.m_AtomicFilesList[0].tempFilePath(), 0);
+    m_Filter->sendThreadSafeProgressMessage(write(m_LimitBoundAtomicFile.m_AtomicFilesList[0].tempFilePath(), 0));
   }
 
   /**
    * @brief Writes one file and recurses into an overflow file when necessary.
    * @param activePath Identifies the active temporary file.
    * @param startIndex Specifies the first index in this task's triangle bucket.
+   * @return The first open, write, seek, close, or overflow-creation error, or success
+   * carrying every header warning from this file and its overflow files.
    *
-   * Worker failures are sent to the parent result. Stdio seek, header, count,
-   * and close results are not inspected.
+   * Every stdio failure becomes an error, because a truncated temporary file must never
+   * reach the destination through a commit.
    */
-  void write(const fs::path& activePath, usize startIndex) const
+  [[nodiscard]] Result<> write(const fs::path& activePath, usize startIndex) const
   {
+    Result<> result;
+
     // Binary mode prevents platform newline conversion.
     FILE* filePtr = fopen(activePath.string().c_str(), "wb");
 
     if(filePtr == nullptr)
     {
-      m_Filter->sendThreadSafeProgressMessage(
-          {MakeWarningVoidResult(-27876, fmt::format("Error Opening STL File. Unable to create temp file at path '{}' for original file '{}'", activePath.string(), activePath.filename().string()))});
-      return;
+      // Capture errno before message formatting can overwrite it.
+      const int savedErrno = errno;
+      return MakeErrorResult(-27876, fmt::format("Error opening STL file: unable to create the temporary file '{}' for output file '{}'. Cause: {}", activePath.string(),
+                                                 activePath.filename().string(), std::strerror(savedErrno)));
     }
 
     int32 triCount = 0;
@@ -376,9 +436,10 @@ public:
     {
       if(m_Header.size() >= 80)
       {
-        m_Filter->sendThreadSafeProgressMessage(MakeWarningVoidResult(
-            -27874, fmt::format("Warning: Writing STL File '{}'. Header was over the 80 characters supported by STL. Length of header: {}. Only the first 80 bytes will be written.",
-                                activePath.filename().string(), m_Header.length())));
+        result = MergeResults(std::move(result),
+                              MakeWarningVoidResult(-27874, fmt::format("Warning: Writing STL File '{}'. Header was over the 80 characters supported by STL. Length of header: {}. Only the "
+                                                                        "first 80 bytes will be written.",
+                                                                        activePath.filename().string(), m_Header.length())));
       }
 
       std::array<char, 80> stlFileHeader = {};
@@ -389,12 +450,23 @@ public:
         headLength = static_cast<size_t>(m_Header.length());
       }
 
-      // std::string c_str = header;
       memcpy(stlFileHeader.data(), m_Header.data(), headLength);
-      fwrite(stlFileHeader.data(), 1, 80, filePtr);
+      if(fwrite(stlFileHeader.data(), 1, 80, filePtr) != 80)
+      {
+        // Capture errno before fclose or message formatting can overwrite it.
+        const int savedErrno = errno;
+        fclose(filePtr);
+        return MakeErrorResult(-27880, fmt::format("Error writing STL file '{}': unable to write the 80 byte header. Cause: {}", activePath.string(), std::strerror(savedErrno)));
+      }
     }
 
-    fwrite(&triCount, 1, 4, filePtr);
+    if(fwrite(&triCount, 1, 4, filePtr) != 4)
+    {
+      // Capture errno before fclose or message formatting can overwrite it.
+      const int savedErrno = errno;
+      fclose(filePtr);
+      return MakeErrorResult(-27881, fmt::format("Error writing STL file '{}': unable to write the 4 byte triangle count placeholder. Cause: {}", activePath.string(), std::strerror(savedErrno)));
+    }
     triCount = 0;
 
     size_t totalWritten = 0;
@@ -415,32 +487,32 @@ public:
     {
       if(m_ShouldCancel)
       {
-        fseek(filePtr, 80L, SEEK_SET);
-        fwrite(reinterpret_cast<char*>(&triCount), 1, 4, filePtr);
-        fclose(filePtr);
-        return;
+        // The header warning collected above must survive any finalize error.
+        return MergeResults(std::move(result), FinalizeStlFile(filePtr, activePath, triCount));
       }
 
       // Start an overflow file when this file reaches its triangle limit.
       if(triCount == m_MaxTriangles)
       {
-        fseek(filePtr, 80L, SEEK_SET);
-        fwrite(reinterpret_cast<char*>(&triCount), 1, 4, filePtr);
-        fclose(filePtr);
+        Result<> finalizeResult = FinalizeStlFile(filePtr, activePath, triCount);
+        if(finalizeResult.invalid())
+        {
+          // The header warning collected above must survive any finalize error.
+          return MergeResults(std::move(result), std::move(finalizeResult));
+        }
 
         auto overflowFileResult = m_LimitBoundAtomicFile.createOverflowFile();
         if(overflowFileResult.invalid())
         {
           if(overflowFileResult.errors().empty())
           {
-            m_Filter->sendThreadSafeProgressMessage({MakeWarningVoidResult(-27878, "Issue creating overflow file")});
-            return;
+            return MergeResults(
+                std::move(result),
+                MakeErrorResult(-27878, fmt::format("Error creating the overflow STL file that follows '{}': the AtomicFile factory reported a failure without a cause.", activePath.string())));
           }
-          m_Filter->sendThreadSafeProgressMessage({MakeWarningVoidResult(overflowFileResult.errors()[0].code, overflowFileResult.errors()[0].message)});
-          return;
+          return MergeResults(std::move(result), ConvertResult(std::move(overflowFileResult)));
         }
-        write(m_LimitBoundAtomicFile.m_AtomicFilesList[overflowFileResult.value()].tempFilePath(), idx);
-        return;
+        return MergeResults(std::move(result), write(m_LimitBoundAtomicFile.m_AtomicFilesList[overflowFileResult.value()].tempFilePath(), idx));
       }
 
       const IGeometry::MeshIndexType triangle = m_TriangleIndices[idx];
@@ -490,17 +562,17 @@ public:
       totalWritten = fwrite(data.data(), 1, 50, filePtr);
       if(totalWritten != 50)
       {
+        // Capture errno before fclose or message formatting can overwrite it.
+        const int savedErrno = errno;
         fclose(filePtr);
-        m_Filter->sendThreadSafeProgressMessage({MakeWarningVoidResult(
-            -27873, fmt::format("Error Writing STL File '{}': Not enough bytes written for triangle {}. Only {} bytes written of 50 bytes", activePath.filename().string(), triCount, totalWritten))});
-        break;
+        return MakeErrorResult(-27885, fmt::format("Error writing STL file '{}': only {} of the 50 bytes for triangle {} were written. Cause: {}", activePath.string(), totalWritten, triCount,
+                                                   std::strerror(savedErrno)));
       }
       triCount++;
     }
 
-    fseek(filePtr, 80L, SEEK_SET);
-    fwrite(reinterpret_cast<char*>(&triCount), 1, 4, filePtr);
-    fclose(filePtr);
+    // The header warning collected above must survive any finalize error.
+    return MergeResults(std::move(result), FinalizeStlFile(filePtr, activePath, triCount));
   }
 
 private:
@@ -518,7 +590,7 @@ private:
 
 /**
  * @brief Writes one single-file sequence through parallel overflow tasks.
- * @param filter Receives thread-safe worker warnings.
+ * @param filter Holds the first worker error and every worker warning.
  * @param nTriangles Specifies total triangles.
  * @param header Specifies the STL header.
  * @param firstFile Identifies the first destination.
@@ -526,13 +598,14 @@ private:
  * @param vertices Provides flat XYZ coordinates.
  * @param maxTriangles Limits triangles in one file.
  * @param shouldCancel Stops before later triangles or commits when true.
- * @return The first AtomicFile creation, cancellation, or commit error, or success after all commits.
+ * @return The first AtomicFile creation, worker, cancellation, or commit error, or success
+ * carrying the worker warnings after all commits.
  *
  * Commits are sequential, so a later failure can leave earlier overflow files
  * published.
  */
-Result<> ExecuteSingleFileOverflow(WriteStlFile* filter, const IGeometry::MeshIndexType nTriangles, const std::string& header, const fs::path& firstFile, const TriStore& triangles,
-                                   const VertexStore& vertices, const usize maxTriangles, const std::atomic_bool& shouldCancel)
+[[nodiscard]] Result<> ExecuteSingleFileOverflow(WriteStlFile* filter, const IGeometry::MeshIndexType nTriangles, const std::string& header, const fs::path& firstFile, const TriStore& triangles,
+                                                 const VertexStore& vertices, const usize maxTriangles, const std::atomic_bool& shouldCancel)
 {
   const usize count = nTriangles / maxTriangles;
 
@@ -569,25 +642,36 @@ Result<> ExecuteSingleFileOverflow(WriteStlFile* filter, const IGeometry::MeshIn
 
   taskRunner.wait();
 
+  // No worker runs past wait(), so the latched result can be read without the mutex
+  // contention of another task. A truncated temporary file must never be committed.
+  Result<> workerResult = filter->getWorkerResult();
+  if(workerResult.invalid())
+  {
+    return workerResult;
+  }
+
   if(shouldCancel)
   {
-    return MakeErrorResult(-1, "Filter cancelled");
+    // The warnings latched by the workers must still reach the user.
+    return MergeResults(std::move(workerResult), MakeErrorResult(-1, "Filter cancelled"));
   }
 
   for(auto& atomicFile : limitedFile.m_AtomicFilesList)
   {
     if(shouldCancel)
     {
-      return MakeErrorResult(-1, "Filter cancelled");
+      // The warnings latched by the workers must still reach the user.
+      return MergeResults(std::move(workerResult), MakeErrorResult(-1, "Filter cancelled"));
     }
     Result<> commitResult = atomicFile.commit();
     if(commitResult.invalid())
     {
-      return commitResult;
+      // The warnings latched by the workers must still reach the user.
+      return MergeResults(std::move(workerResult), std::move(commitResult));
     }
   }
 
-  return {};
+  return workerResult;
 }
 } // namespace
 
@@ -636,28 +720,24 @@ Result<> WriteStlFile::operator()()
       return ConvertResult(std::move(atomicFileResult));
     }
     AtomicFile atomicFile = std::move(atomicFileResult.value());
+    Result<> writeResult = ::SingleWriteOutStl(atomicFile.tempFilePath(), nTriangles, header, triangles, vertices, m_ShouldCancel);
+    if(writeResult.invalid())
     {
-      auto result = ::SingleWriteOutStl(this, atomicFile.tempFilePath(), nTriangles, header, triangles, vertices, m_ShouldCancel);
-      if(result.invalid())
-      {
-        return result;
-      }
-      if(m_ShouldCancel)
-      {
-        return MakeErrorResult(-1, "Filter cancelled");
-      }
+      return writeResult;
     }
 
     if(m_ShouldCancel)
     {
-      return MakeErrorResult(-1, "Filter cancelled");
+      // The header warning collected by the write must still reach the user.
+      return MergeResults(std::move(writeResult), MakeErrorResult(-1, "Filter cancelled"));
     }
     Result<> commitResult = atomicFile.commit();
     if(commitResult.invalid())
     {
-      return commitResult;
+      // The header warning collected by the write must still reach the user.
+      return MergeResults(std::move(writeResult), std::move(commitResult));
     }
-    return {};
+    return writeResult;
   }
 
   const std::filesystem::path outputPath = m_InputValues->OutputStlDirectory;
@@ -696,7 +776,8 @@ Result<> WriteStlFile::operator()()
       {
         // Workers already running hold references to the block-local membership map, so join them before it goes out of scope.
         taskRunner.wait();
-        return ConvertResult(std::move(atomicFileResult));
+        // The warnings latched by the workers that already finished must still reach the user.
+        return MergeResults(getWorkerResult(), ConvertResult(std::move(atomicFileResult)));
       }
       fileList.emplace_back(std::move(atomicFileResult.value()));
 
@@ -704,7 +785,7 @@ Result<> WriteStlFile::operator()()
       taskRunner.execute(MultiWriteStlFileImpl(this, fileList[fileIndex], {"DREAM3D Generated For Feature ID " + StringUtilities::number(featureId)}, triangles, vertices, featureIds, featureId,
                                                featureTriangles, m_InputValues->HIDDEN_MaxTrianglesPerFile, m_ShouldCancel));
       fileIndex++;
-      if(m_HasErrors)
+      if(m_HasErrors.load())
       {
         break;
       }
@@ -740,7 +821,8 @@ Result<> WriteStlFile::operator()()
       {
         // Workers already running hold references to the block-local membership map, so join them before it goes out of scope.
         taskRunner.wait();
-        return ConvertResult(std::move(atomicFileResult));
+        // The warnings latched by the workers that already finished must still reach the user.
+        return MergeResults(getWorkerResult(), ConvertResult(std::move(atomicFileResult)));
       }
       fileList.emplace_back(std::move(atomicFileResult.value()));
 
@@ -748,7 +830,7 @@ Result<> WriteStlFile::operator()()
       taskRunner.execute(MultiWriteStlFileImpl(this, fileList[fileIndex], {"DREAM3D Generated For Feature ID " + StringUtilities::number(featureId) + " Phase " + StringUtilities::number(value)},
                                                triangles, vertices, featureIds, featureId, trianglesByFeature.at(featureId), m_InputValues->HIDDEN_MaxTrianglesPerFile, m_ShouldCancel));
       fileIndex++;
-      if(m_HasErrors)
+      if(m_HasErrors.load())
       {
         break;
       }
@@ -773,7 +855,8 @@ Result<> WriteStlFile::operator()()
       {
         // Workers already running hold references to the block-local membership map, so join them before it goes out of scope.
         taskRunner.wait();
-        return ConvertResult(std::move(atomicFileResult));
+        // The warnings latched by the workers that already finished must still reach the user.
+        return MergeResults(getWorkerResult(), ConvertResult(std::move(atomicFileResult)));
       }
       fileList.emplace_back(std::move(atomicFileResult.value()));
 
@@ -781,7 +864,7 @@ Result<> WriteStlFile::operator()()
       taskRunner.execute(MultiWriteStlFileImpl(this, fileList[fileIndex], {"DREAM3D Generated For Part Number " + StringUtilities::number(currentPartNumber)}, triangles, vertices, partNumbers,
                                                currentPartNumber, partTriangles, m_InputValues->HIDDEN_MaxTrianglesPerFile, m_ShouldCancel));
       fileIndex++;
-      if(m_HasErrors)
+      if(m_HasErrors.load())
       {
         break;
       }
@@ -789,9 +872,17 @@ Result<> WriteStlFile::operator()()
     taskRunner.wait();
   }
 
+  // No worker runs past the taskRunner.wait() calls above, so the latched result is
+  // stable here. A truncated temporary file must never be committed.
+  if(m_Result.invalid())
+  {
+    return m_Result;
+  }
+
   if(m_ShouldCancel)
   {
-    return MakeErrorResult(-1, "Filter cancelled");
+    // The warnings latched by the workers must still reach the user.
+    return MergeResults(getWorkerResult(), MakeErrorResult(-1, "Filter cancelled"));
   }
 
   // Publish each temporary file after all workers finish successfully.
@@ -801,12 +892,14 @@ Result<> WriteStlFile::operator()()
     {
       if(m_ShouldCancel)
       {
-        return MakeErrorResult(-1, "Filter cancelled");
+        // The warnings latched by the workers must still reach the user.
+        return MergeResults(getWorkerResult(), MakeErrorResult(-1, "Filter cancelled"));
       }
       Result<> commitResult = atomicFile.commit();
       if(commitResult.invalid())
       {
-        return commitResult;
+        // The warnings latched by the workers must still reach the user.
+        return MergeResults(getWorkerResult(), std::move(commitResult));
       }
     }
   }
@@ -817,11 +910,24 @@ Result<> WriteStlFile::operator()()
 void WriteStlFile::sendThreadSafeProgressMessage(Result<>&& result)
 {
   std::lock_guard<std::mutex> guard(m_ProgressMessage_Mutex);
-  if(result.invalid())
+
+  // Every worker warning reaches the user, including warnings that arrive after the
+  // first error.
+  WarningCollection& warnings = m_Result.warnings();
+  warnings.insert(warnings.end(), std::make_move_iterator(result.warnings().begin()), std::make_move_iterator(result.warnings().end()));
+
+  if(result.invalid() && !m_HasErrors.load())
   {
-    m_HasErrors = true;
-    m_Result = MergeResults(m_Result, result);
+    // The first error wins, so a later worker cannot bury the original cause.
+    m_HasErrors.store(true);
+    m_Result = MergeResults(std::move(m_Result), Result<>{{nonstd::make_unexpected(std::move(result.errors()))}});
   }
+}
+
+Result<> WriteStlFile::getWorkerResult() const
+{
+  std::lock_guard<std::mutex> guard(m_ProgressMessage_Mutex);
+  return m_Result;
 }
 
 // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast, cppcoreguidelines-pro-bounds-pointer-arithmetic)
