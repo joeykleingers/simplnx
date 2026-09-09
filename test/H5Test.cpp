@@ -21,6 +21,7 @@
 #include "simplnx/Utilities/ArrayCreationUtilities.hpp"
 #include "simplnx/Utilities/Parsing/DREAM3D/Dream3dIO.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/H5Support.hpp"
+#include "simplnx/Utilities/Parsing/HDF5/IO/DatasetIO.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/IO/FileIO.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/IO/GroupIO.hpp"
 #include "simplnx/Utilities/Parsing/Text/CsvParser.hpp"
@@ -40,6 +41,7 @@
 
 #include <hdf5.h>
 
+#include <mutex>
 #include <numeric>
 #include <string>
 #include <type_traits>
@@ -57,6 +59,85 @@ static_assert(std::is_same_v<hsize_t, nx::core::HDF5::SizeType>, "H5::SizeType m
 
 namespace
 {
+/**
+ * @struct DatatypeFixtureFile
+ * @brief Removes the datatype test file after its HDF5 wrappers have closed.
+ */
+struct DatatypeFixtureFile
+{
+  fs::path path;
+
+  ~DatatypeFixtureFile()
+  {
+    std::error_code error;
+    fs::remove(path, error);
+  }
+};
+
+/**
+ * @class CallerOwnedDatatype
+ * @brief Closes only the datatype identifier returned to this test by getTypeId().
+ */
+class CallerOwnedDatatype
+{
+public:
+  /**
+   * @brief Adopts the identifier that the getter transfers to its caller.
+   * @param identifier Supplies the owned datatype identifier.
+   */
+  explicit CallerOwnedDatatype(hid_t identifier)
+  : m_Id(identifier)
+  {
+  }
+
+  /**
+   * @brief Releases the test's own handle if an assertion skips its explicit close.
+   */
+  ~CallerOwnedDatatype()
+  {
+    if(m_Id >= 0)
+    {
+      static_cast<void>(close());
+    }
+  }
+
+  CallerOwnedDatatype(const CallerOwnedDatatype&) = delete;
+  CallerOwnedDatatype& operator=(const CallerOwnedDatatype&) = delete;
+
+  hid_t getId() const
+  {
+    return m_Id;
+  }
+
+  /**
+   * @brief Explicitly releases the caller-owned identifier under the existing HDF5 API lock.
+   * @return HDF5 close status.
+   */
+  herr_t close()
+  {
+    std::lock_guard<std::mutex> lock(HDF5::Support::ApiLock());
+    const herr_t status = H5Tclose(m_Id);
+    if(status >= 0)
+    {
+      m_Id = -1;
+    }
+    return status;
+  }
+
+private:
+  hid_t m_Id = -1;
+};
+
+/**
+ * @brief Counts datatype identifiers, including transient types without an associated file.
+ * @return Open datatype count, or a negative HDF5 error status.
+ */
+int64 CountHdf5DatatypeIds()
+{
+  std::lock_guard<std::mutex> lock(HDF5::Support::ApiLock());
+  return static_cast<int64>(H5Fget_obj_count(H5F_OBJ_ALL, H5F_OBJ_DATATYPE));
+}
+
 namespace Constants
 {
 const fs::path k_DataDir = "test/data";
@@ -1198,6 +1279,55 @@ TEST_CASE("DatasetIO: writeSpan bypasses chunking for small arrays even with com
   REQUIRE(info.has_value());
   REQUIRE(info->layout == nx::core::UnitTest::DatasetLayout::Contiguous);
   REQUIRE(info->hasDeflate == false);
+}
+
+TEST_CASE("DatasetIO: value getters release temporary datatype handles", "[simplnx][HDF5][DatasetIO][Lifetime]")
+{
+  const fs::path path = GetDataDir() / "dataset_type_getter_lifetime.h5";
+  fs::create_directories(path.parent_path());
+  DatatypeFixtureFile cleanup{path};
+  auto file = HDF5::FileIO::WriteFile(path);
+  REQUIRE(file.isValid());
+  auto dataset = file.createDataset("values");
+  const std::vector<int32> values{7, 11, 19, 23};
+  const auto written = dataset.writeSpan<int32>({values.size()}, nonstd::span<const int32>(values.data(), values.size()));
+  REQUIRE(written.valid());
+  REQUIRE(dataset.getId() >= 0);
+  const int64 baseline = CountHdf5DatatypeIds();
+  REQUIRE(baseline >= 0);
+  constexpr usize k_Repetitions = 32;
+
+  SECTION("getClassType returns the class without retaining temporary identifiers")
+  {
+    for(usize repetition = 0; repetition < k_Repetitions; ++repetition)
+    {
+      CHECK(dataset.getClassType() == H5T_INTEGER);
+    }
+    CHECK(CountHdf5DatatypeIds() == baseline);
+  }
+  SECTION("getTypeSize returns the scalar size without retaining temporary identifiers")
+  {
+    for(usize repetition = 0; repetition < k_Repetitions; ++repetition)
+    {
+      CHECK(dataset.getTypeSize() == sizeof(int32));
+    }
+    CHECK(CountHdf5DatatypeIds() == baseline);
+  }
+  SECTION("getTypeId preserves caller ownership until explicit close")
+  {
+    CallerOwnedDatatype type(dataset.getTypeId());
+    REQUIRE(type.getId() >= 0);
+    {
+      // Getter calls lock themselves. Only direct HDF5 queries belong inside this leaf scope.
+      std::lock_guard<std::mutex> lock(HDF5::Support::ApiLock());
+      CHECK(H5Iis_valid(type.getId()) > 0);
+      CHECK(H5Tget_class(type.getId()) == H5T_INTEGER);
+      CHECK(H5Tget_size(type.getId()) == sizeof(int32));
+    }
+    CHECK(CountHdf5DatatypeIds() == baseline + 1);
+    REQUIRE(type.close() >= 0);
+    CHECK(CountHdf5DatatypeIds() == baseline);
+  }
 }
 
 TEST_CASE("HDF5 ApiLock serializes access via H5SUPPORT_MUTEX_LOCK", "[simplnx][HDF5]")

@@ -352,18 +352,34 @@ hid_t DatasetIO::getTypeId() const
 
 hid_t DatasetIO::getClassType() const
 {
-  // getTypeId() self-locks; resolve it before the leaf-locked bare H5Tget_class.
-  auto typeId = getTypeId();
+  // getId() can open the dataset. Resolve it before the non-recursive HDF5 API lock.
+  const hid_t identifier = getId();
   std::lock_guard<std::mutex> hdf5Lock(Support::ApiLock());
-  return H5Tget_class(typeId);
+  const hid_t typeId = H5Dget_type(identifier);
+  if(typeId < 0)
+  {
+    return H5T_NO_CLASS;
+  }
+  // The owned temporary stays inside one leaf scope, with no intervening lock acquisition.
+  const H5T_class_t classType = H5Tget_class(typeId);
+  H5Tclose(typeId);
+  return classType;
 }
 
 size_t DatasetIO::getTypeSize() const
 {
-  // getTypeId() self-locks; resolve it before the leaf-locked bare H5Tget_size.
-  auto typeId = getTypeId();
+  // getId() can open the dataset. Resolve it before the non-recursive HDF5 API lock.
+  const hid_t identifier = getId();
   std::lock_guard<std::mutex> hdf5Lock(Support::ApiLock());
-  return H5Tget_size(typeId);
+  const hid_t typeId = H5Dget_type(identifier);
+  if(typeId < 0)
+  {
+    return 0;
+  }
+  // The owned temporary stays inside one leaf scope, with no intervening lock acquisition.
+  const size_t typeSize = H5Tget_size(typeId);
+  H5Tclose(typeId);
+  return typeSize;
 }
 
 #if 0
