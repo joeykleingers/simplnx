@@ -86,10 +86,9 @@ public:
 
   /**
    * @brief Computes the GBCD histogram.
-   * @return Success.
+   * @return Success, or an error for an invalid participating Phase or Laue index or bulk I/O.
    *
-   * Cancellation returns success with completed chunks preserved. Current bulk-
-   * I/O Result values are not inspected.
+   * Cancellation returns success with completed chunks preserved.
    */
   Result<> operator()();
 

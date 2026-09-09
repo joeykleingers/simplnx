@@ -212,3 +212,54 @@ TEST_CASE("OrientationAnalysis::ComputeGBCDPoleFigureFilter: SIMPL Backwards Com
     }
   }
 }
+
+TEST_CASE("OrientationAnalysis::ComputeGBCDPoleFigureFilter: Phase and Laue Index Bounds", "[OrientationAnalysis][ComputeGBCDPoleFigureFilter]")
+{
+  UnitTest::LoadPlugins();
+
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  CAPTURE(scenario);
+  UnitTest::AlgorithmTestScope scope(scenario);
+
+  const UnitTest::TestFileSentinel testDataSentinel(unit_test::k_TestFilesDir, "6_6_Small_IN100_GBCD.tar.gz", "6_6_Small_IN100_GBCD");
+  const fs::path inputFile = fs::path(unit_test::k_TestFilesDir.view()) / "6_6_Small_IN100_GBCD" / "6_6_Small_IN100_GBCD.dream3d";
+  DataStructure dataStructure = UnitTest::LoadDataStructure(inputFile);
+
+  const DataPath triangleDataContainerPath({Constants::k_TriangleDataContainerName});
+  const DataPath gbcdArrayPath = triangleDataContainerPath.createChildPath("FaceEnsembleData").createChildPath(Constants::k_GBCD_Name);
+  const DataPath crystalStructuresPath = DataPath({Constants::k_SmallIN100}).createChildPath(Constants::k_Phase_Data).createChildPath(Constants::k_CrystalStructures);
+  const DataPath shortCrystalStructuresPath({"Short Crystal Structures"});
+  auto* shortCrystalStructuresArrayPtr = UnitTest::CreateTestDataArray<uint32>(dataStructure, shortCrystalStructuresPath.getTargetName(), {1}, {1});
+  (*shortCrystalStructuresArrayPtr)[0] = 999U;
+
+  ComputeGBCDPoleFigureFilter filter;
+  Arguments args = filter.getDefaultArguments();
+  args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_PhaseOfInterest_Key, std::make_any<int32>(1));
+  args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_MisorientationRotation_Key, std::make_any<VectorFloat32Parameter::ValueType>({60.0F, 1.0F, 1.0F, 1.0F}));
+  args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_OutputImageDimension_Key, std::make_any<int32>(4));
+  args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_GBCDArrayPath_Key, std::make_any<DataPath>(gbcdArrayPath));
+  args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_CrystalStructuresArrayPath_Key, std::make_any<DataPath>(crystalStructuresPath));
+  args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_ImageGeometryName_Key, std::make_any<DataPath>(DataPath({"Bounds Pole Figure"})));
+  args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_CellAttributeMatrixName_Key, std::make_any<std::string>("Cell Data"));
+  args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_CellIntensityArrayName_Key, std::make_any<std::string>("Intensity"));
+
+  SECTION("Phase missing from Crystal Structures returns an error")
+  {
+    args.insertOrAssign(ComputeGBCDPoleFigureFilter::k_CrystalStructuresArrayPath_Key, std::make_any<DataPath>(shortCrystalStructuresPath));
+    auto executeResult = scope.executeFilter(filter, dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -34643);
+  }
+
+  SECTION("Invalid Laue index returns an error")
+  {
+    REQUIRE_NOTHROW(dataStructure.getDataRefAs<UInt32Array>(crystalStructuresPath));
+    auto& crystalStructuresArrayRef = dataStructure.getDataRefAs<UInt32Array>(crystalStructuresPath);
+    crystalStructuresArrayRef.getDataStoreRef()[1] = 999U;
+    auto executeResult = scope.executeFilter(filter, dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -34644);
+  }
+
+  UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}

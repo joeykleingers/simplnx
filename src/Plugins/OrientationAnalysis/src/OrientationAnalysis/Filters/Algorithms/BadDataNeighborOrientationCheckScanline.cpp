@@ -20,25 +20,25 @@ namespace
  * @param neighborSliceIdx Identifies the neighbor in its slice buffer.
  * @param neighborQuats Supplies four-component neighbor quaternions.
  * @param neighborPhases Supplies neighbor phase IDs.
- * @param curPhase Identifies the target phase.
- * @param laueClass Identifies the target crystal structure.
+ * @param currentPhaseIdx Identifies the target phase.
+ * @param currentLaueIndex Identifies the target crystal structure.
  * @param quat1 Supplies the positive-orientation target quaternion.
  * @param misorientationTolerance Specifies the strict radian limit.
  * @param orientationOps Supplies crystal-structure symmetry operators.
  * @return True if phase and strict misorientation tests pass.
  */
-inline bool isMisorientationMatch(int64 neighborSliceIdx, const std::vector<float32>& neighborQuats, const std::vector<int32>& neighborPhases, int32 curPhase, uint32 laueClass,
+inline bool isMisorientationMatch(int64 neighborSliceIdx, const std::vector<float32>& neighborQuats, const std::vector<int32>& neighborPhases, int32 currentPhaseIdx, uint32 currentLaueIndex,
                                   const ebsdlib::QuatD& quat1, float64 misorientationTolerance, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps)
 {
-  const int32 neighborPhase = neighborPhases[neighborSliceIdx];
-  if(curPhase != neighborPhase || curPhase <= 0)
+  const int32 neighborCellPhaseIdx = neighborPhases[neighborSliceIdx];
+  if(currentPhaseIdx != neighborCellPhaseIdx || currentPhaseIdx <= 0)
   {
     return false;
   }
   const int64 nqOffset = neighborSliceIdx * 4;
   ebsdlib::QuatD quat2(neighborQuats[nqOffset], neighborQuats[nqOffset + 1], neighborQuats[nqOffset + 2], neighborQuats[nqOffset + 3]);
   quat2.positiveOrientation();
-  ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClass]->calculateMisorientation(quat1, quat2);
+  ebsdlib::AxisAngleDType axisAngle = orientationOps[currentLaueIndex]->calculateMisorientation(quat1, quat2);
   return axisAngle[3] < misorientationTolerance;
 }
 
@@ -60,8 +60,8 @@ inline bool isMisorientationMatch(int64 neighborSliceIdx, const std::vector<floa
  * @param prevMask Supplies the previous mask slice.
  * @param curMask Supplies the current mask slice.
  * @param nextMask Supplies the next mask slice.
- * @param curPhase Identifies the target phase.
- * @param laueClass Identifies the target crystal structure.
+ * @param currentPhaseIdx Identifies the target phase.
+ * @param currentLaueIndex Identifies the target crystal structure.
  * @param quat1 Supplies the target quaternion.
  * @param misorientationTolerance Specifies the strict radian limit.
  * @param orientationOps Supplies crystal-structure symmetry operators.
@@ -69,31 +69,32 @@ inline bool isMisorientationMatch(int64 neighborSliceIdx, const std::vector<floa
  */
 inline int32 countMatchingNeighbors(int64 xIdx, int64 yIdx, int64 zIdx, int64 dimX, int64 dimY, int64 dimZ, int64 sliceIndex, const std::vector<float32>& prevQuats,
                                     const std::vector<float32>& curQuats, const std::vector<float32>& nextQuats, const std::vector<int32>& prevPhases, const std::vector<int32>& curPhases,
-                                    const std::vector<int32>& nextPhases, const std::vector<uint8>& prevMask, const std::vector<uint8>& curMask, const std::vector<uint8>& nextMask, int32 curPhase,
-                                    uint32 laueClass, const ebsdlib::QuatD& quat1, float64 misorientationTolerance, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps)
+                                    const std::vector<int32>& nextPhases, const std::vector<uint8>& prevMask, const std::vector<uint8>& curMask, const std::vector<uint8>& nextMask,
+                                    int32 currentPhaseIdx, uint32 currentLaueIndex, const ebsdlib::QuatD& quat1, float64 misorientationTolerance,
+                                    const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps)
 {
   int32 count = 0;
-  if(xIdx > 0 && curMask[sliceIndex - 1] && isMisorientationMatch(sliceIndex - 1, curQuats, curPhases, curPhase, laueClass, quat1, misorientationTolerance, orientationOps))
+  if(xIdx > 0 && curMask[sliceIndex - 1] && isMisorientationMatch(sliceIndex - 1, curQuats, curPhases, currentPhaseIdx, currentLaueIndex, quat1, misorientationTolerance, orientationOps))
   {
     count++;
   }
-  if(xIdx < dimX - 1 && curMask[sliceIndex + 1] && isMisorientationMatch(sliceIndex + 1, curQuats, curPhases, curPhase, laueClass, quat1, misorientationTolerance, orientationOps))
+  if(xIdx < dimX - 1 && curMask[sliceIndex + 1] && isMisorientationMatch(sliceIndex + 1, curQuats, curPhases, currentPhaseIdx, currentLaueIndex, quat1, misorientationTolerance, orientationOps))
   {
     count++;
   }
-  if(yIdx > 0 && curMask[sliceIndex - dimX] && isMisorientationMatch(sliceIndex - dimX, curQuats, curPhases, curPhase, laueClass, quat1, misorientationTolerance, orientationOps))
+  if(yIdx > 0 && curMask[sliceIndex - dimX] && isMisorientationMatch(sliceIndex - dimX, curQuats, curPhases, currentPhaseIdx, currentLaueIndex, quat1, misorientationTolerance, orientationOps))
   {
     count++;
   }
-  if(yIdx < dimY - 1 && curMask[sliceIndex + dimX] && isMisorientationMatch(sliceIndex + dimX, curQuats, curPhases, curPhase, laueClass, quat1, misorientationTolerance, orientationOps))
+  if(yIdx < dimY - 1 && curMask[sliceIndex + dimX] && isMisorientationMatch(sliceIndex + dimX, curQuats, curPhases, currentPhaseIdx, currentLaueIndex, quat1, misorientationTolerance, orientationOps))
   {
     count++;
   }
-  if(zIdx > 0 && prevMask[sliceIndex] && isMisorientationMatch(sliceIndex, prevQuats, prevPhases, curPhase, laueClass, quat1, misorientationTolerance, orientationOps))
+  if(zIdx > 0 && prevMask[sliceIndex] && isMisorientationMatch(sliceIndex, prevQuats, prevPhases, currentPhaseIdx, currentLaueIndex, quat1, misorientationTolerance, orientationOps))
   {
     count++;
   }
-  if(zIdx < dimZ - 1 && nextMask[sliceIndex] && isMisorientationMatch(sliceIndex, nextQuats, nextPhases, curPhase, laueClass, quat1, misorientationTolerance, orientationOps))
+  if(zIdx < dimZ - 1 && nextMask[sliceIndex] && isMisorientationMatch(sliceIndex, nextQuats, nextPhases, currentPhaseIdx, currentLaueIndex, quat1, misorientationTolerance, orientationOps))
   {
     count++;
   }
@@ -292,16 +293,27 @@ Result<> BadDataNeighborOrientationCheckScanline::operator()()
             const int64 quatOffset = sliceIndex * 4;
             ebsdlib::QuatD quat1(curQuats[quatOffset], curQuats[quatOffset + 1], curQuats[quatOffset + 2], curQuats[quatOffset + 3]);
             quat1.positiveOrientation();
-            const int32 curPhase = curPhases[sliceIndex];
-            const uint32 laueClass = localCrystalStructures[curPhase];
+            const int32 currentPhaseIdx = curPhases[sliceIndex];
+            if(currentPhaseIdx <= 0)
+            {
+              continue;
+            }
+            if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+            {
+              const int64 voxelIdx = zIdx * xyStride + sliceIndex;
+              return MakeErrorResult(-54902, fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                         m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, voxelIdx, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                         numCrystalStructures, numCrystalStructures));
+            }
+            const uint32 currentLaueIndex = localCrystalStructures[currentPhaseIdx];
             // UnknownCrystalStructure has no LaueOps entry and cannot participate in a match.
-            if(laueClass >= numOrientationOps)
+            if(currentLaueIndex >= numOrientationOps)
             {
               continue;
             }
 
             int32 count = countMatchingNeighbors(xIdx, yIdx, zIdx, dimX, dimY, dimZ, sliceIndex, prevQuats, curQuats, nextQuats, prevPhases, curPhases, nextPhases, prevMask, curMask, nextMask,
-                                                 curPhase, laueClass, quat1, misorientationTolerance, orientationOps);
+                                                 currentPhaseIdx, currentLaueIndex, quat1, misorientationTolerance, orientationOps);
 
             if(count >= currentLevel)
             {

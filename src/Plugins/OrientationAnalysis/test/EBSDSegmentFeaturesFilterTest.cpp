@@ -104,6 +104,78 @@ TEST_CASE("OrientationAnalysis::EBSDSegmentFeatures: No Valid Voxels Returns Err
   });
 }
 
+TEST_CASE("OrientationAnalysis::EBSDSegmentFeatures: Phase Index Bounds", "[OrientationAnalysis][EBSDSegmentFeatures]")
+{
+  UnitTest::LoadPlugins();
+
+  const UnitTest::PreferencesSentinel preferencesSentinel(DataStorageMode::ForceOutOfCore, 1);
+  const ShapeType cellShape = {1, 1, 2};
+  const std::array<usize, 3> dimensions = {2, 1, 1};
+
+  DataStructure dataStructure;
+  auto* cellDataPtr = BuildSegmentFeaturesTestGeometry(dataStructure, dimensions, std::string(k_GeomName), std::string(k_CellDataName));
+  REQUIRE(cellDataPtr != nullptr);
+  REQUIRE_NOTHROW(dataStructure.getDataRefAs<ImageGeom>(k_GeomPath));
+  auto& imageGeomRef = dataStructure.getDataRefAs<ImageGeom>(k_GeomPath);
+
+  auto quatsStore = DataStoreUtilities::CreateDataStore<float32>(dataStructure, k_QuatsPath, cellShape, {4}, IDataAction::Mode::Execute);
+  auto* quatsArrayPtr = Float32Array::Create(dataStructure, k_QuatsPath.getTargetName(), quatsStore, cellDataPtr->getId());
+  REQUIRE(quatsArrayPtr != nullptr);
+  for(usize voxelIdx = 0; voxelIdx < 2; voxelIdx++)
+  {
+    quatsStore->setComponent(voxelIdx, 0, 0.0F);
+    quatsStore->setComponent(voxelIdx, 1, 0.0F);
+    quatsStore->setComponent(voxelIdx, 2, 0.0F);
+    quatsStore->setComponent(voxelIdx, 3, 1.0F);
+  }
+
+  auto cellPhasesStore = DataStoreUtilities::CreateDataStore<int32>(dataStructure, k_PhasesPath, cellShape, {1}, IDataAction::Mode::Execute);
+  auto* cellPhasesArrayPtr = Int32Array::Create(dataStructure, k_PhasesPath.getTargetName(), cellPhasesStore, cellDataPtr->getId());
+  REQUIRE(cellPhasesArrayPtr != nullptr);
+  cellPhasesStore->fill(1);
+
+  auto maskStore = DataStoreUtilities::CreateDataStore<uint8>(dataStructure, k_MaskPath, cellShape, {1}, IDataAction::Mode::Execute);
+  auto* maskArrayPtr = UInt8Array::Create(dataStructure, k_MaskPath.getTargetName(), maskStore, cellDataPtr->getId());
+  REQUIRE(maskArrayPtr != nullptr);
+  maskStore->fill(1);
+
+  const ShapeType ensembleShape = {2};
+  auto* ensembleDataPtr = AttributeMatrix::Create(dataStructure, k_EnsembleName, ensembleShape, imageGeomRef.getId());
+  REQUIRE(ensembleDataPtr != nullptr);
+  auto crystalStructuresStore = DataStoreUtilities::CreateDataStore<uint32>(dataStructure, k_CrystalStructuresPath, ensembleShape, {1}, IDataAction::Mode::Execute);
+  auto* crystalStructuresArrayPtr = UInt32Array::Create(dataStructure, k_CrystalStructuresPath.getTargetName(), crystalStructuresStore, ensembleDataPtr->getId());
+  REQUIRE(crystalStructuresArrayPtr != nullptr);
+  (*crystalStructuresStore)[0] = ebsdlib::CrystalStructure::UnknownCrystalStructure;
+  (*crystalStructuresStore)[1] = ebsdlib::CrystalStructure::Cubic_High;
+
+  if(Application::Instance()->getIOManager("HDF5-OOC") != nullptr)
+  {
+    REQUIRE(cellPhasesStore->getDataFormat() == "HDF5-OOC");
+  }
+
+  EBSDSegmentFeaturesFilter filter;
+  Arguments args;
+  SetupArgs(args, /*useMask=*/true);
+
+  SECTION("Participating Phase returns an error")
+  {
+    (*cellPhasesStore)[1] = static_cast<int32>(crystalStructuresStore->getNumberOfTuples());
+    auto executeResult = filter.execute(dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -485092);
+  }
+
+  SECTION("Masked Phase is ignored")
+  {
+    (*cellPhasesStore)[1] = static_cast<int32>(crystalStructuresStore->getNumberOfTuples());
+    (*maskStore)[1] = 0;
+    auto executeResult = filter.execute(dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
+  }
+
+  UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}
+
 TEST_CASE("OrientationAnalysis::EBSDSegmentFeatures: Randomize Feature IDs", "[OrientationAnalysis][EBSDSegmentFeatures]")
 {
   UnitTest::LoadPlugins();

@@ -69,27 +69,48 @@ Result<int32> MergeTwins::getSeed(int32 newFid)
 }
 
 // -----------------------------------------------------------------------------
-bool MergeTwins::determineGrouping(int32 referenceFeature, int32 neighborFeature, int32 newFid)
+Result<bool> MergeTwins::determineGrouping(int32 referenceFeatureIdx, int32 neighborFeatureIdx, int32 newFid)
 {
-  auto& phases = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath)->getDataStoreRef();
-  auto& featureParentIds = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeatureParentIdsArrayPath)->getDataStoreRef();
-  auto& crystalStructures = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath)->getDataStoreRef();
-  auto& avgQuats = m_DataStructure.getDataAs<Float32Array>(m_InputValues->AvgQuatsArrayPath)->getDataStoreRef();
-  auto axisToleranceRad = m_InputValues->AxisTolerance * numbers::pi_v<float32> / 180.0f;
+  const auto& featurePhasesStoreRef = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath)->getDataStoreRef();
+  auto& featureParentIdsStoreRef = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeatureParentIdsArrayPath)->getDataStoreRef();
+  const auto& crystalStructuresStoreRef = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath)->getDataStoreRef();
+  const auto& avgQuatsStoreRef = m_DataStructure.getDataAs<Float32Array>(m_InputValues->AvgQuatsArrayPath)->getDataStoreRef();
+  const float32 axisToleranceRad = m_InputValues->AxisTolerance * numbers::pi_v<float32> / 180.0F;
 
   bool twin = false;
 
-  if(featureParentIds[neighborFeature] == -1 && phases[referenceFeature] > 0 && phases[neighborFeature] > 0)
+  const int32 currentPhaseIdx = featurePhasesStoreRef[referenceFeatureIdx];
+  const int32 neighborFeaturePhaseIdx = featurePhasesStoreRef[neighborFeatureIdx];
+  if(featureParentIdsStoreRef[neighborFeatureIdx] == -1 && currentPhaseIdx > 0 && neighborFeaturePhaseIdx > 0)
   {
-    uint32 laueClass = crystalStructures[phases[referenceFeature]];
-
-    ebsdlib::QuatD q1(avgQuats[referenceFeature * 4], avgQuats[referenceFeature * 4 + 1], avgQuats[referenceFeature * 4 + 2], avgQuats[referenceFeature * 4 + 3]);
-    ebsdlib::QuatD q2(avgQuats[neighborFeature * 4], avgQuats[neighborFeature * 4 + 1], avgQuats[neighborFeature * 4 + 2], avgQuats[neighborFeature * 4 + 3]);
-
-    uint32 phase2 = crystalStructures[phases[neighborFeature]];
-    if(laueClass == phase2 && (laueClass == ebsdlib::CrystalStructure::Cubic_High))
+    const usize numCrystalStructures = crystalStructuresStoreRef.getNumberOfTuples();
+    if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
     {
-      ebsdlib::AxisAngleDType axisAngle = m_OrientationOps[laueClass]->calculateMisorientation(q1, q2);
+      return MakeErrorResult<bool>(
+          -23502,
+          fmt::format("Feature Phases array '{}' has value {} at reference Feature index {}, but Crystal Structures array '{}' contains {} tuples. Valid positive Phase indices are in [1, {}).",
+                      m_InputValues->FeaturePhasesArrayPath.toString(), currentPhaseIdx, referenceFeatureIdx, m_InputValues->CrystalStructuresArrayPath.toString(), numCrystalStructures,
+                      numCrystalStructures));
+    }
+    if(static_cast<usize>(neighborFeaturePhaseIdx) >= numCrystalStructures)
+    {
+      return MakeErrorResult<bool>(
+          -23502, fmt::format("Feature Phases array '{}' has value {} at neighbor Feature index {}, but Crystal Structures array '{}' contains {} tuples. Valid positive Phase indices are in [1, {}).",
+                              m_InputValues->FeaturePhasesArrayPath.toString(), neighborFeaturePhaseIdx, neighborFeatureIdx, m_InputValues->CrystalStructuresArrayPath.toString(), numCrystalStructures,
+                              numCrystalStructures));
+    }
+
+    const uint32 currentLaueIndex = crystalStructuresStoreRef[currentPhaseIdx];
+
+    const ebsdlib::QuatD q1(avgQuatsStoreRef[referenceFeatureIdx * 4], avgQuatsStoreRef[referenceFeatureIdx * 4 + 1], avgQuatsStoreRef[referenceFeatureIdx * 4 + 2],
+                            avgQuatsStoreRef[referenceFeatureIdx * 4 + 3]);
+    const ebsdlib::QuatD q2(avgQuatsStoreRef[neighborFeatureIdx * 4], avgQuatsStoreRef[neighborFeatureIdx * 4 + 1], avgQuatsStoreRef[neighborFeatureIdx * 4 + 2],
+                            avgQuatsStoreRef[neighborFeatureIdx * 4 + 3]);
+
+    const uint32 neighborLaueIndex = crystalStructuresStoreRef[neighborFeaturePhaseIdx];
+    if(currentLaueIndex == neighborLaueIndex && currentLaueIndex == ebsdlib::CrystalStructure::Cubic_High)
+    {
+      ebsdlib::AxisAngleDType axisAngle = m_OrientationOps[currentLaueIndex]->calculateMisorientation(q1, q2);
       double w = axisAngle[3];
       w *= (180.0f / numbers::pi);
       double axisDiff111 = std::acos(std::fabs(axisAngle[0]) * 0.57735f + std::fabs(axisAngle[1]) * 0.57735f + fabs(axisAngle[2]) * 0.57735f);
@@ -100,12 +121,12 @@ bool MergeTwins::determineGrouping(int32 referenceFeature, int32 neighborFeature
       }
       if(twin)
       {
-        featureParentIds[neighborFeature] = newFid;
-        return true;
+        featureParentIdsStoreRef[neighborFeatureIdx] = newFid;
+        return {true};
       }
     }
   }
-  return false;
+  return {false};
 }
 
 Result<> MergeTwins::groupFeaturesExecute()
@@ -116,7 +137,7 @@ Result<> MergeTwins::groupFeaturesExecute()
   int32_t parentCount = 0;
   int32_t featureSeed = 0;
   int32_t list1size = 0, list2size = 0, listsize = 0;
-  int32_t neigh = 0;
+  int32 neighborFeatureIdx = 0;
 
   while(featureSeed >= 0)
   {
@@ -136,37 +157,42 @@ Result<> MergeTwins::groupFeaturesExecute()
     if(featureSeed >= 0)
     {
       groupList.push_back(featureSeed);
-      for(std::vector<int32_t>::size_type j = 0; j < groupList.size(); j++)
+      for(std::vector<int32_t>::size_type groupListIdx = 0; groupListIdx < groupList.size(); groupListIdx++)
       {
-        int32_t firstFeature = groupList[j];
-        list1size = int32_t(conNeighborList[firstFeature].size());
+        const int32 currentFeatureIdx = groupList[groupListIdx];
+        list1size = int32_t(conNeighborList[currentFeatureIdx].size());
 
-        for(int32_t k = 0; k < 2; k++)
+        for(int32 neighborListIdx = 0; neighborListIdx < 2; neighborListIdx++)
         {
-          if(k == 0)
+          if(neighborListIdx == 0)
           {
             listsize = list1size;
           }
-          else if(k == 1)
+          else if(neighborListIdx == 1)
           {
             listsize = list2size;
           }
-          for(int32_t l = 0; l < listsize; l++)
+          for(int32 neighborIdx = 0; neighborIdx < listsize; neighborIdx++)
           {
-            if(k == 0)
+            if(neighborListIdx == 0)
             {
-              neigh = conNeighborList[firstFeature][l];
+              neighborFeatureIdx = conNeighborList[currentFeatureIdx][neighborIdx];
             }
-            else if(k == 1)
+            else if(neighborListIdx == 1)
             {
             }
-            if(neigh != firstFeature)
+            if(neighborFeatureIdx != currentFeatureIdx)
             {
-              if(determineGrouping(firstFeature, neigh, parentCount))
+              Result<bool> groupingResult = determineGrouping(currentFeatureIdx, neighborFeatureIdx, parentCount);
+              if(groupingResult.invalid())
+              {
+                return ConvertResult(std::move(groupingResult));
+              }
+              if(groupingResult.value())
               {
                 if(!m_PatchGrouping)
                 {
-                  groupList.push_back(neigh);
+                  groupList.push_back(neighborFeatureIdx);
                 }
               }
             }

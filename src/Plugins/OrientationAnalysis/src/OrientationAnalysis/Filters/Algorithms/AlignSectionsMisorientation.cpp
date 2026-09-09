@@ -81,6 +81,7 @@ Result<> AlignSectionsMisorientation::findShifts(std::vector<int64>& xShifts, st
   const auto& cellPhases = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->cellPhasesArrayPath);
   const auto& quats = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->quatsArrayPath);
   const auto& crystalStructures = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->crystalStructuresArrayPath);
+  const usize numCrystalStructures = crystalStructures.getNumberOfTuples();
 
   SizeVec3 udims = gridGeom->getDimensions();
 
@@ -137,7 +138,7 @@ Result<> AlignSectionsMisorientation::findShifts(std::vector<int64>& xShifts, st
             int64 xIdx = k + oldxshift + halfDim0;
             int64 yIdx = j + oldyshift + halfDim1;
             int64 idx = (dims[0] * yIdx) + xIdx;
-            if(!misorients[idx] && llabs(k + oldxshift) < halfDim0 && llabs(j + oldyshift) < halfDim1)
+            if(llabs(k + oldxshift) < halfDim0 && llabs(j + oldyshift) < halfDim1 && !misorients[idx])
             {
               for(int64 l = 0; l < dims[1]; l = l + 4)
               {
@@ -151,15 +152,33 @@ Result<> AlignSectionsMisorientation::findShifts(std::vector<int64>& xShifts, st
                     if(!m_InputValues->UseMask || maskCompare->bothTrue(refposition, curposition))
                     {
                       float32 angle = std::numeric_limits<float32>::max();
-                      if(cellPhases[refposition] > 0 && cellPhases[curposition] > 0)
+                      const int32 referencePhaseIdx = cellPhases[refposition];
+                      const int32 currentPhaseIdx = cellPhases[curposition];
+                      if(referencePhaseIdx > 0 && currentPhaseIdx > 0)
                       {
-                        ebsdlib::QuatD quat1(quats[refposition * 4], quats[refposition * 4 + 1], quats[refposition * 4 + 2], quats[refposition * 4 + 3]); // Makes a copy into voxQuat!!!!
-                        auto laueClass1 = static_cast<int32>(crystalStructures[cellPhases[refposition]]);
-                        ebsdlib::QuatD quat2(quats[curposition * 4], quats[curposition * 4 + 1], quats[curposition * 4 + 2], quats[curposition * 4 + 3]); // Makes a copy into voxQuat!!!!
-                        auto laueClass2 = static_cast<int32>(crystalStructures[cellPhases[curposition]]);
-                        if(laueClass1 == laueClass2 && laueClass1 < static_cast<uint32>(orientationOps.size()))
+                        if(static_cast<usize>(referencePhaseIdx) >= numCrystalStructures)
                         {
-                          ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClass1]->calculateMisorientation(quat1, quat2);
+                          return MakeErrorResult(-53901,
+                                                 fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in "
+                                                             "[0, {}).",
+                                                             m_InputValues->cellPhasesArrayPath.toString(), referencePhaseIdx, refposition, m_InputValues->crystalStructuresArrayPath.toString(),
+                                                             numCrystalStructures, numCrystalStructures));
+                        }
+                        if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+                        {
+                          return MakeErrorResult(-53901,
+                                                 fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in "
+                                                             "[0, {}).",
+                                                             m_InputValues->cellPhasesArrayPath.toString(), currentPhaseIdx, curposition, m_InputValues->crystalStructuresArrayPath.toString(),
+                                                             numCrystalStructures, numCrystalStructures));
+                        }
+                        ebsdlib::QuatD quat1(quats[refposition * 4], quats[refposition * 4 + 1], quats[refposition * 4 + 2], quats[refposition * 4 + 3]); // Makes a copy into voxQuat!!!!
+                        const uint32 referenceLaueIndex = crystalStructures[referencePhaseIdx];
+                        ebsdlib::QuatD quat2(quats[curposition * 4], quats[curposition * 4 + 1], quats[curposition * 4 + 2], quats[curposition * 4 + 3]); // Makes a copy into voxQuat!!!!
+                        const uint32 currentLaueIndex = crystalStructures[currentPhaseIdx];
+                        if(referenceLaueIndex == currentLaueIndex && referenceLaueIndex < orientationOps.size())
+                        {
+                          ebsdlib::AxisAngleDType axisAngle = orientationOps[referenceLaueIndex]->calculateMisorientation(quat1, quat2);
                           angle = axisAngle[3];
                         }
                       }
@@ -243,7 +262,7 @@ Result<> AlignSectionsMisorientation::findShifts(std::vector<int64>& xShifts, st
             int64 xIdx = k + oldxshift + halfDim0;
             int64 yIdx = j + oldyshift + halfDim1;
             int64 idx = (dims[0] * yIdx) + xIdx;
-            if(!misorients[idx] && llabs(k + oldxshift) < halfDim0 && llabs(j + oldyshift) < halfDim1)
+            if(llabs(k + oldxshift) < halfDim0 && llabs(j + oldyshift) < halfDim1 && !misorients[idx])
             {
               for(int64 l = 0; l < dims[1]; l = l + 4)
               {
@@ -257,15 +276,33 @@ Result<> AlignSectionsMisorientation::findShifts(std::vector<int64>& xShifts, st
                     if(!m_InputValues->UseMask || maskCompare->bothTrue(refposition, curposition))
                     {
                       float32 angle = std::numeric_limits<float32>::max();
-                      if(cellPhases[refposition] > 0 && cellPhases[curposition] > 0)
+                      const int32 referencePhaseIdx = cellPhases[refposition];
+                      const int32 currentPhaseIdx = cellPhases[curposition];
+                      if(referencePhaseIdx > 0 && currentPhaseIdx > 0)
                       {
-                        ebsdlib::QuatD quat1(quats[refposition * 4], quats[refposition * 4 + 1], quats[refposition * 4 + 2], quats[refposition * 4 + 3]); // Makes a copy into voxQuat!!!!
-                        auto laueClass1 = static_cast<int32>(crystalStructures[cellPhases[refposition]]);
-                        ebsdlib::QuatD quat2(quats[curposition * 4], quats[curposition * 4 + 1], quats[curposition * 4 + 2], quats[curposition * 4 + 3]); // Makes a copy into voxQuat!!!!
-                        auto laueClass2 = static_cast<int32>(crystalStructures[cellPhases[curposition]]);
-                        if(laueClass1 == laueClass2 && laueClass1 < static_cast<uint32>(orientationOps.size()))
+                        if(static_cast<usize>(referencePhaseIdx) >= numCrystalStructures)
                         {
-                          ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClass1]->calculateMisorientation(quat1, quat2);
+                          return MakeErrorResult(-53901,
+                                                 fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in "
+                                                             "[0, {}).",
+                                                             m_InputValues->cellPhasesArrayPath.toString(), referencePhaseIdx, refposition, m_InputValues->crystalStructuresArrayPath.toString(),
+                                                             numCrystalStructures, numCrystalStructures));
+                        }
+                        if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+                        {
+                          return MakeErrorResult(-53901,
+                                                 fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in "
+                                                             "[0, {}).",
+                                                             m_InputValues->cellPhasesArrayPath.toString(), currentPhaseIdx, curposition, m_InputValues->crystalStructuresArrayPath.toString(),
+                                                             numCrystalStructures, numCrystalStructures));
+                        }
+                        ebsdlib::QuatD quat1(quats[refposition * 4], quats[refposition * 4 + 1], quats[refposition * 4 + 2], quats[refposition * 4 + 3]); // Makes a copy into voxQuat!!!!
+                        const uint32 referenceLaueIndex = crystalStructures[referencePhaseIdx];
+                        ebsdlib::QuatD quat2(quats[curposition * 4], quats[curposition * 4 + 1], quats[curposition * 4 + 2], quats[curposition * 4 + 3]); // Makes a copy into voxQuat!!!!
+                        const uint32 currentLaueIndex = crystalStructures[currentPhaseIdx];
+                        if(referenceLaueIndex == currentLaueIndex && referenceLaueIndex < orientationOps.size())
+                        {
+                          ebsdlib::AxisAngleDType axisAngle = orientationOps[referenceLaueIndex]->calculateMisorientation(quat1, quat2);
                           angle = axisAngle[3];
                         }
                       }
@@ -344,6 +381,7 @@ Result<> AlignSectionsMisorientation::findShiftsOoc(std::vector<int64>& xShifts,
   // The local ensemble cache avoids hot-loop store access.
   const auto& crystalStructuresStore = crystalStructuresArray.getDataStoreRef();
   std::vector<uint32> crystalStructures(crystalStructuresStore.getSize());
+  const usize numCrystalStructures = crystalStructures.size();
   auto crystalReadResult = crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), crystalStructures.size()));
   if(crystalReadResult.invalid())
   {
@@ -486,7 +524,7 @@ Result<> AlignSectionsMisorientation::findShiftsOoc(std::vector<int64>& xShifts,
           int64 xIdx = k + oldxshift + halfDim0;
           int64 yIdx = j + oldyshift + halfDim1;
           int64 idx = (dims[0] * yIdx) + xIdx;
-          if(!misorients[idx] && llabs(k + oldxshift) < halfDim0 && llabs(j + oldyshift) < halfDim1)
+          if(llabs(k + oldxshift) < halfDim0 && llabs(j + oldyshift) < halfDim1 && !misorients[idx])
           {
             for(int64 l = 0; l < dims[1]; l = l + 4)
             {
@@ -502,15 +540,33 @@ Result<> AlignSectionsMisorientation::findShiftsOoc(std::vector<int64>& xShifts,
                   if(maskOk)
                   {
                     float32 angle = std::numeric_limits<float32>::max();
-                    if(refPhasesBuf[refLocalIdx] > 0 && curPhasesBuf[curLocalIdx] > 0)
+                    const int32 referencePhaseIdx = refPhasesBuf[refLocalIdx];
+                    const int32 currentPhaseIdx = curPhasesBuf[curLocalIdx];
+                    if(referencePhaseIdx > 0 && currentPhaseIdx > 0)
                     {
-                      ebsdlib::QuatD quat1(refQuatsBuf[refLocalIdx * 4], refQuatsBuf[refLocalIdx * 4 + 1], refQuatsBuf[refLocalIdx * 4 + 2], refQuatsBuf[refLocalIdx * 4 + 3]);
-                      auto laueClass1 = static_cast<int32>(crystalStructures[refPhasesBuf[refLocalIdx]]);
-                      ebsdlib::QuatD quat2(curQuatsBuf[curLocalIdx * 4], curQuatsBuf[curLocalIdx * 4 + 1], curQuatsBuf[curLocalIdx * 4 + 2], curQuatsBuf[curLocalIdx * 4 + 3]);
-                      auto laueClass2 = static_cast<int32>(crystalStructures[curPhasesBuf[curLocalIdx]]);
-                      if(laueClass1 == laueClass2 && laueClass1 < static_cast<uint32>(orientationOps.size()))
+                      const int64 referenceVoxelIdx = (slice + 1) * sliceVoxels + refLocalIdx;
+                      const int64 currentVoxelIdx = slice * sliceVoxels + curLocalIdx;
+                      if(static_cast<usize>(referencePhaseIdx) >= numCrystalStructures)
                       {
-                        ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClass1]->calculateMisorientation(quat1, quat2);
+                        return MakeErrorResult(-53901, fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in "
+                                                                   "[0, {}).",
+                                                                   m_InputValues->cellPhasesArrayPath.toString(), referencePhaseIdx, referenceVoxelIdx,
+                                                                   m_InputValues->crystalStructuresArrayPath.toString(), numCrystalStructures, numCrystalStructures));
+                      }
+                      if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+                      {
+                        return MakeErrorResult(-53901, fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in "
+                                                                   "[0, {}).",
+                                                                   m_InputValues->cellPhasesArrayPath.toString(), currentPhaseIdx, currentVoxelIdx,
+                                                                   m_InputValues->crystalStructuresArrayPath.toString(), numCrystalStructures, numCrystalStructures));
+                      }
+                      ebsdlib::QuatD quat1(refQuatsBuf[refLocalIdx * 4], refQuatsBuf[refLocalIdx * 4 + 1], refQuatsBuf[refLocalIdx * 4 + 2], refQuatsBuf[refLocalIdx * 4 + 3]);
+                      const uint32 referenceLaueIndex = crystalStructures[referencePhaseIdx];
+                      ebsdlib::QuatD quat2(curQuatsBuf[curLocalIdx * 4], curQuatsBuf[curLocalIdx * 4 + 1], curQuatsBuf[curLocalIdx * 4 + 2], curQuatsBuf[curLocalIdx * 4 + 3]);
+                      const uint32 currentLaueIndex = crystalStructures[currentPhaseIdx];
+                      if(referenceLaueIndex == currentLaueIndex && referenceLaueIndex < orientationOps.size())
+                      {
+                        ebsdlib::AxisAngleDType axisAngle = orientationOps[referenceLaueIndex]->calculateMisorientation(quat1, quat2);
                         angle = axisAngle[3];
                       }
                     }

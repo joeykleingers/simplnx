@@ -58,9 +58,8 @@ public:
 
   /**
    * @brief Computes neighbor c-axis misalignments.
-   * @pre Feature phase IDs are within the crystal-structure array.
-   * @return An error if no hexagonal phase exists, or a warning for skipped
-   *         non-hexagonal phases.
+   * @return An error for missing hexagonal phases or an invalid Feature Phase
+   *         index. Returns a warning for skipped non-hexagonal phases.
    *
    * Cancellation returns success with completed feature lists preserved.
    * Current bulk-I/O Result values are not inspected.

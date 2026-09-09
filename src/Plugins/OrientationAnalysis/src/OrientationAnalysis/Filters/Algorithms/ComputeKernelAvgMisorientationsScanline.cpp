@@ -928,6 +928,11 @@ Result<> ComputeKernelAvgMisorientationsScanline::operator()()
     return {};
   }
 
+  if(Result<> validationResult = ValidateKernelAvgMisorientationsPhaseIndices(m_DataStructure, *m_InputValues); validationResult.invalid())
+  {
+    return validationResult;
+  }
+
   auto& cacheMemoryBudgetManager = CacheMemoryBudgetManager::instance();
   const uint64 cacheBudgetBytes = cacheMemoryBudgetManager.budgetBytes();
   const uint64 cacheUsedBytes = cacheMemoryBudgetManager.usedBytes();

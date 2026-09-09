@@ -82,25 +82,25 @@ Result<> NeighborOrientationCorrelation::operator()()
 {
   const std::vector<ebsdlib::LaueOps::Pointer> orientationOps = ebsdlib::LaueOps::GetAllOrientationOps();
 
-  auto& confidenceIndex = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->ConfidenceIndexArrayPath);
-  auto& cellPhases = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->CellPhasesArrayPath);
-  auto& quats = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath);
-  const auto& crystalStructuresArray = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
+  auto& confidenceIndexArrayRef = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->ConfidenceIndexArrayPath);
+  auto& cellPhasesArrayRef = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->CellPhasesArrayPath);
+  auto& quatsArrayRef = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath);
+  const auto& crystalStructuresArrayRef = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
 
   // Cache ensemble-level arrays locally to avoid per-element virtual dispatch in hot loops
-  const auto& crystalStructuresStore = crystalStructuresArray.getDataStoreRef();
-  const usize numPhases = crystalStructuresStore.getNumberOfTuples();
-  std::vector<uint32> crystalStructures(numPhases);
-  if(Result<> ioResult = crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), numPhases)); ioResult.invalid())
+  const auto& crystalStructuresStoreRef = crystalStructuresArrayRef.getDataStoreRef();
+  const usize numCrystalStructures = crystalStructuresStoreRef.getNumberOfTuples();
+  std::vector<uint32> crystalStructuresCache(numCrystalStructures);
+  if(Result<> ioResult = crystalStructuresStoreRef.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
   {
     return ConvertResult(std::move(ioResult));
   }
 
-  const auto& ciStore = confidenceIndex.getDataStoreRef();
-  const auto& phaseStore = cellPhases.getDataStoreRef();
-  const auto& quatStore = quats.getDataStoreRef();
+  const auto& confidenceIndexStoreRef = confidenceIndexArrayRef.getDataStoreRef();
+  const auto& cellPhasesStoreRef = cellPhasesArrayRef.getDataStoreRef();
+  const auto& quatsStoreRef = quatsArrayRef.getDataStoreRef();
 
-  usize totalPoints = confidenceIndex.getNumberOfTuples();
+  const usize totalVoxels = confidenceIndexArrayRef.getNumberOfTuples();
 
   float32 misorientationToleranceR = m_InputValues->MisorientationTolerance * numbers::pi_v<float32> / 180.0f;
 
@@ -145,17 +145,17 @@ Result<> NeighborOrientationCorrelation::operator()()
   // Bulk-read a Z-slice using copyIntoBuffer for OOC efficiency
   auto readQuatSlice = [&](int64 z, usize slot) -> Result<> {
     const usize zOffset = static_cast<usize>(z) * sliceSize * 4;
-    return quatStore.copyIntoBuffer(zOffset, nonstd::span<float32>(quatSlices[slot].data(), sliceSize * 4));
+    return quatsStoreRef.copyIntoBuffer(zOffset, nonstd::span<float32>(quatSlices[slot].data(), sliceSize * 4));
   };
 
   auto readPhaseSlice = [&](int64 z, usize slot) -> Result<> {
     const usize zOffset = static_cast<usize>(z) * sliceSize;
-    return phaseStore.copyIntoBuffer(zOffset, nonstd::span<int32>(phaseSlices[slot].data(), sliceSize));
+    return cellPhasesStoreRef.copyIntoBuffer(zOffset, nonstd::span<int32>(phaseSlices[slot].data(), sliceSize));
   };
 
   auto readCISlice = [&](int64 z) -> Result<> {
     const usize zOffset = static_cast<usize>(z) * sliceSize;
-    return ciStore.copyIntoBuffer(zOffset, nonstd::span<float32>(ciSlice.data(), sliceSize));
+    return confidenceIndexStoreRef.copyIntoBuffer(zOffset, nonstd::span<float32>(ciSlice.data(), sliceSize));
   };
 
   // Per-slice best neighbor marks (replaces O(totalPoints) bestNeighbor array)
@@ -226,7 +226,7 @@ Result<> NeighborOrientationCorrelation::operator()()
           {
             throttledMessenger.sendThrottledMessage([&]() {
               return fmt::format("Level '{}' of '{}' || Processing Data {:.2f}% completed", (startLevel - currentLevel) + 1, startLevel - m_InputValues->Level,
-                                 CalculatePercentComplete(processedVoxels, totalPoints));
+                                 CalculatePercentComplete(processedVoxels, totalVoxels));
             });
           }
 
@@ -273,8 +273,24 @@ Result<> NeighborOrientationCorrelation::operator()()
 
                 if(nPhases[faceIndexK] == nPhases[faceIndexJ] && nPhases[faceIndexK] > 0)
                 {
-                  uint32 laueClass = crystalStructures[nPhases[faceIndexK]];
-                  ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClass]->calculateMisorientation(nQuats[faceIndexK], nQuats[faceIndexJ]);
+                  const int32 currentPhaseIdx = nPhases[faceIndexK];
+                  if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+                  {
+                    return MakeErrorResult(
+                        -580096,
+                        fmt::format(
+                            "Cell Phases array '{}' has value {} at neighbor voxel index {}, but Crystal Structures array '{}' contains {} tuples. Valid positive Phase indices are in [1, {}).",
+                            m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, voxelIndex + neighborVoxelIndexOffsets[faceIndexK], m_InputValues->CrystalStructuresArrayPath.toString(),
+                            numCrystalStructures, numCrystalStructures));
+                  }
+                  const uint32 currentLaueIndex = crystalStructuresCache[currentPhaseIdx];
+                  if(currentLaueIndex >= orientationOps.size())
+                  {
+                    return MakeErrorResult(-580097,
+                                           fmt::format("Crystal Structures array '{}' has value {} at Phase index {}, but only {} Laue operations are available. Valid Laue indices are in [0, {}).",
+                                                       m_InputValues->CrystalStructuresArrayPath.toString(), currentLaueIndex, currentPhaseIdx, orientationOps.size(), orientationOps.size()));
+                  }
+                  ebsdlib::AxisAngleDType axisAngle = orientationOps[currentLaueIndex]->calculateMisorientation(nQuats[faceIndexK], nQuats[faceIndexJ]);
                   if(axisAngle[3] < misorientationToleranceR)
                   {
                     neighborSimCount[faceIndexJ]++;

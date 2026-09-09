@@ -381,9 +381,9 @@ Result<> ComputeGBCDMetricBased::operator()()
   planeResolution *= nx::core::Constants::k_PiOver180D;
   const float64 planeResolutionSq = planeResolution * planeResolution;
 
-  auto& crystalStructures = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
+  const auto& crystalStructuresArrayRef = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
   auto& eulerAngles = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->FeatureEulerAnglesArrayPath);
-  auto& phases = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath);
+  const auto& featurePhasesArrayRef = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath);
   auto& faceLabels = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->SurfaceMeshFaceLabelsArrayPath);
   auto& faceNormals = m_DataStructure.getDataRefAs<Float64Array>(m_InputValues->SurfaceMeshFaceNormalsArrayPath);
   auto& faceAreas = m_DataStructure.getDataRefAs<Float64Array>(m_InputValues->SurfaceMeshFaceAreasArrayPath);
@@ -403,17 +403,17 @@ Result<> ComputeGBCDMetricBased::operator()()
     return ConvertResult(std::move(ioResult));
   }
 
-  const usize numPhaseElements = phases.getSize();
+  const usize numPhaseElements = featurePhasesArrayRef.getSize();
   std::vector<int32> phasesCache(numPhaseElements);
-  if(Result<> ioResult = phases.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phasesCache.data(), numPhaseElements)); ioResult.invalid())
+  if(Result<> ioResult = featurePhasesArrayRef.getDataStoreRef().copyIntoBuffer(0, nonstd::span<int32>(phasesCache.data(), numPhaseElements)); ioResult.invalid())
   {
     return ConvertResult(std::move(ioResult));
   }
 
   // Bulk-read ensemble-level crystal structures (tiny, typically < 10 entries)
-  const usize numCrystalStructures = crystalStructures.getSize();
+  const usize numCrystalStructures = crystalStructuresArrayRef.getSize();
   std::vector<uint32> crystalStructuresCache(numCrystalStructures);
-  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
+  if(Result<> ioResult = crystalStructuresArrayRef.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
   {
     return ConvertResult(std::move(ioResult));
   }
@@ -429,12 +429,17 @@ Result<> ComputeGBCDMetricBased::operator()()
 
   // ------------------- before computing the distribution, we must find normalization factors -----
   float64 ballVolume = k_BallVolumesM3M[m_InputValues->ChosenLimitDists];
+  const std::vector<ebsdlib::LaueOps::Pointer> orientationOps = ebsdlib::LaueOps::GetAllOrientationOps();
+  const uint32 currentLaueIndex = crystalStructuresCache[m_InputValues->PhaseOfInterest];
+  if(currentLaueIndex >= orientationOps.size())
   {
-    std::vector<ebsdlib::LaueOps::Pointer> ops = ebsdlib::LaueOps::GetAllOrientationOps();
-    auto crystalStruct = static_cast<int32>(crystalStructuresCache[m_InputValues->PhaseOfInterest]);
-    const int32 nSym = ops[crystalStruct]->getNumSymOps();
+    return MakeErrorResult(-7240, fmt::format("Crystal Structures array '{}' has value {} at Phase index {}, but only {} Laue operations are available. Valid Laue indices are in [0, {}).",
+                                              m_InputValues->CrystalStructuresArrayPath.toString(), currentLaueIndex, m_InputValues->PhaseOfInterest, orientationOps.size(), orientationOps.size()));
+  }
+  {
+    const int32 nSym = orientationOps[currentLaueIndex]->getNumSymOps();
 
-    if(crystalStruct != 1)
+    if(currentLaueIndex != 1)
     {
       auto symFactor = static_cast<float64>(nSym) / 24.0;
       symFactor *= symFactor;
@@ -528,7 +533,7 @@ Result<> ComputeGBCDMetricBased::operator()()
     dataAlg.setRange(i, i + currentChunkSize);
     dataAlg.setParallelizationEnabled(true);
     dataAlg.execute(GBCDMetricBased::TrianglesSelector(m_InputValues->ExcludeTripleLines, triangles, nodeTypes, selectedTriangles, misResolution, m_InputValues->PhaseOfInterest, gFixedT,
-                                                       crystalStructuresCache[m_InputValues->PhaseOfInterest], eulerCache.data(), phasesCache.data(), faceLabels, faceNormals, faceAreas));
+                                                       currentLaueIndex, eulerCache.data(), phasesCache.data(), faceLabels, faceNormals, faceAreas));
 
     // Bulk-read this chunk's face labels and areas for totalFaceArea accumulation.
     // Re-applies the same geometric filter conditions that TrianglesSelector uses.

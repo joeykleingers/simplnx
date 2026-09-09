@@ -40,6 +40,7 @@ Result<> BadDataNeighborOrientationCheckWorklist::operator()()
   const auto& quats = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath);
   const auto& crystalStructures = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
   const usize totalPoints = quats.getNumberOfTuples();
+  const usize numCrystalStructures = crystalStructures.getNumberOfTuples();
 
   std::unique_ptr<MaskCompareUtilities::MaskCompare> maskCompare;
   try
@@ -96,9 +97,20 @@ Result<> BadDataNeighborOrientationCheckWorklist::operator()()
     {
       ebsdlib::QuatD quat1(quats[voxelIndex * 4], quats[voxelIndex * 4 + 1], quats[voxelIndex * 4 + 2], quats[voxelIndex * 4 + 3]);
       quat1.positiveOrientation();
-      const uint32 laueClassIndex = crystalStructures[cellPhases[voxelIndex]];
+      const int32 currentPhaseIdx = cellPhases[voxelIndex];
+      if(currentPhaseIdx <= 0)
+      {
+        continue;
+      }
+      if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+      {
+        return MakeErrorResult(-54902, fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                   m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, voxelIndex, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                   numCrystalStructures, numCrystalStructures));
+      }
+      const uint32 currentLaueIndex = crystalStructures[currentPhaseIdx];
       // UnknownCrystalStructure has no LaueOps entry and cannot participate in a match.
-      if(laueClassIndex >= numOrientationOps)
+      if(currentLaueIndex >= numOrientationOps)
       {
         continue;
       }
@@ -122,7 +134,7 @@ Result<> BadDataNeighborOrientationCheckWorklist::operator()()
           {
             ebsdlib::QuatD quat2(quats[neighborPoint * 4], quats[neighborPoint * 4 + 1], quats[neighborPoint * 4 + 2], quats[neighborPoint * 4 + 3]);
             quat2.positiveOrientation();
-            ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClassIndex]->calculateMisorientation(quat1, quat2);
+            ebsdlib::AxisAngleDType axisAngle = orientationOps[currentLaueIndex]->calculateMisorientation(quat1, quat2);
             if(axisAngle[3] < misorientationTolerance)
             {
               neighborCount[voxelIndex]++;
@@ -172,9 +184,20 @@ Result<> BadDataNeighborOrientationCheckWorklist::operator()()
 
       ebsdlib::QuatD quat1(quats[voxelIndex * 4], quats[voxelIndex * 4 + 1], quats[voxelIndex * 4 + 2], quats[voxelIndex * 4 + 3]);
       quat1.positiveOrientation();
-      const uint32 laueClassIndex = crystalStructures[cellPhases[voxelIndex]];
+      const int32 currentPhaseIdx = cellPhases[voxelIndex];
+      if(currentPhaseIdx <= 0)
+      {
+        continue;
+      }
+      if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+      {
+        return MakeErrorResult(-54902, fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                   m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, voxelIndex, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                   numCrystalStructures, numCrystalStructures));
+      }
+      const uint32 currentLaueIndex = crystalStructures[currentPhaseIdx];
       // UnknownCrystalStructure has no LaueOps entry and cannot update neighbors.
-      if(laueClassIndex >= numOrientationOps)
+      if(currentLaueIndex >= numOrientationOps)
       {
         continue;
       }
@@ -201,7 +224,7 @@ Result<> BadDataNeighborOrientationCheckWorklist::operator()()
             ebsdlib::QuatD quat2(quats[neighborPoint * 4], quats[neighborPoint * 4 + 1], quats[neighborPoint * 4 + 2], quats[neighborPoint * 4 + 3]);
             quat2.positiveOrientation();
             // Keep quaternion order because misorientation calculation is directional.
-            ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClassIndex]->calculateMisorientation(quat1, quat2);
+            ebsdlib::AxisAngleDType axisAngle = orientationOps[currentLaueIndex]->calculateMisorientation(quat1, quat2);
             if(axisAngle[3] < misorientationTolerance)
             {
               neighborCount[neighborPoint]++;

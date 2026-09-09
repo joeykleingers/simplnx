@@ -2,6 +2,8 @@
 #include "OrientationAnalysis/OrientationAnalysis_test_dirs.hpp"
 #include "OrientationAnalysisTestUtils.hpp"
 
+#include <EbsdLib/Core/EbsdLibConstants.h>
+
 #include "simplnx/Core/Application.hpp"
 #include "simplnx/DataStructure/AttributeMatrix.hpp"
 #include "simplnx/DataStructure/Geometry/ImageGeom.hpp"
@@ -105,7 +107,8 @@ DataStructure BuildDataStructure(const OracleFixture& fixture)
   imageGeomPtr->setCellData(*cellAMPtr);
 
   auto* ciArrayPtr = UnitTest::CreateTestDataArray<float32>(dataStructure, "Confidence Index", tupleShape, {1}, cellAMPtr->getId());
-  auto* phasesArrayPtr = UnitTest::CreateTestDataArray<int32>(dataStructure, "Phases", tupleShape, {1}, cellAMPtr->getId());
+  auto phasesStore = DataStoreUtilities::CreateDataStore<int32>(dataStructure, k_CellPhasesPath, tupleShape, {1}, IDataAction::Mode::Execute);
+  auto* phasesArrayPtr = Int32Array::Create(dataStructure, "Phases", phasesStore, cellAMPtr->getId());
   auto* quatsArrayPtr = UnitTest::CreateTestDataArray<float32>(dataStructure, "Quats", tupleShape, {4}, cellAMPtr->getId());
   auto* sourceIndexArrayPtr = UnitTest::CreateTestDataArray<int32>(dataStructure, "SourceIndex", tupleShape, {1}, cellAMPtr->getId());
   auto* payload2ArrayPtr = UnitTest::CreateTestDataArray<int32>(dataStructure, "Payload2", tupleShape, {1}, cellAMPtr->getId());
@@ -126,7 +129,8 @@ DataStructure BuildDataStructure(const OracleFixture& fixture)
   }
 
   auto* ensembleAMPtr = AttributeMatrix::Create(dataStructure, "Ensemble Data", {fixture.crystalStructures.size()}, imageGeomPtr->getId());
-  auto* xtalArrayPtr = UnitTest::CreateTestDataArray<uint32>(dataStructure, "CrystalStructures", {fixture.crystalStructures.size()}, {1}, ensembleAMPtr->getId());
+  auto crystalStructuresStore = DataStoreUtilities::CreateDataStore<uint32>(dataStructure, k_XtalPath, {fixture.crystalStructures.size()}, {1}, IDataAction::Mode::Execute);
+  auto* xtalArrayPtr = UInt32Array::Create(dataStructure, "CrystalStructures", crystalStructuresStore, ensembleAMPtr->getId());
   for(usize i = 0; i < fixture.crystalStructures.size(); i++)
   {
     (*xtalArrayPtr)[i] = fixture.crystalStructures[i];
@@ -407,6 +411,66 @@ TEST_CASE("OrientationAnalysis::NeighborOrientationCorrelationFilter: Preflight 
     {
       REQUIRE(warning.code != -580095);
     }
+  }
+}
+
+TEST_CASE("OrientationAnalysis::NeighborOrientationCorrelationFilter: Phase and Laue Index Bounds", "[OrientationAnalysis][NeighborOrientationCorrelationFilter]")
+{
+  using namespace NOCOracle;
+
+  UnitTest::LoadPlugins();
+  const UnitTest::PreferencesSentinel preferencesSentinel(DataStorageMode::ForceOutOfCore, 1);
+
+  OracleFixture fixture(3, 1, 1, {ebsdlib::CrystalStructure::UnknownCrystalStructure, ebsdlib::CrystalStructure::Cubic_High});
+  fixture.ci[fixture.idx(1, 0, 0)] = k_BadCI;
+
+  auto executeFixture = [&](const OracleFixture& configuredFixture) {
+    DataStructure dataStructure = BuildDataStructure(configuredFixture);
+    REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(k_CellPhasesPath));
+    const auto& cellPhasesArrayRef = dataStructure.getDataRefAs<Int32Array>(k_CellPhasesPath);
+    if(Application::Instance()->getIOManager("HDF5-OOC") != nullptr)
+    {
+      REQUIRE(cellPhasesArrayRef.getDataStoreRef().getDataFormat() == "HDF5-OOC");
+    }
+
+    NeighborOrientationCorrelationFilter filter;
+    Arguments args;
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_ImageGeometryPath_Key, std::make_any<DataPath>(k_GeomPath));
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_MinConfidence_Key, std::make_any<float32>(k_MinConfidence));
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_MisorientationTolerance_Key, std::make_any<float32>(k_ToleranceDeg));
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_Level_Key, std::make_any<int32>(5));
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_CorrelationArrayPath_Key, std::make_any<DataPath>(k_CIPath));
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_CellPhasesArrayPath_Key, std::make_any<DataPath>(k_CellPhasesPath));
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_QuatsArrayPath_Key, std::make_any<DataPath>(k_CellQuatsPath));
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_CrystalStructuresArrayPath_Key, std::make_any<DataPath>(k_XtalPath));
+    args.insertOrAssign(NeighborOrientationCorrelationFilter::k_IgnoredDataArrayPaths_Key, std::make_any<MultiArraySelectionParameter::ValueType>(std::vector<DataPath>{}));
+
+    auto preflightResult = filter.preflight(dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_VALID(preflightResult.outputActions);
+    return filter.execute(dataStructure, args);
+  };
+
+  SECTION("Participating Phase returns an error")
+  {
+    std::fill(fixture.phases.begin(), fixture.phases.end(), 2);
+    auto executeResult = executeFixture(fixture);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -580096);
+  }
+
+  SECTION("Participating Laue index returns an error")
+  {
+    fixture.crystalStructures[1] = 999U;
+    auto executeResult = executeFixture(fixture);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -580097);
+  }
+
+  SECTION("Nonpositive neighbor Phases are ignored")
+  {
+    std::fill(fixture.phases.begin(), fixture.phases.end(), 0);
+    auto executeResult = executeFixture(fixture);
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
   }
 }
 

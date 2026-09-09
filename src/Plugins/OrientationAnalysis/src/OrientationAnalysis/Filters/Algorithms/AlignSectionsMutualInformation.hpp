@@ -102,18 +102,19 @@ private:
    * @param featureIds Receives one feature ID for each cell.
    * @param dimX Specifies the X dimension.
    * @param dimY Specifies the Y dimension.
+   * @param sliceOffset Specifies the first global voxel index in the slice.
    * @param misorientationTolerance Specifies the radian tolerance.
    * @param useMask Selects mask use.
    * @param orientationOps Provides symmetry operators.
    * @param crystalStructures Provides crystal structures by phase ID.
    * @pre featureIds contains dimX * dimY zero values.
-   * @pre Positive phase IDs are within crystalStructures.
-   * @return The next unassigned feature ID.
+   * @return The next unassigned feature ID, or an invalid phase or Laue index
+   *         error.
    *
    * The flood fill reads only local buffers and assigns four-connected cells.
    */
-  int32 formFeaturesForSlice(const float32* quats, const int32* phases, const uint8* mask, std::vector<int32>& featureIds, int64 dimX, int64 dimY, float32 misorientationTolerance, bool useMask,
-                             const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps, const std::vector<uint32>& crystalStructures);
+  Result<int32> formFeaturesForSlice(const float32* quats, const int32* phases, const uint8* mask, std::vector<int32>& featureIds, int64 dimX, int64 dimY, int64 sliceOffset,
+                                     float32 misorientationTolerance, bool useMask, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps, const std::vector<uint32>& crystalStructures);
 
   DataStructure& m_DataStructure;
   const AlignSectionsMutualInformationInputValues* m_InputValues = nullptr;

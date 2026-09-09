@@ -380,6 +380,7 @@ Result<> ComputeGBCD::operator()()
   {
     return ConvertResult(std::move(ioResult));
   }
+  const std::vector<ebsdlib::LaueOps::Pointer> orientationOps = ebsdlib::LaueOps::GetAllOrientationOps();
   usize totalFaces = faceLabels.getNumberOfTuples();
   usize triangleChunkSize = 50000;
 
@@ -439,6 +440,36 @@ Result<> ComputeGBCD::operator()()
     if(Result<> ioResult = areasStore.copyIntoBuffer(i, nonstd::span<float64>(areasBuf.data(), triangleChunkSize)); ioResult.invalid())
     {
       return ConvertResult(std::move(ioResult));
+    }
+
+    for(usize chunkFaceIdx = 0; chunkFaceIdx < triangleChunkSize; chunkFaceIdx++)
+    {
+      const int32 firstFeatureIdx = labelsBuf[chunkFaceIdx * 2];
+      const int32 secondFeatureIdx = labelsBuf[chunkFaceIdx * 2 + 1];
+      if(firstFeatureIdx < 0 || secondFeatureIdx < 0)
+      {
+        continue;
+      }
+      const int32 currentPhaseIdx = phasesCache[firstFeatureIdx];
+      const int32 neighborFeaturePhaseIdx = phasesCache[secondFeatureIdx];
+      if(currentPhaseIdx <= 0 || currentPhaseIdx != neighborFeaturePhaseIdx)
+      {
+        continue;
+      }
+      if(static_cast<usize>(currentPhaseIdx) >= totalPhases)
+      {
+        return MakeErrorResult(
+            -75000,
+            fmt::format(
+                "Feature Phases array '{}' has value {} at Feature index {}, referenced by face {}, but Crystal Structures array '{}' contains {} tuples. Valid positive Phase indices are in [1, {}).",
+                m_InputValues->FeaturePhasesArrayPath.toString(), currentPhaseIdx, firstFeatureIdx, i + chunkFaceIdx, m_InputValues->CrystalStructuresArrayPath.toString(), totalPhases, totalPhases));
+      }
+      const uint32 currentLaueIndex = crystalStructuresCache[currentPhaseIdx];
+      if(currentLaueIndex >= orientationOps.size())
+      {
+        return MakeErrorResult(-75001, fmt::format("Crystal Structures array '{}' has value {} at Phase index {}, but only {} Laue operations are available. Valid Laue indices are in [0, {}).",
+                                                   m_InputValues->CrystalStructuresArrayPath.toString(), currentLaueIndex, currentPhaseIdx, orientationOps.size(), orientationOps.size()));
+      }
     }
 
     ParallelDataAlgorithm parallelTask;

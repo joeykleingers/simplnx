@@ -176,35 +176,40 @@ Result<> GroupMicroTextureRegions::execute()
 
     groupList.clear();
     groupList.push_back(featureSeed);
-    for(std::vector<int32>::size_type j = 0; j < groupList.size(); j++)
+    for(std::vector<int32>::size_type groupListIdx = 0; groupListIdx < groupList.size(); groupListIdx++)
     {
-      const int32 firstFeature = groupList[j];
-      list1size = static_cast<int32>(featureNeighborListRef[firstFeature].size());
+      const int32 currentFeatureIdx = groupList[groupListIdx];
+      list1size = static_cast<int32>(featureNeighborListRef[currentFeatureIdx].size());
       if(m_InputValues->UseNonContiguousNeighbors)
       {
-        list2size = nonContigNeighListPtr->getListSize(firstFeature);
+        list2size = nonContigNeighListPtr->getListSize(currentFeatureIdx);
       }
       // Walk contiguous neighbors (k=0) then optional non-contiguous neighbors (k=1)
-      for(int32 k = 0; k < 2; k++)
+      for(int32 neighborListIdx = 0; neighborListIdx < 2; neighborListIdx++)
       {
-        const int32 listSize = (k == 0) ? list1size : list2size;
-        for(int32 l = 0; l < listSize; l++)
+        const int32 listSize = (neighborListIdx == 0) ? list1size : list2size;
+        for(int32 neighborIdx = 0; neighborIdx < listSize; neighborIdx++)
         {
-          int32 neigh = -1;
-          if(k == 0)
+          int32 neighborFeatureIdx = -1;
+          if(neighborListIdx == 0)
           {
-            neigh = featureNeighborListRef[firstFeature][l];
+            neighborFeatureIdx = featureNeighborListRef[currentFeatureIdx][neighborIdx];
           }
-          else if(k == 1 && m_InputValues->UseNonContiguousNeighbors)
+          else if(neighborListIdx == 1 && m_InputValues->UseNonContiguousNeighbors)
           {
             bool ok = false;
-            neigh = nonContigNeighListPtr->getValue(firstFeature, l, ok);
+            neighborFeatureIdx = nonContigNeighListPtr->getValue(currentFeatureIdx, neighborIdx, ok);
           }
-          if(neigh >= 0 && neigh != firstFeature)
+          if(neighborFeatureIdx >= 0 && neighborFeatureIdx != currentFeatureIdx)
           {
-            if(determineGrouping(firstFeature, neigh, parentCount))
+            Result<bool> groupingResult = determineGrouping(currentFeatureIdx, neighborFeatureIdx, parentCount);
+            if(groupingResult.invalid())
             {
-              groupList.push_back(neigh);
+              return ConvertResult(std::move(groupingResult));
+            }
+            if(groupingResult.value())
+            {
+              groupList.push_back(neighborFeatureIdx);
             }
           }
         }
@@ -343,30 +348,47 @@ int GroupMicroTextureRegions::getSeed(int32 newFid)
 }
 
 // -----------------------------------------------------------------------------
-bool GroupMicroTextureRegions::determineGrouping(int32 referenceFeature, int32 neighborFeature, int32 newFid)
+Result<bool> GroupMicroTextureRegions::determineGrouping(int32 referenceFeatureIdx, int32 neighborFeatureIdx, int32 newFid)
 {
-  const int32 neighborParentId = m_FeatureParentIdsCache[neighborFeature];
-  const int32 referenceFeaturePhase = m_FeaturePhasesCache[referenceFeature];
-  const int32 neighborFeaturePhase = m_FeaturePhasesCache[neighborFeature];
+  const int32 neighborParentId = m_FeatureParentIdsCache[neighborFeatureIdx];
+  const int32 referenceFeaturePhaseIdx = m_FeaturePhasesCache[referenceFeatureIdx];
+  const int32 neighborFeaturePhaseIdx = m_FeaturePhasesCache[neighborFeatureIdx];
 
-  if(neighborParentId == -1 && referenceFeaturePhase > 0 && neighborFeaturePhase > 0)
+  if(neighborParentId == -1 && referenceFeaturePhaseIdx > 0 && neighborFeaturePhaseIdx > 0)
   {
+    const usize numCrystalStructures = m_CrystalStructuresCache.size();
+    if(static_cast<usize>(referenceFeaturePhaseIdx) >= numCrystalStructures)
+    {
+      return MakeErrorResult<bool>(
+          -87001,
+          fmt::format("Feature Phases array '{}' has value {} at reference Feature index {}, but Crystal Structures array '{}' contains {} tuples. Valid positive Phase indices are in [1, {}).",
+                      m_InputValues->FeaturePhasesArrayPath.toString(), referenceFeaturePhaseIdx, referenceFeatureIdx, m_InputValues->CrystalStructuresArrayPath.toString(), numCrystalStructures,
+                      numCrystalStructures));
+    }
+    if(static_cast<usize>(neighborFeaturePhaseIdx) >= numCrystalStructures)
+    {
+      return MakeErrorResult<bool>(
+          -87001, fmt::format("Feature Phases array '{}' has value {} at neighbor Feature index {}, but Crystal Structures array '{}' contains {} tuples. Valid positive Phase indices are in [1, {}).",
+                              m_InputValues->FeaturePhasesArrayPath.toString(), neighborFeaturePhaseIdx, neighborFeatureIdx, m_InputValues->CrystalStructuresArrayPath.toString(), numCrystalStructures,
+                              numCrystalStructures));
+    }
+
     ebsdlib::Matrix3X1F c1 = {0.0f, 0.0f, 0.0f};
     ebsdlib::Matrix3X1F cAxis(0.0f, 0.0f, 1.0f);
 
     if(!m_InputValues->UseRunningAverage)
     {
-      const usize index = referenceFeature * 4;
+      const usize index = referenceFeatureIdx * 4;
       // The transposed matrix maps crystal [001] into the sample frame.
       ebsdlib::Matrix3X3F g1t =
           ebsdlib::Quaternion<float32>(m_AvgQuatsCache[index + 0], m_AvgQuatsCache[index + 1], m_AvgQuatsCache[index + 2], m_AvgQuatsCache[index + 3]).toOrientationMatrix().toGMatrix().transpose();
       c1 = (g1t * cAxis).normalize();
     }
-    uint32 phase1 = m_CrystalStructuresCache[referenceFeaturePhase];
-    uint32 phase2 = m_CrystalStructuresCache[neighborFeaturePhase];
-    if(phase1 == phase2 && (phase1 == ebsdlib::CrystalStructure::Hexagonal_High))
+    const uint32 referenceLaueIndex = m_CrystalStructuresCache[referenceFeaturePhaseIdx];
+    const uint32 neighborLaueIndex = m_CrystalStructuresCache[neighborFeaturePhaseIdx];
+    if(referenceLaueIndex == neighborLaueIndex && referenceLaueIndex == ebsdlib::CrystalStructure::Hexagonal_High)
     {
-      const usize index = neighborFeature * 4;
+      const usize index = neighborFeatureIdx * 4;
       // The transposed matrix maps crystal [001] into the sample frame.
       ebsdlib::Matrix3X3F g2t =
           ebsdlib::Quaternion<float32>(m_AvgQuatsCache[index + 0], m_AvgQuatsCache[index + 1], m_AvgQuatsCache[index + 2], m_AvgQuatsCache[index + 3]).toOrientationMatrix().toGMatrix().transpose();
@@ -387,15 +409,15 @@ bool GroupMicroTextureRegions::determineGrouping(int32 referenceFeature, int32 n
       float32 cAxisToleranceRad = m_InputValues->CAxisTolerance * nx::core::Constants::k_PiF / 180.0f;
       if(w <= cAxisToleranceRad || (nx::core::Constants::k_PiD - w) <= cAxisToleranceRad)
       {
-        m_FeatureParentIdsCache[neighborFeature] = newFid;
+        m_FeatureParentIdsCache[neighborFeatureIdx] = newFid;
         if(m_InputValues->UseRunningAverage)
         {
-          c2 = c2 * m_VolumesCache[neighborFeature];
+          c2 = c2 * m_VolumesCache[neighborFeatureIdx];
           m_AvgCAxes = m_AvgCAxes + c2;
         }
-        return true;
+        return {true};
       }
     }
   }
-  return false;
+  return {false};
 }

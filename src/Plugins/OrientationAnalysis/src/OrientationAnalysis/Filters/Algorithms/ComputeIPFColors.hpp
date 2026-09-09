@@ -68,7 +68,7 @@ public:
 
   /**
    * @brief Dispatches IPF color computation.
-   * @return Result from the selected executor.
+   * @return Success, or an error for an enabled Phase outside the valid range or bulk I/O.
    */
   Result<> operator()();
 

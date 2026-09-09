@@ -34,7 +34,7 @@ ComputeAvgCAxes::~ComputeAvgCAxes() noexcept = default;
 Result<> ComputeAvgCAxes::operator()()
 {
   // The local ensemble cache avoids cell-loop store access.
-  const auto& crystalStructuresStoreRef = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath)->getDataStoreRef();
+  const auto& crystalStructuresStoreRef = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath).getDataStoreRef();
   const usize numCrystalStructures = crystalStructuresStoreRef.getSize();
   auto crystalStructuresCache = std::make_unique<uint32[]>(numCrystalStructures);
   if(Result<> ioResult = crystalStructuresStoreRef.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.get(), numCrystalStructures)); ioResult.invalid())
@@ -44,9 +44,9 @@ Result<> ComputeAvgCAxes::operator()()
 
   bool allPhasesHexagonal = true;
   bool noPhasesHexagonal = true;
-  for(usize i = 1; i < numCrystalStructures; ++i)
+  for(usize phaseIdx = 1; phaseIdx < numCrystalStructures; ++phaseIdx)
   {
-    const auto crystalStructureType = crystalStructuresCache[i];
+    const auto crystalStructureType = crystalStructuresCache[phaseIdx];
     const bool isHex = crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_High || crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_Low;
     allPhasesHexagonal = allPhasesHexagonal && isHex;
     noPhasesHexagonal = noPhasesHexagonal && !isHex;
@@ -66,10 +66,10 @@ Result<> ComputeAvgCAxes::operator()()
   auto mergeWarnings = [&result](Result<> ioResult) { return MergeResults(std::move(result), std::move(ioResult)); };
 
   // Cell data uses chunked bulk I/O to avoid per-element OOC access.
-  const auto& featureIdsStoreRef = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeatureIdsArrayPath)->getDataStoreRef();
-  const auto& quatsStoreRef = m_DataStructure.getDataAs<Float32Array>(m_InputValues->QuatsArrayPath)->getDataStoreRef();
-  const auto& cellPhasesStoreRef = m_DataStructure.getDataAs<Int32Array>(m_InputValues->CellPhasesArrayPath)->getDataStoreRef();
-  auto& avgCAxesStoreRef = m_DataStructure.getDataAs<Float32Array>(m_InputValues->AvgCAxesArrayPath)->getDataStoreRef();
+  const auto& featureIdsStoreRef = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FeatureIdsArrayPath).getDataStoreRef();
+  const auto& quatsStoreRef = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath).getDataStoreRef();
+  const auto& cellPhasesStoreRef = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->CellPhasesArrayPath).getDataStoreRef();
+  auto& avgCAxesStoreRef = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->AvgCAxesArrayPath).getDataStoreRef();
 
   const usize totalPoints = featureIdsStoreRef.getNumberOfTuples();
   const usize totalFeatures = avgCAxesStoreRef.getNumberOfTuples();
@@ -114,14 +114,20 @@ Result<> ComputeAvgCAxes::operator()()
       return mergeWarnings(std::move(ioResult));
     }
 
-    for(usize t = 0; t < chunkTuples; t++)
+    for(usize chunkTupleIdx = 0; chunkTupleIdx < chunkTuples; chunkTupleIdx++)
     {
-      const int32 currentFeatureId = featureIdsChunk[t];
-      if(currentFeatureId > 0)
+      const int32 currentFeatureIdx = featureIdsChunk[chunkTupleIdx];
+      if(currentFeatureIdx > 0)
       {
-        const int32 currentCellPhase = cellPhasesChunk[t];                          // Get the current cell phase
-        const auto crystalStructureType = crystalStructuresCache[currentCellPhase]; // Get the CrystalStructure, i.e., Laue class of the cell
-        const usize cAxesIndex = 3 * static_cast<usize>(currentFeatureId);
+        const int32 currentPhaseIdx = cellPhasesChunk[chunkTupleIdx];
+        if(currentPhaseIdx < 0 || static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+        {
+          return MakeErrorResult(-76404, fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                     m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, tupleIdx + chunkTupleIdx, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                     numCrystalStructures, numCrystalStructures));
+        }
+        const auto crystalStructureType = crystalStructuresCache[currentPhaseIdx];
+        const usize cAxesIndex = 3 * static_cast<usize>(currentFeatureIdx);
 
         // Skip non-hexagonal cells so mixed features retain valid contributions.
         if(crystalStructureType != ebsdlib::CrystalStructure::Hexagonal_High && crystalStructureType != ebsdlib::CrystalStructure::Hexagonal_Low)
@@ -129,8 +135,8 @@ Result<> ComputeAvgCAxes::operator()()
           continue;
         }
 
-        counter[currentFeatureId]++;
-        const usize quatOffset = t * 4;
+        counter[currentFeatureIdx]++;
+        const usize quatOffset = chunkTupleIdx * 4;
 
         ebsdlib::OrientationMatrixDType oMatrix =
             ebsdlib::QuaternionDType(quatsChunk[quatOffset], quatsChunk[quatOffset + 1], quatsChunk[quatOffset + 2], quatsChunk[quatOffset + 3]).toOrientationMatrix();
@@ -141,9 +147,9 @@ Result<> ComputeAvgCAxes::operator()()
         c1.normalize();
 
         Eigen::Vector3d curCAxis{0.0f, 0.0f, 0.0f};
-        curCAxis[0] = avgCAxesCache[cAxesIndex] / static_cast<float32>(counter[currentFeatureId]);
-        curCAxis[1] = avgCAxesCache[cAxesIndex + 1] / static_cast<float32>(counter[currentFeatureId]);
-        curCAxis[2] = avgCAxesCache[cAxesIndex + 2] / static_cast<float32>(counter[currentFeatureId]);
+        curCAxis[0] = avgCAxesCache[cAxesIndex] / static_cast<float32>(counter[currentFeatureIdx]);
+        curCAxis[1] = avgCAxesCache[cAxesIndex + 1] / static_cast<float32>(counter[currentFeatureIdx]);
+        curCAxis[2] = avgCAxesCache[cAxesIndex + 2] / static_cast<float32>(counter[currentFeatureIdx]);
         curCAxis.normalize();
 
         // Antiparallel c axes represent the same hexagonal direction.
@@ -164,15 +170,15 @@ Result<> ComputeAvgCAxes::operator()()
 
   m_MessageHandler({IFilter::Message::Type::Info, "Computing final feature average C-Axis values"});
 
-  for(usize i = 0; i < totalFeatures; i++)
+  for(usize featureIdx = 0; featureIdx < totalFeatures; featureIdx++)
   {
     if(m_ShouldCancel)
     {
       return result;
     }
 
-    const usize tupleIndex = i * 3;
-    if(counter[i] == 0)
+    const usize tupleIndex = featureIdx * 3;
+    if(counter[featureIdx] == 0)
     {
       // Features without a hexagonal contribution have no c-axis average.
       avgCAxesCache[tupleIndex] = NAN;
@@ -182,8 +188,8 @@ Result<> ComputeAvgCAxes::operator()()
     else
     {
       // Antipodal flips keep the accumulated direction away from zero.
-      Eigen::Vector3d finalAvg{avgCAxesCache[tupleIndex] / static_cast<float64>(counter[i]), avgCAxesCache[tupleIndex + 1] / static_cast<float64>(counter[i]),
-                               avgCAxesCache[tupleIndex + 2] / static_cast<float64>(counter[i])};
+      Eigen::Vector3d finalAvg{avgCAxesCache[tupleIndex] / static_cast<float64>(counter[featureIdx]), avgCAxesCache[tupleIndex + 1] / static_cast<float64>(counter[featureIdx]),
+                               avgCAxesCache[tupleIndex + 2] / static_cast<float64>(counter[featureIdx])};
       finalAvg.normalize();
       avgCAxesCache[tupleIndex] = static_cast<float32>(finalAvg[0]);
       avgCAxesCache[tupleIndex + 1] = static_cast<float32>(finalAvg[1]);

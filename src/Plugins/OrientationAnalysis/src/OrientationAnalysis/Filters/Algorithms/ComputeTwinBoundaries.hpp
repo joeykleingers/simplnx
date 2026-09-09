@@ -63,11 +63,9 @@ public:
 
   /**
    * @brief Computes twin boundaries.
-   * @return An error if no cubic phase exists, or warnings for skipped phases or
-   *         invalid normals.
+   * @return An error for an invalid Phase index or no cubic Phase, or warnings for skipped Phases or invalid normals.
    *
-   * Cancellation returns success with completed face results preserved. Current
-   * input and incoherence bulk-I/O Result values are not inspected.
+   * Cancellation returns success with completed face results preserved.
    */
   Result<> operator()();
 

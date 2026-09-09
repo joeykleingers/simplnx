@@ -70,7 +70,7 @@ public:
 
   /**
    * @brief Groups compatible features.
-   * @return Result from grouping and cell-parent remapping.
+   * @return Success, or an error for an invalid Phase index, grouping, or cell-parent remapping.
    */
   Result<> operator()();
 
@@ -82,7 +82,15 @@ public:
 
 protected:
   int getSeed(int32 newFid);
-  bool determineGrouping(int32 referenceFeature, int32 neighborFeature, int32 newFid);
+
+  /**
+   * @brief Determines whether an eligible neighboring feature joins the current parent.
+   * @param referenceFeatureIdx Index of the current parent-group feature.
+   * @param neighborFeatureIdx Index of the neighboring feature.
+   * @param newFid Parent feature identifier assigned when the features group.
+   * @return True if the neighbor joins, false if the pair is ineligible, or an error for an invalid Phase index.
+   */
+  Result<bool> determineGrouping(int32 referenceFeatureIdx, int32 neighborFeatureIdx, int32 newFid);
   Result<> execute();
   Result<> cacheFeatureData();
   Result<> remapCellParentIds();

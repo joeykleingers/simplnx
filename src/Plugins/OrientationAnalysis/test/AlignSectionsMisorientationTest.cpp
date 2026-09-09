@@ -73,7 +73,7 @@ void CreateSmallFixture(DataStructure& dataStructure)
 
 Arguments SmallArguments(const bool useMask)
 {
-  Arguments args;
+  Arguments args = AlignSectionsMisorientationFilter().getDefaultArguments();
   args.insertOrAssign(AlignSectionsMisorientationFilter::k_MisorientationTolerance_Key, std::make_any<float32>(5.0F));
   args.insertOrAssign(AlignSectionsMisorientationFilter::k_UseMask_Key, std::make_any<bool>(useMask));
   args.insertOrAssign(AlignSectionsMisorientationFilter::k_MaskArrayPath_Key, std::make_any<DataPath>(k_SmallMaskPath));
@@ -104,6 +104,55 @@ TEST_CASE("OrientationAnalysis::AlignSectionsMisorientation: small direct and fo
     UnitTest::CompareDataArrays<float32>(directData.getDataRefAs<IDataArray>(k_SmallNumericPath), oocData.getDataRefAs<IDataArray>(k_SmallNumericPath));
     UnitTest::CompareDataArrays<bool>(directData.getDataRefAs<IDataArray>(k_SmallBoolPath), oocData.getDataRefAs<IDataArray>(k_SmallBoolPath));
   }
+}
+
+TEST_CASE("OrientationAnalysis::AlignSectionsMisorientation: Phase Index Bounds", "[OrientationAnalysis][AlignSectionsMisorientation]")
+{
+  UnitTest::LoadPlugins();
+
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  const bool invalidReferenceSlice = GENERATE(false, true);
+  const bool storeAlignmentShifts = GENERATE(false, true);
+  CAPTURE(scenario, invalidReferenceSlice, storeAlignmentShifts);
+  UnitTest::AlgorithmTestScope scope(scenario);
+
+  constexpr usize k_VoxelsPerSlice = 8 * 8;
+  DataStructure dataStructure;
+  CreateSmallFixture(dataStructure);
+  REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(k_SmallPhasesPath));
+  auto& cellPhasesArrayRef = dataStructure.getDataRefAs<Int32Array>(k_SmallPhasesPath);
+  const usize invalidSliceStart = invalidReferenceSlice ? k_VoxelsPerSlice : 0;
+  for(usize voxelIdx = invalidSliceStart; voxelIdx < invalidSliceStart + k_VoxelsPerSlice; ++voxelIdx)
+  {
+    cellPhasesArrayRef[voxelIdx] = 2;
+  }
+
+  AlignSectionsMisorientationFilter filter;
+  Arguments args = SmallArguments(false);
+  args.insertOrAssign(AlignSectionsMisorientationFilter::k_StoreAlignmentShifts_Key, std::make_any<bool>(storeAlignmentShifts));
+
+  SECTION("Participating Phase returns an error")
+  {
+    auto executeResult = scope.executeFilter(filter, dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -53901);
+  }
+
+  SECTION("Masked Phase is ignored")
+  {
+    REQUIRE_NOTHROW(dataStructure.getDataRefAs<BoolArray>(k_SmallMaskPath));
+    auto& maskArrayRef = dataStructure.getDataRefAs<BoolArray>(k_SmallMaskPath);
+    for(usize voxelIdx = invalidSliceStart; voxelIdx < invalidSliceStart + k_VoxelsPerSlice; ++voxelIdx)
+    {
+      maskArrayRef[voxelIdx] = false;
+    }
+    args.insertOrAssign(AlignSectionsMisorientationFilter::k_UseMask_Key, std::make_any<bool>(true));
+
+    auto executeResult = scope.executeFilter(filter, dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
+  }
+
+  UnitTest::CheckArraysInheritTupleDims(dataStructure);
 }
 
 TEST_CASE("OrientationAnalysis::AlignSectionsMisorientation Small IN100 Pipeline", "[OrientationAnalysis][AlignSectionsMisorientation]")

@@ -107,12 +107,14 @@ FixtureData CreateScaffold(usize numFeatures)
   td.ensembleAM = AttributeMatrix::Create(td.ds, "CellEnsembleData", ShapeType{numCrystalStructures}, td.geom->getId());
 
   td.featureIds = CreateTestDataArray<int32>(td.ds, k_FeatureIdsName, {1, 1, nX}, {1}, td.cellAM->getId());
-  td.featurePhases = CreateTestDataArray<int32>(td.ds, k_FeaturePhasesName, {numFeatures}, {1}, td.featureAM->getId());
+  auto featurePhasesStore = DataStoreUtilities::CreateDataStore<int32>(td.ds, k_FeaturePhasesPath, {numFeatures}, {1}, IDataAction::Mode::Execute);
+  td.featurePhases = Int32Array::Create(td.ds, k_FeaturePhasesName, featurePhasesStore, td.featureAM->getId());
   td.volumes = CreateTestDataArray<float32>(td.ds, k_VolumesName, {numFeatures}, {1}, td.featureAM->getId());
   td.avgQuats = CreateTestDataArray<float32>(td.ds, k_AvgQuatsName, {numFeatures}, {4}, td.featureAM->getId());
   td.neighborList = NeighborList<int32>::Create(td.ds, k_ContigNeighborListName, ShapeType{numFeatures}, td.featureAM->getId());
   td.nonContiguousNeighborList = NeighborList<int32>::Create(td.ds, k_NonContigNeighborListName, ShapeType{numFeatures}, td.featureAM->getId());
-  td.crystalStructures = CreateTestDataArray<uint32>(td.ds, k_CrystalStructuresName, {numCrystalStructures}, {1}, td.ensembleAM->getId());
+  auto crystalStructuresStore = DataStoreUtilities::CreateDataStore<uint32>(td.ds, k_CrystalStructuresPath, {numCrystalStructures}, {1}, IDataAction::Mode::Execute);
+  td.crystalStructures = UInt32Array::Create(td.ds, k_CrystalStructuresName, crystalStructuresStore, td.ensembleAM->getId());
 
   for(usize k = 0; k < numCells; k++)
   {
@@ -289,6 +291,52 @@ Arguments BuildArgs(float32 cAxisToleranceDeg, bool useRunningAverage, bool rand
 }
 } // namespace AnalyticalFixtures
 } // namespace
+
+TEST_CASE("OrientationAnalysis::GroupMicroTextureRegionsFilter: Phase Index Bounds", "[OrientationAnalysis][GroupMicroTextureRegionsFilter]")
+{
+  using namespace AnalyticalFixtures;
+
+  UnitTest::LoadPlugins();
+  const UnitTest::PreferencesSentinel preferencesSentinel(DataStorageMode::ForceOutOfCore, 1);
+  FixtureData fixture = CreateScaffold(/*numFeatures=*/4);
+  SetNeighbors(fixture, 1, {2});
+  SetNeighbors(fixture, 2, {1});
+  SetNeighbors(fixture, 3, {});
+
+  if(Application::Instance()->getIOManager("HDF5-OOC") != nullptr)
+  {
+    REQUIRE(fixture.featurePhases->getDataStoreRef().getDataFormat() == "HDF5-OOC");
+    REQUIRE(fixture.crystalStructures->getDataStoreRef().getDataFormat() == "HDF5-OOC");
+  }
+
+  GroupMicroTextureRegionsFilter filter;
+  Arguments args = BuildArgs(/*cAxisToleranceDeg=*/10.0F, /*useRunningAverage=*/false, /*randomizeParentIds=*/false, /*seed=*/42ULL);
+
+  SECTION("Reference Feature Phase returns an error")
+  {
+    (*fixture.featurePhases)[1] = static_cast<int32>(fixture.crystalStructures->getNumberOfTuples());
+    auto executeResult = filter.execute(fixture.ds, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -87001);
+  }
+
+  SECTION("Neighbor Feature Phase returns an error")
+  {
+    (*fixture.featurePhases)[2] = static_cast<int32>(fixture.crystalStructures->getNumberOfTuples());
+    auto executeResult = filter.execute(fixture.ds, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -87001);
+  }
+
+  SECTION("Isolated Feature Phase is ignored")
+  {
+    (*fixture.featurePhases)[3] = static_cast<int32>(fixture.crystalStructures->getNumberOfTuples());
+    auto executeResult = filter.execute(fixture.ds, args);
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
+  }
+
+  UnitTest::CheckArraysInheritTupleDims(fixture.ds);
+}
 
 TEST_CASE("OrientationAnalysis::GroupMicroTextureRegionsFilter: Class 1 Analytical (Pure-Phi Bunge)", "[OrientationAnalysis][GroupMicroTextureRegionsFilter][Class1]")
 {
@@ -531,11 +579,9 @@ TEST_CASE("OrientationAnalysis::GroupMicroTextureRegionsFilter: Class 1 Analytic
 {
   using namespace AnalyticalFixtures;
 
-  // Twenty isolated touching pairs reproduce the D3 discriminator. Each pair contains one
-  // Cubic_High feature and one Hexagonal_High feature with identical c-axes. The running-average
-  // path must reject every pair because both features must resolve to Hexagonal_High. The recorded
-  // legacy production comparison accepted 19 of 20 analogous pairs; this deterministic fixture
-  // detects the same one-sided-check defect without depending on that run's clock-derived seed.
+  // Twenty isolated touching pairs reproduce the D3 discriminator. Each pair has one Cubic_High feature and one Hexagonal_High feature.
+  // The two features have identical c-axes. The running-average path must reject every pair because both features must resolve to Hexagonal_High.
+  // The recorded legacy production comparison accepted 19 of 20 analogous pairs. This deterministic fixture detects the same one-sided-check defect.
   constexpr int32 k_NumPairs = 20;
   FixtureData td = CreateScaffold(/*numFeatures=*/2 * k_NumPairs + 1);
 

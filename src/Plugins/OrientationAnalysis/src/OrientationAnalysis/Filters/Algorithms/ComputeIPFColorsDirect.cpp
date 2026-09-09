@@ -210,6 +210,39 @@ Result<> ComputeIPFColorsDirect::operator()()
     algArrays.push_back(maskArray);
   }
 
+  const auto validateNegativePhases = [&](const auto* typedMaskArrayPtr) -> Result<> {
+    const auto& cellPhasesStoreRef = phases.getDataStoreRef();
+    for(usize voxelIdx = 0; voxelIdx < totalPoints; voxelIdx++)
+    {
+      const bool calculateIpf = typedMaskArrayPtr == nullptr || static_cast<bool>((*typedMaskArrayPtr)[voxelIdx]);
+      const int32 currentPhaseIdx = cellPhasesStoreRef[voxelIdx];
+      if(calculateIpf && currentPhaseIdx < 0)
+      {
+        return MakeErrorResult(-48001, fmt::format("Cell Phases array '{}' has value {} at voxel index {}. Valid enabled Phase indices are in [0, {}).", m_InputValues->cellPhasesArrayPath.toString(),
+                                                   currentPhaseIdx, voxelIdx, numPhases));
+      }
+    }
+    return {};
+  };
+
+  Result<> validationResult;
+  if(maskArray == nullptr)
+  {
+    validationResult = validateNegativePhases(static_cast<const BoolArray*>(nullptr));
+  }
+  else if(maskArray->getDataType() == DataType::boolean)
+  {
+    validationResult = validateNegativePhases(m_DataStructure.getDataAs<BoolArray>(m_InputValues->maskArrayPath));
+  }
+  else
+  {
+    validationResult = validateNegativePhases(m_DataStructure.getDataAs<UInt8Array>(m_InputValues->maskArrayPath));
+  }
+  if(validationResult.invalid())
+  {
+    return validationResult;
+  }
+
   // The executor processes contiguous tuple ranges. A nonresident listed array
   // makes requireArraysInMemory() select serial execution.
   ParallelDataAlgorithm dataAlg;

@@ -332,6 +332,39 @@ TEST_CASE("OrientationAnalysis::ComputeIPFColorsFilter: phase index out of range
   REQUIRE(executeResult.result.errors()[0].code == -48000);
 }
 
+TEST_CASE("OrientationAnalysis::ComputeIPFColorsFilter: negative Phase bounds", "[OrientationAnalysis][ComputeIPFColorsFilter]")
+{
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  CAPTURE(scenario);
+  UnitTest::AlgorithmTestScope scope(scenario);
+  UnitTest::LoadPlugins();
+
+  DataStructure dataStructure = BuildAnalyticalDataset();
+  REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(k_PhasesPath));
+  auto& cellPhasesArrayRef = dataStructure.getDataRefAs<Int32Array>(k_PhasesPath);
+  cellPhasesArrayRef.getDataStoreRef()[0] = -1;
+
+  ComputeIPFColorsFilter filter;
+
+  SECTION("Enabled negative Phase returns an error")
+  {
+    const Arguments args = MakeArgs(false, DataPath{}, {0.0F, 0.0F, 1.0F}, 0, k_IpfColorsName);
+    auto executeResult = scope.executeFilter(filter, dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -48001);
+  }
+
+  SECTION("Masked negative Phase is ignored")
+  {
+    REQUIRE_NOTHROW(dataStructure.getDataRefAs<BoolArray>(k_MaskPath));
+    auto& maskArrayRef = dataStructure.getDataRefAs<BoolArray>(k_MaskPath);
+    maskArrayRef.getDataStoreRef()[0] = false;
+    const Arguments args = MakeArgs(true, k_MaskPath, {0.0F, 0.0F, 1.0F}, 0, k_IpfColorsName);
+    auto executeResult = scope.executeFilter(filter, dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
+  }
+}
+
 // Verify that ColorKey selection reaches EbsdLib. EbsdLib tests the color math.
 // This fixture requires non-default keys to differ from TSL.
 TEST_CASE("OrientationAnalysis::ComputeIPFColorsFilter: ColorKey choice reaches algorithm", "[OrientationAnalysis][ComputeIPFColorsFilter]")

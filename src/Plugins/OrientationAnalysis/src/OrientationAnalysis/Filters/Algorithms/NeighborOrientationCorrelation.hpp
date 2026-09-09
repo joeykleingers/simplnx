@@ -64,7 +64,7 @@ public:
 
   /**
    * @brief Corrects low-confidence cells.
-   * @return Result from correlation and replacement transfers.
+   * @return Success, or an error for an invalid Phase or Laue index, correlation, or replacement transfer.
    */
   Result<> operator()();
 

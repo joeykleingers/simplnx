@@ -40,6 +40,61 @@ Result<> EBSDSegmentFeatures::operator()()
   }
   m_CrystalStructures = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
 
+  // Validate positive, unmasked Phases with slice-sized reads before the boolean neighbor callback uses them.
+  const usize numCrystalStructures = m_CrystalStructures->getNumberOfTuples();
+  const SizeVec3 dimensions = gridGeom->getDimensions();
+  const usize scanBatchSize = std::max<usize>(1, static_cast<usize>(dimensions[0]) * static_cast<usize>(dimensions[1]));
+  std::vector<int32> cellPhasesBuffer(scanBatchSize);
+  std::vector<uint8> maskBuffer(scanBatchSize, 1);
+  IDataArray* maskArray = m_InputValues->UseMask ? m_DataStructure.getDataAs<IDataArray>(m_InputValues->MaskArrayPath) : nullptr;
+  auto& cellPhasesStoreRef = m_CellPhases->getDataStoreRef();
+  const usize numCells = cellPhasesStoreRef.getNumberOfTuples();
+  for(usize offset = 0; offset < numCells; offset += scanBatchSize)
+  {
+    const usize batchSize = std::min(scanBatchSize, numCells - offset);
+    if(Result<> phaseReadResult = cellPhasesStoreRef.copyIntoBuffer(offset, nonstd::span<int32>(cellPhasesBuffer.data(), batchSize)); phaseReadResult.invalid())
+    {
+      return phaseReadResult;
+    }
+    if(maskArray != nullptr && maskArray->getDataType() == DataType::uint8)
+    {
+      auto& maskStoreRef = maskArray->getIDataStoreRefAs<AbstractDataStore<uint8>>();
+      if(Result<> maskReadResult = maskStoreRef.copyIntoBuffer(offset, nonstd::span<uint8>(maskBuffer.data(), batchSize)); maskReadResult.invalid())
+      {
+        return maskReadResult;
+      }
+    }
+    else if(maskArray != nullptr && maskArray->getDataType() == DataType::boolean)
+    {
+      auto& maskStoreRef = maskArray->getIDataStoreRefAs<AbstractDataStore<bool>>();
+      auto boolMaskBuffer = std::make_unique<bool[]>(batchSize);
+      if(Result<> maskReadResult = maskStoreRef.copyIntoBuffer(offset, nonstd::span<bool>(boolMaskBuffer.get(), batchSize)); maskReadResult.invalid())
+      {
+        return maskReadResult;
+      }
+      for(usize batchIdx = 0; batchIdx < batchSize; batchIdx++)
+      {
+        maskBuffer[batchIdx] = boolMaskBuffer[batchIdx] ? 1 : 0;
+      }
+    }
+
+    for(usize batchIdx = 0; batchIdx < batchSize; batchIdx++)
+    {
+      const int32 currentPhaseIdx = cellPhasesBuffer[batchIdx];
+      if(currentPhaseIdx <= 0 || (maskArray != nullptr && maskBuffer[batchIdx] == 0))
+      {
+        continue;
+      }
+      if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+      {
+        return MakeErrorResult(-485092,
+                               fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' contains {} tuples. Valid positive Phase indices are in [1, {}).",
+                                           m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, offset + batchIdx, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                           numCrystalStructures, numCrystalStructures));
+      }
+    }
+  }
+
   m_FeatureIdsArray = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeatureIdsArrayPath);
   m_FeatureIdsArray->fill(0);
 
@@ -51,7 +106,6 @@ Result<> EBSDSegmentFeatures::operator()()
   }
 
   auto& featureIdsStore = m_FeatureIdsArray->getDataStoreRef();
-  const auto* maskArray = m_InputValues->UseMask ? m_DataStructure.getDataAs<IDataArray>(m_InputValues->MaskArrayPath) : nullptr;
   const bool usesOutOfCoreInput = IsOutOfCore(*m_QuatsArray) || IsOutOfCore(*m_CellPhases) || IsOutOfCore(*m_CrystalStructures) || (maskArray != nullptr && IsOutOfCore(*maskArray));
   Result<> segmentResult = executeCCL(gridGeom, featureIdsStore, usesOutOfCoreInput);
 
@@ -149,19 +203,19 @@ bool EBSDSegmentFeatures::areNeighborsSimilar(int64 point1, int64 point2) const
       {
         return false;
       }
-      const int32 phase1 = m_PhaseBuffer[off1];
-      const int32 phase2 = m_PhaseBuffer[off2];
-      if(phase2 <= 0)
+      const int32 currentPhaseIdx = m_PhaseBuffer[off1];
+      const int32 neighborCellPhaseIdx = m_PhaseBuffer[off2];
+      if(neighborCellPhaseIdx <= 0)
       {
         return false;
       }
-      if(phase1 != phase2)
+      if(currentPhaseIdx != neighborCellPhaseIdx)
       {
         return false;
       }
 
-      int32 laueClass = static_cast<int32>(m_CrystalStructuresCache[static_cast<usize>(phase1)]);
-      if(static_cast<usize>(laueClass) >= m_OrientationOps.size())
+      const uint32 currentLaueIndex = m_CrystalStructuresCache[static_cast<usize>(currentPhaseIdx)];
+      if(currentLaueIndex >= m_OrientationOps.size())
       {
         return false;
       }
@@ -182,7 +236,7 @@ bool EBSDSegmentFeatures::areNeighborsSimilar(int64 point1, int64 point2) const
       const ebsdlib::QuatD q1(m_QuatBuffer[q1Base], m_QuatBuffer[q1Base + 1], m_QuatBuffer[q1Base + 2], m_QuatBuffer[q1Base + 3]);
       const ebsdlib::QuatD q2(m_QuatBuffer[q2Base], m_QuatBuffer[q2Base + 1], m_QuatBuffer[q2Base + 2], m_QuatBuffer[q2Base + 3]);
 
-      ebsdlib::AxisAngleDType axisAngle = m_OrientationOps[laueClass]->calculateMisorientation(q1, q2);
+      ebsdlib::AxisAngleDType axisAngle = m_OrientationOps[currentLaueIndex]->calculateMisorientation(q1, q2);
       float32 w = static_cast<float32>(axisAngle[3]);
 
       return w < m_InputValues->MisorientationTolerance;
@@ -195,15 +249,17 @@ bool EBSDSegmentFeatures::areNeighborsSimilar(int64 point1, int64 point2) const
     return false;
   }
 
-  AbstractDataStore<int32>& cellPhases = m_CellPhases->getDataStoreRef();
+  const AbstractDataStore<int32>& cellPhasesStoreRef = m_CellPhases->getDataStoreRef();
 
-  if(cellPhases[point1] != cellPhases[point2])
+  const int32 currentPhaseIdx = cellPhasesStoreRef[point1];
+  const int32 neighborCellPhaseIdx = cellPhasesStoreRef[point2];
+  if(currentPhaseIdx != neighborCellPhaseIdx)
   {
     return false;
   }
 
-  int32 laueClass = (*m_CrystalStructures)[cellPhases[point1]];
-  if(static_cast<usize>(laueClass) >= m_OrientationOps.size())
+  const uint32 currentLaueIndex = (*m_CrystalStructures)[currentPhaseIdx];
+  if(currentLaueIndex >= m_OrientationOps.size())
   {
     return false;
   }
@@ -217,7 +273,7 @@ bool EBSDSegmentFeatures::areNeighborsSimilar(int64 point1, int64 point2) const
   const ebsdlib::QuatD q1(quats[point1 * 4], quats[point1 * 4 + 1], quats[point1 * 4 + 2], quats[point1 * 4 + 3]);
   const ebsdlib::QuatD q2(quats[point2 * 4], quats[point2 * 4 + 1], quats[point2 * 4 + 2], quats[point2 * 4 + 3]);
 
-  ebsdlib::AxisAngleDType axisAngle = m_OrientationOps[laueClass]->calculateMisorientation(q1, q2);
+  ebsdlib::AxisAngleDType axisAngle = m_OrientationOps[currentLaueIndex]->calculateMisorientation(q1, q2);
   float32 w = static_cast<float32>(axisAngle[3]);
 
   return w < m_InputValues->MisorientationTolerance;
@@ -237,9 +293,9 @@ Result<> EBSDSegmentFeatures::allocateSliceBuffers(int64 dimX, int64 dimY)
   m_UseSliceBuffers = true;
 
   // The local crystal cache avoids inner-loop OOC access.
-  const usize numPhases = m_CrystalStructures->getNumberOfTuples();
-  m_CrystalStructuresCache.resize(numPhases);
-  auto readResult = m_CrystalStructures->getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(m_CrystalStructuresCache.data(), numPhases));
+  const usize numCrystalStructures = m_CrystalStructures->getNumberOfTuples();
+  m_CrystalStructuresCache.resize(numCrystalStructures);
+  auto readResult = m_CrystalStructures->getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(m_CrystalStructuresCache.data(), numCrystalStructures));
   if(readResult.invalid())
   {
     return readResult;
@@ -304,8 +360,8 @@ Result<> EBSDSegmentFeatures::prepareForSlice(int64 iz, int64 dimX, int64 dimY, 
     return quatReadResult;
   }
 
-  AbstractDataStore<int32>& phaseStore = m_CellPhases->getDataStoreRef();
-  auto phaseReadResult = phaseStore.copyIntoBuffer(static_cast<usize>(baseIndex), nonstd::span<int32>(m_PhaseBuffer.data() + slotOffset, sliceSize));
+  AbstractDataStore<int32>& cellPhasesStoreRef = m_CellPhases->getDataStoreRef();
+  auto phaseReadResult = cellPhasesStoreRef.copyIntoBuffer(static_cast<usize>(baseIndex), nonstd::span<int32>(m_PhaseBuffer.data() + slotOffset, sliceSize));
   if(phaseReadResult.invalid())
   {
     return phaseReadResult;

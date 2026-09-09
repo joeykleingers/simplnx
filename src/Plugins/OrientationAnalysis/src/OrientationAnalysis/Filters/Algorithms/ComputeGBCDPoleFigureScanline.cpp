@@ -247,6 +247,23 @@ Result<> ComputeGBCDPoleFigureScanline::operator()()
     return result;
   }
 
+  const int32 phaseIdx = m_InputValues->PhaseOfInterest;
+  const usize numGbcdPhases = gbcd.getNumberOfTuples();
+  if(phaseIdx <= 0 || static_cast<usize>(phaseIdx) >= numGbcdPhases || static_cast<usize>(phaseIdx) >= numCrystalStructures)
+  {
+    return MakeErrorResult(-34643,
+                           fmt::format("Phase of Interest {} cannot index GBCD array '{}' with {} tuples and Crystal Structures array '{}' with {} tuples. Valid Phase indices must be positive and "
+                                       "present in both arrays.",
+                                       phaseIdx, m_InputValues->GBCDArrayPath.toString(), numGbcdPhases, m_InputValues->CrystalStructuresArrayPath.toString(), numCrystalStructures));
+  }
+  const std::vector<ebsdlib::LaueOps::Pointer> orientationOps = ebsdlib::LaueOps::GetAllOrientationOps();
+  const uint32 currentLaueIndex = crystalStructuresCache[phaseIdx];
+  if(currentLaueIndex >= orientationOps.size())
+  {
+    return MakeErrorResult(-34644, fmt::format("Crystal Structures array '{}' has value {} at Phase index {}, but only {} Laue operations are available. Valid Laue indices are in [0, {}).",
+                                               m_InputValues->CrystalStructuresArrayPath.toString(), currentLaueIndex, phaseIdx, orientationOps.size(), orientationOps.size()));
+  }
+
   std::vector<float32> gbcdDeltas(5, 0);
   std::vector<float32> gbcdLimits(10, 0);
   std::vector<int32> gbcdSizes(5, 0);
@@ -293,7 +310,7 @@ Result<> ComputeGBCDPoleFigureScanline::operator()()
     return result;
   }
 
-  ebsdlib::LaueOps::Pointer orientOps = ebsdlib::LaueOps::GetAllOrientationOps()[crystalStructuresCache[m_InputValues->PhaseOfInterest]];
+  ebsdlib::LaueOps::Pointer orientOps = orientationOps[currentLaueIndex];
 
   int32 xPoints = m_InputValues->OutputImageDimension;
   int32 yPoints = m_InputValues->OutputImageDimension;

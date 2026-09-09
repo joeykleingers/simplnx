@@ -68,7 +68,7 @@ public:
 
   /**
    * @brief Merges twin features and assigns parent IDs.
-   * @return Result from grouping and cell-parent assignment.
+   * @return Success, or an error for an invalid Phase index, grouping, or cell-parent assignment.
    */
   Result<> operator()();
 
@@ -91,7 +91,7 @@ private:
 
   /**
    * @brief Groups connected twin features.
-   * @return Success, cancellation, or the first feature-matrix resize error.
+   * @return Success, cancellation, or the first Phase-index or feature-matrix resize error.
    */
   Result<> groupFeaturesExecute();
 
@@ -101,7 +101,15 @@ private:
    * @return Seed index, or the first feature-matrix resize error.
    */
   Result<int32> getSeed(int32 newFid);
-  bool determineGrouping(int32 referenceFeature, int32 neighborFeature, int32 newFid);
+
+  /**
+   * @brief Determines whether an eligible neighboring feature is a sigma-3 twin.
+   * @param referenceFeatureIdx Index of the current parent-group feature.
+   * @param neighborFeatureIdx Index of the neighboring feature.
+   * @param newFid Parent feature identifier assigned when the features merge.
+   * @return True if the neighbor merges, false if the pair is ineligible, or an error for an invalid Phase index.
+   */
+  Result<bool> determineGrouping(int32 referenceFeatureIdx, int32 neighborFeatureIdx, int32 newFid);
 };
 
 } // namespace nx::core

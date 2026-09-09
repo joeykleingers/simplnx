@@ -76,7 +76,7 @@ public:
 
   /**
    * @brief Generates the pole figure.
-   * @return Success. The direct path does not inspect bulk-I/O results.
+   * @return An error for an invalid Phase or Laue index, or bulk I/O.
    *
    * The executor does not inspect cancellation and runs the current computation
    * to completion.

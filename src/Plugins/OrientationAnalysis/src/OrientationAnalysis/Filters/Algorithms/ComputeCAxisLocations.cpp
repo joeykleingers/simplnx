@@ -29,12 +29,12 @@ const std::atomic_bool& ComputeCAxisLocations::getCancel()
 
 Result<> ComputeCAxisLocations::operator()()
 {
-  const auto& crystalStructures = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
+  const auto& crystalStructuresArrayRef = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
   bool allPhasesHexagonal = true;
   bool noPhasesHexagonal = true;
-  for(usize i = 1; i < crystalStructures.size(); ++i)
+  for(usize phaseIdx = 1; phaseIdx < crystalStructuresArrayRef.size(); ++phaseIdx)
   {
-    const auto crystalStructureType = crystalStructures[i];
+    const auto crystalStructureType = crystalStructuresArrayRef[phaseIdx];
     const bool isHex = crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_High || crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_Low;
     allPhasesHexagonal = allPhasesHexagonal && isHex;
     noPhasesHexagonal = noPhasesHexagonal && !isHex;
@@ -53,16 +53,16 @@ Result<> ComputeCAxisLocations::operator()()
   }
   auto mergeWarnings = [&result](Result<> ioResult) { return MergeResults(std::move(result), std::move(ioResult)); };
 
-  const auto& quaternions = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath);
-  const auto& cellPhases = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->CellPhasesArrayPath);
-  auto& cAxisLocation = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->CAxisLocationsArrayName);
+  const auto& quatsArrayRef = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath);
+  const auto& cellPhasesArrayRef = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->CellPhasesArrayPath);
+  auto& cAxisLocationsArrayRef = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->CAxisLocationsArrayName);
 
-  const usize totalPoints = quaternions.getNumberOfTuples();
+  const usize totalPoints = quatsArrayRef.getNumberOfTuples();
 
   // The local ensemble cache avoids repeated cell-loop access.
-  const usize numPhases = crystalStructures.getNumberOfTuples();
-  std::vector<uint32> crystalStructuresBuf(numPhases);
-  if(Result<> ioResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresBuf.data(), numPhases)); ioResult.invalid())
+  const usize numCrystalStructures = crystalStructuresArrayRef.getNumberOfTuples();
+  std::vector<uint32> crystalStructuresCache(numCrystalStructures);
+  if(Result<> ioResult = crystalStructuresArrayRef.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
   {
     return mergeWarnings(std::move(ioResult));
   }
@@ -71,9 +71,9 @@ Result<> ComputeCAxisLocations::operator()()
   const Eigen::Vector3f cAxis{0.0f, 0.0f, 1.0f};
   Eigen::Vector3f c1{0.0f, 0.0f, 0.0f};
 
-  auto& quatStore = quaternions.getDataStoreRef();
-  auto& phaseStore = cellPhases.getDataStoreRef();
-  auto& outputStore = cAxisLocation.getDataStoreRef();
+  auto& quatsStoreRef = quatsArrayRef.getDataStoreRef();
+  auto& cellPhasesStoreRef = cellPhasesArrayRef.getDataStoreRef();
+  auto& cAxisLocationsStoreRef = cAxisLocationsArrayRef.getDataStoreRef();
 
   for(usize chunkStart = 0; chunkStart < totalPoints; chunkStart += k_ChunkSize)
   {
@@ -85,24 +85,31 @@ Result<> ComputeCAxisLocations::operator()()
     const usize chunkCount = std::min(k_ChunkSize, totalPoints - chunkStart);
 
     std::vector<float32> quatBuf(chunkCount * 4);
-    std::vector<int32> phaseBuf(chunkCount);
+    std::vector<int32> cellPhasesChunk(chunkCount);
     std::vector<float32> outputBuf(chunkCount * 3);
 
-    if(Result<> ioResult = quatStore.copyIntoBuffer(chunkStart * 4, nonstd::span<float32>(quatBuf.data(), chunkCount * 4)); ioResult.invalid())
+    if(Result<> ioResult = quatsStoreRef.copyIntoBuffer(chunkStart * 4, nonstd::span<float32>(quatBuf.data(), chunkCount * 4)); ioResult.invalid())
     {
       return mergeWarnings(std::move(ioResult));
     }
-    if(Result<> ioResult = phaseStore.copyIntoBuffer(chunkStart, nonstd::span<int32>(phaseBuf.data(), chunkCount)); ioResult.invalid())
+    if(Result<> ioResult = cellPhasesStoreRef.copyIntoBuffer(chunkStart, nonstd::span<int32>(cellPhasesChunk.data(), chunkCount)); ioResult.invalid())
     {
       return mergeWarnings(std::move(ioResult));
     }
 
-    for(usize i = 0; i < chunkCount; i++)
+    for(usize chunkTupleIdx = 0; chunkTupleIdx < chunkCount; chunkTupleIdx++)
     {
-      const auto crystalStructureType = crystalStructuresBuf[phaseBuf[i]];
+      const int32 currentPhaseIdx = cellPhasesChunk[chunkTupleIdx];
+      if(currentPhaseIdx < 0 || static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+      {
+        return MakeErrorResult(-3524, fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                  m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, chunkStart + chunkTupleIdx, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                  numCrystalStructures, numCrystalStructures));
+      }
+      const auto crystalStructureType = crystalStructuresCache[currentPhaseIdx];
       if(crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_High || crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_Low)
       {
-        const usize qi = i * 4;
+        const usize qi = chunkTupleIdx * 4;
         ebsdlib::OrientationMatrixFType oMatrix = ebsdlib::QuaternionFType(quatBuf[qi], quatBuf[qi + 1], quatBuf[qi + 2], quatBuf[qi + 3]).toOrientationMatrix();
         c1 = oMatrix.transpose() * cAxis;
         c1.normalize();
@@ -110,19 +117,19 @@ Result<> ComputeCAxisLocations::operator()()
         {
           c1 *= -1.0f;
         }
-        outputBuf[i * 3] = c1[0];
-        outputBuf[i * 3 + 1] = c1[1];
-        outputBuf[i * 3 + 2] = c1[2];
+        outputBuf[chunkTupleIdx * 3] = c1[0];
+        outputBuf[chunkTupleIdx * 3 + 1] = c1[1];
+        outputBuf[chunkTupleIdx * 3 + 2] = c1[2];
       }
       else
       {
-        outputBuf[i * 3] = NAN;
-        outputBuf[i * 3 + 1] = NAN;
-        outputBuf[i * 3 + 2] = NAN;
+        outputBuf[chunkTupleIdx * 3] = NAN;
+        outputBuf[chunkTupleIdx * 3 + 1] = NAN;
+        outputBuf[chunkTupleIdx * 3 + 2] = NAN;
       }
     }
 
-    if(Result<> ioResult = outputStore.copyFromBuffer(chunkStart * 3, nonstd::span<const float32>(outputBuf.data(), chunkCount * 3)); ioResult.invalid())
+    if(Result<> ioResult = cAxisLocationsStoreRef.copyFromBuffer(chunkStart * 3, nonstd::span<const float32>(outputBuf.data(), chunkCount * 3)); ioResult.invalid())
     {
       return mergeWarnings(std::move(ioResult));
     }

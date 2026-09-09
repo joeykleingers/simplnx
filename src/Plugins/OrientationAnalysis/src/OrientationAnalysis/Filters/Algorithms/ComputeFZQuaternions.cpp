@@ -253,22 +253,34 @@ public:
       if(maskArray->getDataType() == DataType::boolean)
       {
         auto* goodVoxelsArray = m_DataStructure.getDataAs<BoolArray>(m_InputValues->MaskArrayPath);
-        executeWithMaskType(dataAlgorithm, quatArray, phaseArray, phaseOps, numPhases, goodVoxelsArray, fzQuatArray, warningCount);
+        if(Result<> result = executeWithMaskType(dataAlgorithm, quatArray, phaseArray, phaseOps, numPhases, goodVoxelsArray, fzQuatArray, warningCount); result.invalid())
+        {
+          return result;
+        }
       }
       else if(maskArray->getDataType() == DataType::uint8)
       {
         auto* goodVoxelsArray = m_DataStructure.getDataAs<UInt8Array>(m_InputValues->MaskArrayPath);
-        executeWithMaskType(dataAlgorithm, quatArray, phaseArray, phaseOps, numPhases, goodVoxelsArray, fzQuatArray, warningCount);
+        if(Result<> result = executeWithMaskType(dataAlgorithm, quatArray, phaseArray, phaseOps, numPhases, goodVoxelsArray, fzQuatArray, warningCount); result.invalid())
+        {
+          return result;
+        }
       }
       else if(maskArray->getDataType() == DataType::int8)
       {
         auto* goodVoxelsArray = m_DataStructure.getDataAs<Int8Array>(m_InputValues->MaskArrayPath);
-        executeWithMaskType(dataAlgorithm, quatArray, phaseArray, phaseOps, numPhases, goodVoxelsArray, fzQuatArray, warningCount);
+        if(Result<> result = executeWithMaskType(dataAlgorithm, quatArray, phaseArray, phaseOps, numPhases, goodVoxelsArray, fzQuatArray, warningCount); result.invalid())
+        {
+          return result;
+        }
       }
     }
     else
     {
-      executeWithMaskType<int8>(dataAlgorithm, quatArray, phaseArray, phaseOps, numPhases, nullptr, fzQuatArray, warningCount);
+      if(Result<> result = executeWithMaskType<int8>(dataAlgorithm, quatArray, phaseArray, phaseOps, numPhases, nullptr, fzQuatArray, warningCount); result.invalid())
+      {
+        return result;
+      }
     }
 
     return CreatePhaseErrorResult(numPhases, warningCount.load());
@@ -276,9 +288,22 @@ public:
 
 private:
   template <typename MaskType>
-  void executeWithMaskType(ParallelDataAlgorithm& dataAlgorithm, Float32Array& quatArray, Int32Array& phaseArray, const std::vector<ebsdlib::LaueOps::Pointer>& phaseOps, int32 numPhases,
-                           DataArray<MaskType>* maskArray, Float32Array& fzQuatArray, std::atomic_int32_t& warningCount) const
+  Result<> executeWithMaskType(ParallelDataAlgorithm& dataAlgorithm, Float32Array& quatArray, Int32Array& phaseArray, const std::vector<ebsdlib::LaueOps::Pointer>& phaseOps, int32 numPhases,
+                               DataArray<MaskType>* maskArray, Float32Array& fzQuatArray, std::atomic_int32_t& warningCount) const
   {
+    const auto& cellPhasesStoreRef = phaseArray.getDataStoreRef();
+    const auto* maskStoreRef = maskArray == nullptr ? nullptr : &maskArray->getDataStoreRef();
+    for(usize tupleIdx = 0; tupleIdx < phaseArray.getNumberOfTuples(); tupleIdx++)
+    {
+      const bool generateFzQuat = maskStoreRef == nullptr || static_cast<bool>((*maskStoreRef)[tupleIdx]);
+      const int32 currentPhaseIdx = cellPhasesStoreRef[tupleIdx];
+      if(generateFzQuat && currentPhaseIdx < 0)
+      {
+        return MakeErrorResult(-49009, fmt::format("Cell Phases array '{}' has value {} at tuple index {}. Valid enabled Phase indices are in [0, {}).", m_InputValues->CellPhasesArrayPath.toString(),
+                                                   currentPhaseIdx, tupleIdx, numPhases));
+      }
+    }
+
     const auto* quatStore = dynamic_cast<const DataStore<float32>*>(&quatArray.getDataStoreRef());
     const auto* phaseStore = dynamic_cast<const DataStore<int32>*>(&phaseArray.getDataStoreRef());
     auto* fzQuatStore = dynamic_cast<DataStore<float32>*>(&fzQuatArray.getDataStoreRef());
@@ -289,10 +314,11 @@ private:
     {
       const MaskType* maskData = maskStore == nullptr ? nullptr : maskStore->data();
       dataAlgorithm.execute(GenerateFZQuatsContiguousImpl<MaskType>(quatStore->data(), phaseStore->data(), phaseOps, numPhases, maskData, fzQuatStore->data(), m_ShouldCancel, warningCount));
-      return;
+      return {};
     }
 
     dataAlgorithm.execute(GenerateFZQuatsAbstractImpl<DataArray<MaskType>>(quatArray, phaseArray, phaseOps, numPhases, maskArray, fzQuatArray, m_ShouldCancel, warningCount));
+    return {};
   }
 
   DataStructure& m_DataStructure;
@@ -417,6 +443,11 @@ private:
 
         const int32 phase = phaseBuffer[tupleIndex];
         const bool generateFZQuat = maskStore == nullptr || static_cast<bool>(maskBuffer[tupleIndex]);
+        if(generateFZQuat && phase < 0)
+        {
+          return MakeErrorResult(-49009, fmt::format("Cell Phases array '{}' has value {} at tuple index {}. Valid enabled Phase indices are in [0, {}).",
+                                                     m_InputValues->CellPhasesArrayPath.toString(), phase, offset + tupleIndex, numPhases));
+        }
         if(phase >= numPhases)
         {
           warningCount++;

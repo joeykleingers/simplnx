@@ -217,6 +217,11 @@ ComputeKernelAvgMisorientationsDirect::~ComputeKernelAvgMisorientationsDirect() 
 
 Result<> ComputeKernelAvgMisorientationsDirect::operator()()
 {
+  if(Result<> validationResult = ValidateKernelAvgMisorientationsPhaseIndices(m_DataStructure, *m_InputValues); validationResult.invalid())
+  {
+    return validationResult;
+  }
+
   const auto& imageGeom = m_DataStructure.getDataRefAs<ImageGeom>(m_InputValues->InputImageGeometry);
   SizeVec3 udims = imageGeom.getDimensions();
 

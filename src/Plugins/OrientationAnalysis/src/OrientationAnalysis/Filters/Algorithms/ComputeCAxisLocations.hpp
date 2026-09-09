@@ -57,8 +57,8 @@ public:
 
   /**
    * @brief Computes c-axis locations.
-   * @return An error if no hexagonal phase exists, or a warning for skipped
-   *         non-hexagonal phases.
+   * @return An error for missing hexagonal phases or an invalid phase index.
+   *         Returns a warning when the algorithm skips non-hexagonal phases.
    *
    * Cancellation returns success with completed pages preserved. Current bulk-
    * I/O Result values are not inspected.

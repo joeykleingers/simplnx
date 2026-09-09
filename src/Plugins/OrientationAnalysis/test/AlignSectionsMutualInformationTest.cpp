@@ -103,6 +103,80 @@ TEST_CASE("OrientationAnalysis::AlignSectionsMutualInformationFilter: InValid fi
   UnitTest::CheckArraysInheritTupleDims(dataStructure);
 }
 
+TEST_CASE("OrientationAnalysis::AlignSectionsMutualInformationFilter: Phase and Laue Index Bounds", "[OrientationAnalysis][AlignSectionsMutualInformationFilter]")
+{
+  UnitTest::LoadPlugins();
+
+  const bool invalidPhaseIdx = GENERATE(false, true);
+  CAPTURE(invalidPhaseIdx);
+
+  constexpr usize k_DimX = 8;
+  constexpr usize k_DimY = 8;
+  constexpr usize k_DimZ = 2;
+  constexpr usize k_TotalVoxels = k_DimX * k_DimY * k_DimZ;
+  constexpr usize k_NumCrystalStructures = 2;
+
+  DataStructure dataStructure;
+  auto* imageGeomPtr = ImageGeom::Create(dataStructure, "ImageGeometry");
+  imageGeomPtr->setDimensions({k_DimX, k_DimY, k_DimZ});
+  imageGeomPtr->setSpacing({1.0F, 1.0F, 1.0F});
+  imageGeomPtr->setOrigin({0.0F, 0.0F, 0.0F});
+
+  const ShapeType cellTupleShape = {k_DimZ, k_DimY, k_DimX};
+  auto* cellDataPtr = AttributeMatrix::Create(dataStructure, "CellData", cellTupleShape, imageGeomPtr->getId());
+  imageGeomPtr->setCellData(*cellDataPtr);
+  auto* ensembleDataPtr = AttributeMatrix::Create(dataStructure, "CellEnsembleData", ShapeType{k_NumCrystalStructures}, imageGeomPtr->getId());
+
+  auto* quatsArrayPtr = UnitTest::CreateTestDataArray<float32>(dataStructure, "Quats", cellTupleShape, {4}, cellDataPtr->getId());
+  auto* cellPhasesArrayPtr = UnitTest::CreateTestDataArray<int32>(dataStructure, "Phases", cellTupleShape, {1}, cellDataPtr->getId());
+  auto* maskArrayPtr = UnitTest::CreateTestDataArray<bool>(dataStructure, "Mask", cellTupleShape, {1}, cellDataPtr->getId());
+  auto* crystalStructuresArrayPtr = UnitTest::CreateTestDataArray<uint32>(dataStructure, "CrystalStructures", ShapeType{k_NumCrystalStructures}, {1}, ensembleDataPtr->getId());
+
+  quatsArrayPtr->fill(0.0F);
+  for(usize voxelIdx = 0; voxelIdx < k_TotalVoxels; ++voxelIdx)
+  {
+    (*quatsArrayPtr)[voxelIdx * 4 + 3] = 1.0F;
+  }
+  cellPhasesArrayPtr->fill(invalidPhaseIdx ? static_cast<int32>(k_NumCrystalStructures) : 1);
+  maskArrayPtr->fill(true);
+  (*crystalStructuresArrayPtr)[0] = 999U;
+  (*crystalStructuresArrayPtr)[1] = invalidPhaseIdx ? 1U : 999U;
+
+  const DataPath imageGeomPath({"ImageGeometry"});
+  const DataPath cellDataPath = imageGeomPath.createChildPath("CellData");
+  const DataPath ensembleDataPath = imageGeomPath.createChildPath("CellEnsembleData");
+
+  AlignSectionsMutualInformationFilter filter;
+  Arguments args = filter.getDefaultArguments();
+  args.insertOrAssign(AlignSectionsMutualInformationFilter::k_SelectedImageGeometryPath_Key, std::make_any<DataPath>(imageGeomPath));
+  args.insertOrAssign(AlignSectionsMutualInformationFilter::k_QuatsArrayPath_Key, std::make_any<DataPath>(cellDataPath.createChildPath("Quats")));
+  args.insertOrAssign(AlignSectionsMutualInformationFilter::k_CellPhasesArrayPath_Key, std::make_any<DataPath>(cellDataPath.createChildPath("Phases")));
+  args.insertOrAssign(AlignSectionsMutualInformationFilter::k_MaskArrayPath_Key, std::make_any<DataPath>(cellDataPath.createChildPath("Mask")));
+  args.insertOrAssign(AlignSectionsMutualInformationFilter::k_CrystalStructuresArrayPath_Key, std::make_any<DataPath>(ensembleDataPath.createChildPath("CrystalStructures")));
+  args.insertOrAssign(AlignSectionsMutualInformationFilter::k_UseMask_Key, std::make_any<bool>(false));
+  args.insertOrAssign(AlignSectionsMutualInformationFilter::k_StoreAlignmentShifts_Key, std::make_any<bool>(false));
+
+  SECTION("Participating index returns an error")
+  {
+    auto executeResult = filter.execute(dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == (invalidPhaseIdx ? -53703 : -53704));
+  }
+
+  SECTION("Masked Phase is ignored")
+  {
+    cellPhasesArrayPtr->fill(static_cast<int32>(k_NumCrystalStructures));
+    maskArrayPtr->fill(false);
+    (*crystalStructuresArrayPtr)[1] = 1U;
+    args.insertOrAssign(AlignSectionsMutualInformationFilter::k_UseMask_Key, std::make_any<bool>(true));
+
+    auto executeResult = filter.execute(dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
+  }
+
+  UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}
+
 TEST_CASE("OrientationAnalysis::AlignSectionsMutualInformationFilter: output test", "[Reconstruction][AlignSectionsMutualInformationFilter]")
 {
   UnitTest::LoadPlugins();

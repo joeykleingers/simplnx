@@ -37,10 +37,10 @@ ComputeFeatureReferenceCAxisMisorientations::~ComputeFeatureReferenceCAxisMisori
 Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
 {
   // The local ensemble cache avoids repeated cell-loop access.
-  const auto& crystalStructures = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
-  const usize numCrystalStructures = crystalStructures.getNumberOfTuples();
-  std::vector<uint32> crystalStructuresLocal(numCrystalStructures);
-  Result<> readResult = crystalStructures.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresLocal.data(), numCrystalStructures));
+  const auto& crystalStructuresArrayRef = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
+  const usize numCrystalStructures = crystalStructuresArrayRef.getNumberOfTuples();
+  std::vector<uint32> crystalStructuresCache(numCrystalStructures);
+  Result<> readResult = crystalStructuresArrayRef.getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures));
   if(readResult.invalid())
   {
     return readResult;
@@ -48,9 +48,9 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
 
   bool anyPhaseIsHex = false;
   bool allPhasesAreHex = true;
-  for(usize i = 1; i < numCrystalStructures; ++i)
+  for(usize phaseIdx = 1; phaseIdx < numCrystalStructures; ++phaseIdx)
   {
-    const auto crystalStructureType = crystalStructuresLocal[i];
+    const auto crystalStructureType = crystalStructuresCache[phaseIdx];
     const bool isHex = crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_High || crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_Low;
     anyPhaseIsHex = anyPhaseIsHex || isHex;
     allPhasesAreHex = allPhasesAreHex && isHex;
@@ -70,9 +70,9 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
          "Finding the feature reference c-axis misorientation requires Hexagonal-Low 6/m or Hexagonal-High 6/mmm type crystal structures. Calculations for non Hexagonal phases will be skipped."});
   }
 
-  const auto& featureIdsStore = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FeatureIdsArrayPath).getDataStoreRef();
-  const auto& quatsStore = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath).getDataStoreRef();
-  const auto& cellPhasesStore = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->CellPhasesArrayPath).getDataStoreRef();
+  const auto& featureIdsStoreRef = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FeatureIdsArrayPath).getDataStoreRef();
+  const auto& quatsStoreRef = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->QuatsArrayPath).getDataStoreRef();
+  const auto& cellPhasesStoreRef = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->CellPhasesArrayPath).getDataStoreRef();
 
   // Feature references stay local because cells access them by feature ID.
   const auto& avgCAxes = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->AvgCAxesArrayPath);
@@ -107,8 +107,8 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
 
   const Eigen::Vector3d cAxis{0.0, 0.0, 1.0};
 
-  std::vector<int32> featureIdSlice(sliceSize);
-  std::vector<int32> cellPhaseSlice(sliceSize);
+  std::vector<int32> featureIdsSlice(sliceSize);
+  std::vector<int32> cellPhasesSlice(sliceSize);
   std::vector<float32> quatSlice(quatSliceSize);
   std::vector<float32> outputSlice(sliceSize, 0.0f);
 
@@ -120,17 +120,17 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
     }
     const usize sliceOffset = static_cast<usize>(plane) * sliceSize;
 
-    readResult = featureIdsStore.copyIntoBuffer(sliceOffset, nonstd::span<int32>(featureIdSlice.data(), sliceSize));
+    readResult = featureIdsStoreRef.copyIntoBuffer(sliceOffset, nonstd::span<int32>(featureIdsSlice.data(), sliceSize));
     if(readResult.invalid())
     {
       return readResult;
     }
-    readResult = cellPhasesStore.copyIntoBuffer(sliceOffset, nonstd::span<int32>(cellPhaseSlice.data(), sliceSize));
+    readResult = cellPhasesStoreRef.copyIntoBuffer(sliceOffset, nonstd::span<int32>(cellPhasesSlice.data(), sliceSize));
     if(readResult.invalid())
     {
       return readResult;
     }
-    readResult = quatsStore.copyIntoBuffer(sliceOffset * numQuatComps, nonstd::span<float32>(quatSlice.data(), quatSliceSize));
+    readResult = quatsStoreRef.copyIntoBuffer(sliceOffset * numQuatComps, nonstd::span<float32>(quatSlice.data(), quatSliceSize));
     if(readResult.invalid())
     {
       return readResult;
@@ -142,13 +142,24 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
       {
         const usize localIdx = static_cast<usize>(row * xPoints + col);
         const usize quatLocalIdx = localIdx * numQuatComps;
-        const int32 cellFeatureId = featureIdSlice[localIdx];
-        const int32 cellPhase = cellPhaseSlice[localIdx];
-        const uint32 crystalStructureType = crystalStructuresLocal[cellPhase];
-        const bool isHex = crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_High || crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_Low;
-
-        if(isHex && cellFeatureId > 0 && cellPhase > 0)
+        const int32 currentFeatureIdx = featureIdsSlice[localIdx];
+        const int32 currentPhaseIdx = cellPhasesSlice[localIdx];
+        outputSlice[localIdx] = 0.0f;
+        if(currentFeatureIdx > 0 && currentPhaseIdx > 0)
         {
+          if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+          {
+            return MakeErrorResult(-9804,
+                                   fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid positive Phase indices are in [1, {}).",
+                                               m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, sliceOffset + localIdx, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                               numCrystalStructures, numCrystalStructures));
+          }
+          const uint32 crystalStructureType = crystalStructuresCache[currentPhaseIdx];
+          const bool isHex = crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_High || crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_Low;
+          if(!isHex)
+          {
+            continue;
+          }
           ebsdlib::OrientationMatrixDType oMatrix =
               ebsdlib::QuaternionDType(quatSlice[quatLocalIdx], quatSlice[quatLocalIdx + 1], quatSlice[quatLocalIdx + 2], quatSlice[quatLocalIdx + 3]).toOrientationMatrix();
           // The transposed matrix maps crystal [001] into the sample frame.
@@ -156,7 +167,7 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
 
           c1.normalize();
 
-          const usize avgCAxesIdx = static_cast<usize>(cellFeatureId) * 3;
+          const usize avgCAxesIdx = static_cast<usize>(currentFeatureIdx) * 3;
           Eigen::Vector3d avgCAxisMis = {avgCAxesLocal[avgCAxesIdx], avgCAxesLocal[avgCAxesIdx + 1], avgCAxesLocal[avgCAxesIdx + 2]};
           avgCAxisMis.normalize();
 
@@ -170,12 +181,8 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
           }
 
           outputSlice[localIdx] = static_cast<float32>(w);
-          counts[cellFeatureId]++;
-          avgMisorientations[cellFeatureId] += static_cast<float32>(w);
-        }
-        else
-        {
-          outputSlice[localIdx] = 0.0f;
+          counts[currentFeatureIdx]++;
+          avgMisorientations[currentFeatureIdx] += static_cast<float32>(w);
         }
       }
     }
@@ -223,7 +230,7 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
       return {};
     }
     const usize sliceOffset = static_cast<usize>(plane) * sliceSize;
-    readResult = featureIdsStore.copyIntoBuffer(sliceOffset, nonstd::span<int32>(featureIdSlice.data(), sliceSize));
+    readResult = featureIdsStoreRef.copyIntoBuffer(sliceOffset, nonstd::span<int32>(featureIdsSlice.data(), sliceSize));
     if(readResult.invalid())
     {
       return readResult;
@@ -236,7 +243,7 @@ Result<> ComputeFeatureReferenceCAxisMisorientations::operator()()
 
     for(usize localIdx = 0; localIdx < sliceSize; localIdx++)
     {
-      const int32 featureId = featureIdSlice[localIdx];
+      const int32 featureId = featureIdsSlice[localIdx];
       double diff = outputSlice[localIdx] - featureAverages[featureId];
       stdevs[featureId] += (diff * diff);
     }

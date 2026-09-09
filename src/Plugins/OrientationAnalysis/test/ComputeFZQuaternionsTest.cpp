@@ -106,6 +106,53 @@ TEST_CASE("OrientationAnalysis::ComputeFZQuaternions", "[OrientationAnalysis][Co
   UnitTest::CheckArraysInheritTupleDims(dataStructure);
 }
 
+TEST_CASE("OrientationAnalysis::ComputeFZQuaternionsFilter: Negative Phase Bounds", "[OrientationAnalysis][ComputeFZQuaternions]")
+{
+  UnitTest::LoadPlugins();
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  CAPTURE(scenario);
+  UnitTest::AlgorithmTestScope scope(scenario);
+
+  DataStructure dataStructure = CreateDataStructure();
+  const DataPath scanDataPath({k_SmallIN100, k_EbsdScanData});
+  const DataPath phasesPath = scanDataPath.createChildPath(k_Phases);
+  const DataPath maskPath = scanDataPath.createChildPath("Mask");
+  REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(phasesPath));
+  auto& cellPhasesArrayRef = dataStructure.getDataRefAs<Int32Array>(phasesPath);
+  cellPhasesArrayRef.getDataStoreRef()[0] = -1;
+
+  REQUIRE_NOTHROW(dataStructure.getDataRefAs<DataGroup>(scanDataPath));
+  const auto& scanDataGroupRef = dataStructure.getDataRefAs<DataGroup>(scanDataPath);
+  auto* maskArrayPtr = UnitTest::CreateTestDataArray<bool>(dataStructure, maskPath.getTargetName(), cellPhasesArrayRef.getTupleShape(), {1}, scanDataGroupRef.getId());
+  REQUIRE(maskArrayPtr != nullptr);
+  maskArrayPtr->fill(true);
+
+  ComputeFZQuaternionsFilter filter;
+  Arguments args = filter.getDefaultArguments();
+  args.insertOrAssign(ComputeFZQuaternionsFilter::k_QuatsArrayPath_Key, std::make_any<DataPath>(scanDataPath.createChildPath(k_Quats)));
+  args.insertOrAssign(ComputeFZQuaternionsFilter::k_FZQuatsArrayName_Key, std::make_any<std::string>(k_FZQuats));
+  args.insertOrAssign(ComputeFZQuaternionsFilter::k_CellPhasesArrayPath_Key, std::make_any<DataPath>(phasesPath));
+  args.insertOrAssign(ComputeFZQuaternionsFilter::k_CrystalStructuresArrayPath_Key, std::make_any<DataPath>(DataPath({k_SmallIN100, k_PhaseData, k_LaueClass})));
+
+  SECTION("Unmasked negative Phase returns an error")
+  {
+    args.insertOrAssign(ComputeFZQuaternionsFilter::k_UseMask_Key, std::make_any<bool>(false));
+    args.insertOrAssign(ComputeFZQuaternionsFilter::k_MaskArrayPath_Key, std::make_any<DataPath>(DataPath{}));
+    auto executeResult = scope.executeFilter(filter, dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -49009);
+  }
+
+  SECTION("Masked negative Phase is ignored")
+  {
+    maskArrayPtr->getDataStoreRef()[0] = false;
+    args.insertOrAssign(ComputeFZQuaternionsFilter::k_UseMask_Key, std::make_any<bool>(true));
+    args.insertOrAssign(ComputeFZQuaternionsFilter::k_MaskArrayPath_Key, std::make_any<DataPath>(maskPath));
+    auto executeResult = scope.executeFilter(filter, dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
+  }
+}
+
 TEST_CASE("OrientationAnalysis::ComputeFZQuaternionsFilter: SIMPL Backwards Compatibility", "[OrientationAnalysis][ComputeFZQuaternionsFilter][BackwardsCompatibility]")
 {
   auto app = Application::GetOrCreateInstance();

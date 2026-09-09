@@ -74,8 +74,7 @@ public:
 
   /**
    * @brief Computes misorientations.
-   * @pre Positive phase IDs are within the crystal-structure array.
-   * @return Success, or a bulk-I/O error.
+   * @return Success, or an error for invalid Phase or Laue indices or bulk I/O.
    *
    * Cancellation returns success with completed chunks preserved.
    */

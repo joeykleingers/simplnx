@@ -40,10 +40,10 @@ usize CalculateChunkTuples(const AbstractDataStore<float32>& inputOrientationsRe
   return std::min(totalTuples, slabTuples * slabsPerChunk);
 }
 
-void ComputeMisorientation(const ebsdlib::QuatD& q1, const ebsdlib::QuatD& q2, float32* outputMisorientations, usize laueClass, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps,
+void ComputeMisorientation(const ebsdlib::QuatD& q1, const ebsdlib::QuatD& q2, float32* outputMisorientations, usize currentLaueIndex, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps,
                            usize tupleIdx)
 {
-  const ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClass]->calculateMisorientation(q1, q2);
+  const ebsdlib::AxisAngleDType axisAngle = orientationOps[currentLaueIndex]->calculateMisorientation(q1, q2);
 
   const usize outputOffset = tupleIdx * k_OutputComponents;
   outputMisorientations[outputOffset] = axisAngle[0];
@@ -70,11 +70,11 @@ public:
     return m_InputOrientationsRef.copyIntoBuffer(tupleOffset * k_EulerComponents, nonstd::span<float32>(m_EulersBuffer.get(), tupleCount * k_EulerComponents));
   }
 
-  void computeMisorientation(const ebsdlib::QuatD& q1, usize laueClass, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps, float32* outputMisorientations, usize tupleIdx) const
+  void computeMisorientation(const ebsdlib::QuatD& q1, usize currentLaueIndex, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps, float32* outputMisorientations, usize tupleIdx) const
   {
     const usize eulerOffset = tupleIdx * k_EulerComponents;
     const ebsdlib::QuatD q2 = ebsdlib::EulerDType(m_EulersBuffer[eulerOffset], m_EulersBuffer[eulerOffset + 1], m_EulersBuffer[eulerOffset + 2]).toQuaternion();
-    ComputeMisorientation(q1, q2, outputMisorientations, laueClass, orientationOps, tupleIdx);
+    ComputeMisorientation(q1, q2, outputMisorientations, currentLaueIndex, orientationOps, tupleIdx);
   }
 
 private:
@@ -99,9 +99,9 @@ public:
     return {};
   }
 
-  void computeMisorientation(const ebsdlib::QuatD& q1, usize laueClass, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps, float32* outputMisorientations, usize tupleIdx) const
+  void computeMisorientation(const ebsdlib::QuatD& q1, usize currentLaueIndex, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps, float32* outputMisorientations, usize tupleIdx) const
   {
-    ComputeMisorientation(q1, m_ReferenceOrientation, outputMisorientations, laueClass, orientationOps, tupleIdx);
+    ComputeMisorientation(q1, m_ReferenceOrientation, outputMisorientations, currentLaueIndex, orientationOps, tupleIdx);
   }
 
 private:
@@ -122,10 +122,10 @@ template <typename SecondOrientationProvider>
 Result<> ComputeMisorientationChunks(DataStructure& dataStructure, const ComputeMisorientationsInputValues& inputValues, SecondOrientationProvider& secondOrientationProvider, usize chunkTuples,
                                      const std::atomic_bool& shouldCancel)
 {
-  const auto& inputOrientationsRef = dataStructure.getDataRefAs<Float32Array>(inputValues.InputOrientationPath1).getDataStoreRef();
-  const auto& cellPhasesRef = dataStructure.getDataRefAs<Int32Array>(inputValues.InputPhasesArrayPath).getDataStoreRef();
+  const auto& inputOrientationsStoreRef = dataStructure.getDataRefAs<Float32Array>(inputValues.InputOrientationPath1).getDataStoreRef();
+  const auto& cellPhasesStoreRef = dataStructure.getDataRefAs<Int32Array>(inputValues.InputPhasesArrayPath).getDataStoreRef();
   const auto& crystalStructuresStoreRef = dataStructure.getDataRefAs<UInt32Array>(inputValues.InputCrystalStructuresArrayPath).getDataStoreRef();
-  auto& outputMisorientationsRef = dataStructure.getDataRefAs<Float32Array>(inputValues.OutputMisorientationsPath).getDataStoreRef();
+  auto& outputMisorientationsStoreRef = dataStructure.getDataRefAs<Float32Array>(inputValues.OutputMisorientationsPath).getDataStoreRef();
 
   if(shouldCancel)
   {
@@ -133,16 +133,16 @@ Result<> ComputeMisorientationChunks(DataStructure& dataStructure, const Compute
   }
 
   const usize numCrystalStructures = crystalStructuresStoreRef.getNumberOfTuples();
-  std::vector<uint32> crystalStructures(numCrystalStructures);
-  Result<> result = crystalStructuresStoreRef.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), crystalStructures.size()));
+  std::vector<uint32> crystalStructuresCache(numCrystalStructures);
+  Result<> result = crystalStructuresStoreRef.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), crystalStructuresCache.size()));
   if(result.invalid())
   {
     return result;
   }
 
   const std::vector<ebsdlib::LaueOps::Pointer> orientationOps = ebsdlib::LaueOps::GetAllOrientationOps();
-  const usize totalPoints = inputOrientationsRef.getNumberOfTuples();
-  if(totalPoints == 0)
+  const usize totalTuples = inputOrientationsStoreRef.getNumberOfTuples();
+  if(totalTuples == 0)
   {
     return {};
   }
@@ -150,20 +150,20 @@ Result<> ComputeMisorientationChunks(DataStructure& dataStructure, const Compute
   auto cellPhasesBuffer = std::make_unique<int32[]>(chunkTuples);
   auto outputMisorientationsBuffer = std::make_unique<float32[]>(chunkTuples * k_OutputComponents);
 
-  for(usize tupleOffset = 0; tupleOffset < totalPoints; tupleOffset += chunkTuples)
+  for(usize tupleOffset = 0; tupleOffset < totalTuples; tupleOffset += chunkTuples)
   {
     if(shouldCancel)
     {
       return {};
     }
 
-    const usize tupleCount = std::min(chunkTuples, totalPoints - tupleOffset);
-    result = inputOrientationsRef.copyIntoBuffer(tupleOffset * k_EulerComponents, nonstd::span<float32>(inputOrientationsBuffer.get(), tupleCount * k_EulerComponents));
+    const usize tupleCount = std::min(chunkTuples, totalTuples - tupleOffset);
+    result = inputOrientationsStoreRef.copyIntoBuffer(tupleOffset * k_EulerComponents, nonstd::span<float32>(inputOrientationsBuffer.get(), tupleCount * k_EulerComponents));
     if(result.invalid())
     {
       return result;
     }
-    result = cellPhasesRef.copyIntoBuffer(tupleOffset, nonstd::span<int32>(cellPhasesBuffer.get(), tupleCount));
+    result = cellPhasesStoreRef.copyIntoBuffer(tupleOffset, nonstd::span<int32>(cellPhasesBuffer.get(), tupleCount));
     if(result.invalid())
     {
       return result;
@@ -177,13 +177,25 @@ Result<> ComputeMisorientationChunks(DataStructure& dataStructure, const Compute
     for(usize tupleIdx = 0; tupleIdx < tupleCount; tupleIdx++)
     {
       const usize outputOffset = tupleIdx * k_OutputComponents;
-      const int32 phase = cellPhasesBuffer[tupleIdx];
-      if(phase > 0)
+      const int32 currentPhaseIdx = cellPhasesBuffer[tupleIdx];
+      if(currentPhaseIdx > 0)
       {
+        if(static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+        {
+          return MakeErrorResult(
+              -68064, fmt::format("Cell Phases array '{}' has value {} at tuple index {}, but Crystal Structures array '{}' contains {} tuples. Valid positive Phase indices are in [1, {}).",
+                                  inputValues.InputPhasesArrayPath.toString(), currentPhaseIdx, tupleOffset + tupleIdx, inputValues.InputCrystalStructuresArrayPath.toString(), numCrystalStructures,
+                                  numCrystalStructures));
+        }
         const usize eulerOffset = tupleIdx * k_EulerComponents;
         const ebsdlib::QuatD q1 = ebsdlib::EulerDType(inputOrientationsBuffer[eulerOffset], inputOrientationsBuffer[eulerOffset + 1], inputOrientationsBuffer[eulerOffset + 2]).toQuaternion();
-        const usize laueClass = static_cast<usize>(crystalStructures[static_cast<usize>(phase)]);
-        secondOrientationProvider.computeMisorientation(q1, laueClass, orientationOps, outputMisorientationsBuffer.get(), tupleIdx);
+        const usize currentLaueIndex = static_cast<usize>(crystalStructuresCache[static_cast<usize>(currentPhaseIdx)]);
+        if(currentLaueIndex >= orientationOps.size())
+        {
+          return MakeErrorResult(-68065, fmt::format("Crystal Structures array '{}' has value {} at Phase index {}, but only {} Laue operations are available. Valid Laue indices are in [0, {}).",
+                                                     inputValues.InputCrystalStructuresArrayPath.toString(), currentLaueIndex, currentPhaseIdx, orientationOps.size(), orientationOps.size()));
+        }
+        secondOrientationProvider.computeMisorientation(q1, currentLaueIndex, orientationOps, outputMisorientationsBuffer.get(), tupleIdx);
       }
       else
       {
@@ -194,7 +206,7 @@ Result<> ComputeMisorientationChunks(DataStructure& dataStructure, const Compute
       }
     }
 
-    result = outputMisorientationsRef.copyFromBuffer(tupleOffset * k_OutputComponents, nonstd::span<const float32>(outputMisorientationsBuffer.get(), tupleCount * k_OutputComponents));
+    result = outputMisorientationsStoreRef.copyFromBuffer(tupleOffset * k_OutputComponents, nonstd::span<const float32>(outputMisorientationsBuffer.get(), tupleCount * k_OutputComponents));
     if(result.invalid())
     {
       return result;

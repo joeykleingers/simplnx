@@ -66,8 +66,9 @@ public:
 
   /**
    * @brief Computes feature-reference misorientations.
-   * @pre Positive cell feature and phase IDs are within their selected arrays.
-   * @return Result from feature-index validation.
+   * @pre Positive cell feature IDs are within their selected arrays.
+   * @return An error from feature-index validation, an invalid positive Phase
+   *         index, an invalid Laue index, or bulk I/O.
    *
    * Cancellation returns success with completed output chunks preserved.
    * Current bulk-I/O Result values are not inspected.

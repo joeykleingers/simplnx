@@ -40,9 +40,9 @@ Result<> AlignSectionsMutualInformation::operator()()
   return execute(gridGeom.getDimensions(), m_InputValues->ImageGeometryPath);
 }
 
-int32 AlignSectionsMutualInformation::formFeaturesForSlice(const float32* quats, const int32* phases, const uint8* mask, std::vector<int32>& featureIds, int64 dimX, int64 dimY,
-                                                           float32 misorientationTolerance, bool useMask, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps,
-                                                           const std::vector<uint32>& crystalStructures)
+Result<int32> AlignSectionsMutualInformation::formFeaturesForSlice(const float32* quats, const int32* phases, const uint8* mask, std::vector<int32>& featureIds, int64 dimX, int64 dimY,
+                                                                   int64 sliceOffset, float32 misorientationTolerance, bool useMask, const std::vector<ebsdlib::LaueOps::Pointer>& orientationOps,
+                                                                   const std::vector<uint32>& crystalStructures)
 {
   const int64 sliceVoxels = dimX * dimY;
   usize initialVoxelsListSize = 1000;
@@ -87,7 +87,21 @@ int32 AlignSectionsMutualInformation::formFeaturesForSlice(const float32* quats,
 
         auto q1Idx = currentpoint * 4;
         ebsdlib::QuatD quat1(quats[q1Idx], quats[q1Idx + 1], quats[q1Idx + 2], quats[q1Idx + 3]);
-        uint32 laueClass1 = crystalStructures[phases[currentpoint]];
+        const int32 currentPhaseIdx = phases[currentpoint];
+        if(static_cast<usize>(currentPhaseIdx) >= crystalStructures.size())
+        {
+          return MakeErrorResult<int32>(-53703,
+                                        fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                    m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, sliceOffset + currentpoint, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                    crystalStructures.size(), crystalStructures.size()));
+        }
+        const uint32 currentLaueIndex = crystalStructures[currentPhaseIdx];
+        if(currentLaueIndex >= orientationOps.size())
+        {
+          return MakeErrorResult<int32>(-53704,
+                                        fmt::format("Crystal Structures array '{}' has value {} at Phase index {}, but only {} Laue operations are available. Valid Laue indices are in [0, {}).",
+                                                    m_InputValues->CrystalStructuresArrayPath.toString(), currentLaueIndex, currentPhaseIdx, orientationOps.size(), orientationOps.size()));
+        }
         for(int32 i = 0; i < 4; i++)
         {
           int64 neighbor = currentpoint + neighborPoints[i];
@@ -112,11 +126,25 @@ int32 AlignSectionsMutualInformation::formFeaturesForSlice(const float32* quats,
             float32 angle = std::numeric_limits<float32>::max();
             auto q2Idx = neighbor * 4;
             ebsdlib::QuatD quat2(quats[q2Idx], quats[q2Idx + 1], quats[q2Idx + 2], quats[q2Idx + 3]);
-            uint32 phase2 = crystalStructures[phases[neighbor]];
-
-            if(laueClass1 == phase2)
+            const int32 neighborCellPhaseIdx = phases[neighbor];
+            if(static_cast<usize>(neighborCellPhaseIdx) >= crystalStructures.size())
             {
-              ebsdlib::AxisAngleDType axisAngle = orientationOps[laueClass1]->calculateMisorientation(quat1, quat2);
+              return MakeErrorResult<int32>(-53703,
+                                            fmt::format("Cell Phases array '{}' has value {} at voxel index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                        m_InputValues->CellPhasesArrayPath.toString(), neighborCellPhaseIdx, sliceOffset + neighbor,
+                                                        m_InputValues->CrystalStructuresArrayPath.toString(), crystalStructures.size(), crystalStructures.size()));
+            }
+            const uint32 neighborLaueIndex = crystalStructures[neighborCellPhaseIdx];
+            if(neighborLaueIndex >= orientationOps.size())
+            {
+              return MakeErrorResult<int32>(-53704,
+                                            fmt::format("Crystal Structures array '{}' has value {} at Phase index {}, but only {} Laue operations are available. Valid Laue indices are in [0, {}).",
+                                                        m_InputValues->CrystalStructuresArrayPath.toString(), neighborLaueIndex, neighborCellPhaseIdx, orientationOps.size(), orientationOps.size()));
+            }
+
+            if(currentLaueIndex == neighborLaueIndex)
+            {
+              ebsdlib::AxisAngleDType axisAngle = orientationOps[currentLaueIndex]->calculateMisorientation(quat1, quat2);
               angle = axisAngle[3];
             }
             if(angle < misorientationTolerance)
@@ -142,7 +170,7 @@ int32 AlignSectionsMutualInformation::formFeaturesForSlice(const float32* quats,
       voxelList.assign(initialVoxelsListSize, -1);
     }
   }
-  return featureCount;
+  return {featureCount};
 }
 
 namespace
@@ -264,7 +292,8 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
       sliceMask = maskBuf.data();
     }
 
-    return {formFeaturesForSlice(quatsBuf.data(), phasesBuf.data(), sliceMask, featureIds, dims[0], dims[1], misorientationTolerance, m_InputValues->UseMask, orientationOps, crystalStructures)};
+    return formFeaturesForSlice(quatsBuf.data(), phasesBuf.data(), sliceMask, featureIds, dims[0], dims[1], sliceOffset, misorientationTolerance, m_InputValues->UseMask, orientationOps,
+                                crystalStructures);
   };
 
   // The first adjacent pair uses the top slice as its reference.
@@ -337,7 +366,11 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
           {
             float32 disorientation = 0.0F;
             float32 count = 0.0F;
-            if(misorientations[k + oldXShift + dims[0] / 2][j + oldYShift + dims[1] / 2] == 0 && llabs(k + oldXShift) < (dims[0] / 2) && (j + oldYShift) < (dims[1] / 2))
+            // The memo table is dims[0] x dims[1]; confirm the candidate shift lies inside it before indexing.
+            const int64 xIdx = k + oldXShift + dims[0] / 2;
+            const int64 yIdx = j + oldYShift + dims[1] / 2;
+            const bool shiftInBounds = xIdx >= 0 && xIdx < dims[0] && yIdx >= 0 && yIdx < dims[1] && llabs(k + oldXShift) < (dims[0] / 2) && llabs(j + oldYShift) < (dims[1] / 2);
+            if(shiftInBounds && misorientations[xIdx][yIdx] == 0)
             {
               for(int64 dim1Index = 0; dim1Index < dims[1]; dim1Index = dim1Index + 4)
               {
@@ -400,7 +433,7 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
                 }
               }
               disorientation = 1.0f / disorientation;
-              misorientations[k + oldXShift + dims[0] / 2][j + oldYShift + dims[1] / 2] = disorientation;
+              misorientations[xIdx][yIdx] = disorientation;
               if(disorientation < minDisorientation)
               {
                 newXShift = k + oldXShift;
@@ -476,7 +509,11 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
           {
             float32 disorientation = 0.0F;
             float32 count = 0.0F;
-            if(misorientations[k + oldXShift + dims[0] / 2][j + oldYShift + dims[1] / 2] == 0 && llabs(k + oldXShift) < (dims[0] / 2) && (j + oldYShift) < (dims[1] / 2))
+            // The memo table is dims[0] x dims[1]; confirm the candidate shift lies inside it before indexing.
+            const int64 xIdx = k + oldXShift + dims[0] / 2;
+            const int64 yIdx = j + oldYShift + dims[1] / 2;
+            const bool shiftInBounds = xIdx >= 0 && xIdx < dims[0] && yIdx >= 0 && yIdx < dims[1] && llabs(k + oldXShift) < (dims[0] / 2) && llabs(j + oldYShift) < (dims[1] / 2);
+            if(shiftInBounds && misorientations[xIdx][yIdx] == 0)
             {
               for(int64 dim1Index = 0; dim1Index < dims[1]; dim1Index = dim1Index + 4)
               {
@@ -539,7 +576,7 @@ Result<> AlignSectionsMutualInformation::findShifts(std::vector<int64>& xShifts,
                 }
               }
               disorientation = 1.0f / disorientation;
-              misorientations[k + oldXShift + dims[0] / 2][j + oldYShift + dims[1] / 2] = disorientation;
+              misorientations[xIdx][yIdx] = disorientation;
               if(disorientation < minDisorientation)
               {
                 newXShift = k + oldXShift;

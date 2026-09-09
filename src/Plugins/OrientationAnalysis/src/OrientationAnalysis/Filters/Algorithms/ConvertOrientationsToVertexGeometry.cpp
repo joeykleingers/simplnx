@@ -114,8 +114,8 @@ Result<> ConvertOrientationsToVertexGeometry::operator()()
   const usize numTuples = (inputArrayF32 != nullptr) ? inputArrayF32->getNumberOfTuples() : inputArrayF64->getNumberOfTuples();
   const usize inNumComps = (inputArrayF32 != nullptr) ? inputArrayF32->getNumberOfComponents() : inputArrayF64->getNumberOfComponents();
 
-  auto* phasesArray = m_DataStructure.getDataAs<Int32Array>(m_InputValues->CellPhasesArrayPath);
-  auto* crystalStructuresArray = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
+  auto* cellPhasesArrayPtr = m_DataStructure.getDataAs<Int32Array>(m_InputValues->CellPhasesArrayPath);
+  auto* crystalStructuresArrayPtr = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath);
   auto& outputVertexGeom = m_DataStructure.getDataRefAs<VertexGeom>(m_InputValues->OutputVertexGeometryPath);
   Float32Array& vertices = outputVertexGeom.getVerticesRef();
   auto& verticesStoreRef = vertices.getDataStoreRef();
@@ -124,14 +124,14 @@ Result<> ConvertOrientationsToVertexGeometry::operator()()
   std::vector<uint32> crystalStructuresCache;
   if(m_InputValues->ConvertToFundamentalZone)
   {
-    const usize numCrystalStructures = crystalStructuresArray->getNumberOfTuples();
+    const usize numCrystalStructures = crystalStructuresArrayPtr->getNumberOfTuples();
     crystalStructuresCache.resize(numCrystalStructures);
-    if(Result<> ioResult = crystalStructuresArray->getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
+    if(Result<> ioResult = crystalStructuresArrayPtr->getDataStoreRef().copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
     {
       return ConvertResult(std::move(ioResult));
     }
   }
-  const std::vector<ebsdlib::LaueOps::Pointer> ops = ebsdlib::LaueOps::GetAllOrientationOps();
+  const std::vector<ebsdlib::LaueOps::Pointer> orientationOps = ebsdlib::LaueOps::GetAllOrientationOps();
 
   // Bounded chunk buffers, reused every iteration -- none of these scale with numTuples.
   auto inBuffer = std::make_unique<float32[]>(k_ChunkSize * inNumComps);
@@ -181,25 +181,31 @@ Result<> ConvertOrientationsToVertexGeometry::operator()()
 
     if(m_InputValues->ConvertToFundamentalZone)
     {
-      if(Result<> ioResult = phasesArray->getDataStoreRef().copyIntoBuffer(tupleIdx, nonstd::span<int32>(phasesBuffer.get(), chunkTuples)); ioResult.invalid())
+      if(Result<> ioResult = cellPhasesArrayPtr->getDataStoreRef().copyIntoBuffer(tupleIdx, nonstd::span<int32>(phasesBuffer.get(), chunkTuples)); ioResult.invalid())
       {
         return ConvertResult(std::move(ioResult));
       }
     }
 
-    for(usize t = 0; t < chunkTuples; ++t)
+    for(usize chunkTupleIdx = 0; chunkTupleIdx < chunkTuples; ++chunkTupleIdx)
     {
-      const usize quatOff = t * 4;
+      const usize quatOff = chunkTupleIdx * 4;
       ebsdlib::QuatD quat(quatBuffer[quatOff + 0], quatBuffer[quatOff + 1], quatBuffer[quatOff + 2], quatBuffer[quatOff + 3]);
       if(m_InputValues->ConvertToFundamentalZone)
       {
-        const int32 currentPhaseId = phasesBuffer[t];
-        const uint32 laueClass = crystalStructuresCache[currentPhaseId];
-        quat = (laueClass < ops.size()) ? ops[laueClass]->getFZQuat(quat) : ebsdlib::QuatD(0, 0, 0, 1);
+        const int32 currentPhaseIdx = phasesBuffer[chunkTupleIdx];
+        if(currentPhaseIdx < 0 || static_cast<usize>(currentPhaseIdx) >= crystalStructuresCache.size())
+        {
+          return MakeErrorResult(-1005, fmt::format("Cell Phases array '{}' has value {} at tuple index {}, but Crystal Structures array '{}' contains {} tuples. Valid Phase indices are in [0, {}).",
+                                                    m_InputValues->CellPhasesArrayPath.toString(), currentPhaseIdx, tupleIdx + chunkTupleIdx, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                    crystalStructuresCache.size(), crystalStructuresCache.size()));
+        }
+        const uint32 currentLaueIndex = crystalStructuresCache[currentPhaseIdx];
+        quat = (currentLaueIndex < orientationOps.size()) ? orientationOps[currentLaueIndex]->getFZQuat(quat) : ebsdlib::QuatD(0, 0, 0, 1);
       }
 
       const ebsdlib::StereographicDType st = ebsdlib::QuaternionDType(quat.getPositiveOrientation()).toStereographic();
-      const usize outOff = t * 3;
+      const usize outOff = chunkTupleIdx * 3;
       outVertBuffer[outOff + 0] = static_cast<float32>(st[0]);
       outVertBuffer[outOff + 1] = static_cast<float32>(st[1]);
       outVertBuffer[outOff + 2] = static_cast<float32>(st[2]);

@@ -26,19 +26,19 @@ ComputeFeatureNeighborCAxisMisalignments::~ComputeFeatureNeighborCAxisMisalignme
 
 Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
 {
-  const auto& crystalStructuresStore = m_DataStructure.getDataAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath)->getDataStoreRef();
-  const usize numPhases = crystalStructuresStore.getNumberOfTuples();
-  std::vector<uint32> crystalStructures(numPhases);
-  if(Result<> ioResult = crystalStructuresStore.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructures.data(), numPhases)); ioResult.invalid())
+  const auto& crystalStructuresStoreRef = m_DataStructure.getDataRefAs<UInt32Array>(m_InputValues->CrystalStructuresArrayPath).getDataStoreRef();
+  const usize numCrystalStructures = crystalStructuresStoreRef.getNumberOfTuples();
+  std::vector<uint32> crystalStructuresCache(numCrystalStructures);
+  if(Result<> ioResult = crystalStructuresStoreRef.copyIntoBuffer(0, nonstd::span<uint32>(crystalStructuresCache.data(), numCrystalStructures)); ioResult.invalid())
   {
     return ConvertResult(std::move(ioResult));
   }
 
   bool allPhasesHexagonal = true;
   bool noPhasesHexagonal = true;
-  for(usize i = 1; i < numPhases; ++i)
+  for(usize phaseIdx = 1; phaseIdx < numCrystalStructures; ++phaseIdx)
   {
-    const auto crystalStructureType = crystalStructures[i];
+    const auto crystalStructureType = crystalStructuresCache[phaseIdx];
     const bool isHex = crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_High || crystalStructureType == ebsdlib::CrystalStructure::Hexagonal_Low;
     allPhasesHexagonal = allPhasesHexagonal && isHex;
     noPhasesHexagonal = noPhasesHexagonal && !isHex;
@@ -56,19 +56,19 @@ Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
   }
 
   // The neighbor traversal accesses feature data in random order.
-  const auto& featurePhasesStore = m_DataStructure.getDataAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath)->getDataStoreRef();
-  const usize totalFeatures = featurePhasesStore.getNumberOfTuples();
-  std::vector<int32> featurePhases(totalFeatures);
-  if(Result<> ioResult = featurePhasesStore.copyIntoBuffer(0, nonstd::span<int32>(featurePhases.data(), totalFeatures)); ioResult.invalid())
+  const auto& featurePhasesStoreRef = m_DataStructure.getDataRefAs<Int32Array>(m_InputValues->FeaturePhasesArrayPath).getDataStoreRef();
+  const usize totalFeatures = featurePhasesStoreRef.getNumberOfTuples();
+  std::vector<int32> featurePhasesCache(totalFeatures);
+  if(Result<> ioResult = featurePhasesStoreRef.copyIntoBuffer(0, nonstd::span<int32>(featurePhasesCache.data(), totalFeatures)); ioResult.invalid())
   {
     return MergeResults(std::move(result), std::move(ioResult));
   }
 
-  const auto& avgQuatsStore = m_DataStructure.getDataAs<Float32Array>(m_InputValues->AvgQuatsArrayPath)->getDataStoreRef();
-  const usize numQuatComps = avgQuatsStore.getNumberOfComponents();
+  const auto& avgQuatsStoreRef = m_DataStructure.getDataRefAs<Float32Array>(m_InputValues->AvgQuatsArrayPath).getDataStoreRef();
+  const usize numQuatComps = avgQuatsStoreRef.getNumberOfComponents();
   const usize quatSize = totalFeatures * numQuatComps;
   std::vector<float32> featureAvgQuat(quatSize);
-  if(Result<> ioResult = avgQuatsStore.copyIntoBuffer(0, nonstd::span<float32>(featureAvgQuat.data(), quatSize)); ioResult.invalid())
+  if(Result<> ioResult = avgQuatsStoreRef.copyIntoBuffer(0, nonstd::span<float32>(featureAvgQuat.data(), quatSize)); ioResult.invalid())
   {
     return MergeResults(std::move(result), std::move(ioResult));
   }
@@ -87,16 +87,20 @@ Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
   std::vector<std::vector<float32>> misalignmentLists(totalFeatures);
 
   const Eigen::Vector3d cAxis{0.0, 0.0, 1.0};
-  uint32 xtalPhase1 = 0;
-  uint32 xtalPhase2 = 0;
-
   for(usize featureIdx = 1; featureIdx < totalFeatures; featureIdx++)
   {
     if(m_ShouldCancel)
     {
       return {};
     }
-    xtalPhase1 = crystalStructures[featurePhases[featureIdx]];
+    const int32 currentPhaseIdx = featurePhasesCache[featureIdx];
+    if(currentPhaseIdx < 0 || static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+    {
+      return MakeErrorResult(-1564, fmt::format("Feature Phases array '{}' has value {} at feature index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                m_InputValues->FeaturePhasesArrayPath.toString(), currentPhaseIdx, featureIdx, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                numCrystalStructures, numCrystalStructures));
+    }
+    const uint32 currentCrystalStructure = crystalStructuresCache[currentPhaseIdx];
 
     const usize quatTupleIndex1 = featureIdx * numQuatComps;
     ebsdlib::OrientationMatrixDType oMatrix1 =
@@ -111,14 +115,22 @@ Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
     currentMisalignmentList.resize(currentNeighborList.size(), -1.0);
     // The denominator counts only same-phase hexagonal neighbors.
     usize hexNeighborListSize = currentNeighborList.size();
-    for(usize j = 0; j < currentNeighborList.size(); j++)
+    for(usize neighborListIdx = 0; neighborListIdx < currentNeighborList.size(); neighborListIdx++)
     {
-      int neighborFeatureId = currentNeighborList[j];
-      xtalPhase2 = crystalStructures[featurePhases[neighborFeatureId]];
-
-      if(xtalPhase1 == xtalPhase2 && (xtalPhase1 == ebsdlib::CrystalStructure::Hexagonal_High || xtalPhase1 == ebsdlib::CrystalStructure::Hexagonal_Low))
+      const int32 neighborFeatureIdx = currentNeighborList[neighborListIdx];
+      const int32 neighborFeaturePhaseIdx = featurePhasesCache[neighborFeatureIdx];
+      if(neighborFeaturePhaseIdx < 0 || static_cast<usize>(neighborFeaturePhaseIdx) >= numCrystalStructures)
       {
-        const usize quatTupleIndex2 = neighborFeatureId * numQuatComps;
+        return MakeErrorResult(-1564, fmt::format("Feature Phases array '{}' has value {} at feature index {}, but Crystal Structures array '{}' has {} tuples. Valid Phase indices are in [0, {}).",
+                                                  m_InputValues->FeaturePhasesArrayPath.toString(), neighborFeaturePhaseIdx, neighborFeatureIdx, m_InputValues->CrystalStructuresArrayPath.toString(),
+                                                  numCrystalStructures, numCrystalStructures));
+      }
+      const uint32 neighborCrystalStructure = crystalStructuresCache[neighborFeaturePhaseIdx];
+
+      if(currentCrystalStructure == neighborCrystalStructure &&
+         (currentCrystalStructure == ebsdlib::CrystalStructure::Hexagonal_High || currentCrystalStructure == ebsdlib::CrystalStructure::Hexagonal_Low))
+      {
+        const usize quatTupleIndex2 = neighborFeatureIdx * numQuatComps;
         ebsdlib::OrientationMatrixDType oMatrix2 =
             ebsdlib::QuaternionDType(featureAvgQuat[quatTupleIndex2], featureAvgQuat[quatTupleIndex2 + 1], featureAvgQuat[quatTupleIndex2 + 2], featureAvgQuat[quatTupleIndex2 + 3])
                 .toOrientationMatrix();
@@ -134,11 +146,11 @@ Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
           w = Constants::k_PiD - w;
         }
 
-        currentMisalignmentList[j] = static_cast<float32>(w * Constants::k_180OverPiD);
+        currentMisalignmentList[neighborListIdx] = static_cast<float32>(w * Constants::k_180OverPiD);
 
         if(m_InputValues->FindAvgMisals)
         {
-          avgCAxisBuf[featureIdx] += currentMisalignmentList[j];
+          avgCAxisBuf[featureIdx] += currentMisalignmentList[neighborListIdx];
         }
       }
       else
@@ -147,7 +159,7 @@ Result<> ComputeFeatureNeighborCAxisMisalignments::operator()()
         {
           hexNeighborListSize--;
         }
-        currentMisalignmentList[j] = std::nanf("");
+        currentMisalignmentList[neighborListIdx] = std::nanf("");
       }
     }
 

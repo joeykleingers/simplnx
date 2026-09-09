@@ -31,6 +31,14 @@ struct ORIENTATIONANALYSIS_EXPORT ComputeKernelAvgMisorientationsInputValues
 };
 
 /**
+ * @brief Validates Phase and Laue indices for focal tuples that participate in KAM calculation.
+ * @param dataStructure Provides the selected arrays.
+ * @param inputValues Identifies the KAM input arrays.
+ * @return Success, or an error for an invalid participating Phase or Laue index or bulk I/O.
+ */
+ORIENTATIONANALYSIS_EXPORT Result<> ValidateKernelAvgMisorientationsPhaseIndices(DataStructure& dataStructure, const ComputeKernelAvgMisorientationsInputValues& inputValues);
+
+/**
  * @class ComputeKernelAvgMisorientations
  * @brief Computes Kernel Average Misorientation for each Image Geometry cell.
  *
@@ -66,7 +74,7 @@ public:
 
   /**
    * @brief Dispatches KAM computation.
-   * @return Result from the selected executor.
+   * @return Success, or an error for an invalid participating Phase or Laue index, working set, or bulk I/O.
    */
   Result<> operator()();
 

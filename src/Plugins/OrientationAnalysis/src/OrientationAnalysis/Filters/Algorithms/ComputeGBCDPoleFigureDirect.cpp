@@ -289,6 +289,23 @@ Result<> ComputeGBCDPoleFigureDirect::operator()()
     return ConvertResult(std::move(ioResult));
   }
 
+  const int32 phaseIdx = m_InputValues->PhaseOfInterest;
+  const usize numGbcdPhases = gbcd.getNumberOfTuples();
+  if(phaseIdx <= 0 || static_cast<usize>(phaseIdx) >= numGbcdPhases || static_cast<usize>(phaseIdx) >= numCrystalStructures)
+  {
+    return MakeErrorResult(-34643,
+                           fmt::format("Phase of Interest {} cannot index GBCD array '{}' with {} tuples and Crystal Structures array '{}' with {} tuples. Valid Phase indices must be positive and "
+                                       "present in both arrays.",
+                                       phaseIdx, m_InputValues->GBCDArrayPath.toString(), numGbcdPhases, m_InputValues->CrystalStructuresArrayPath.toString(), numCrystalStructures));
+  }
+  const std::vector<ebsdlib::LaueOps::Pointer> orientationOps = ebsdlib::LaueOps::GetAllOrientationOps();
+  const uint32 currentLaueIndex = crystalStructuresCache[phaseIdx];
+  if(currentLaueIndex >= orientationOps.size())
+  {
+    return MakeErrorResult(-34644, fmt::format("Crystal Structures array '{}' has value {} at Phase index {}, but only {} Laue operations are available. Valid Laue indices are in [0, {}).",
+                                               m_InputValues->CrystalStructuresArrayPath.toString(), currentLaueIndex, phaseIdx, orientationOps.size(), orientationOps.size()));
+  }
+
   // Pixels outside the stereographic unit disk retain zero intensity.
   const usize poleFigureSize = poleFigure.getSize();
   auto poleFigureCache = std::make_unique<float64[]>(poleFigureSize);
@@ -330,7 +347,7 @@ Result<> ComputeGBCDPoleFigureDirect::operator()()
   gbcdDeltas[3] = (gbcdLimits[8] - gbcdLimits[3]) / static_cast<float32>(gbcdSizes[3]);
   gbcdDeltas[4] = (gbcdLimits[9] - gbcdLimits[4]) / static_cast<float32>(gbcdSizes[4]);
 
-  ebsdlib::LaueOps::Pointer orientOps = ebsdlib::LaueOps::GetAllOrientationOps()[crystalStructuresCache[m_InputValues->PhaseOfInterest]];
+  ebsdlib::LaueOps::Pointer orientOps = orientationOps[currentLaueIndex];
 
   int32 xPoints = m_InputValues->OutputImageDimension;
   int32 yPoints = m_InputValues->OutputImageDimension;

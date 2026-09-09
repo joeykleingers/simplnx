@@ -50,8 +50,7 @@ public:
 
   /**
    * @brief Generates the pole figure.
-   * @return Success, or an error from crystal-structure, phase-slice, or output
-   *         bulk I/O.
+   * @return An error for an invalid Phase or Laue index, or from bulk I/O.
    *
    * Cancellation returns success and preserves completed output pages.
    */

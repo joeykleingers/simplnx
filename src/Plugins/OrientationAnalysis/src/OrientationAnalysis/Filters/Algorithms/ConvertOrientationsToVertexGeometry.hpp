@@ -65,7 +65,7 @@ public:
 
   /**
    * @brief Converts orientations to vertex positions.
-   * @return Success, or a bulk-I/O error.
+   * @return Success, or an error for an invalid Phase index or bulk I/O.
    *
    * Cancellation returns success with completed chunks preserved.
    */

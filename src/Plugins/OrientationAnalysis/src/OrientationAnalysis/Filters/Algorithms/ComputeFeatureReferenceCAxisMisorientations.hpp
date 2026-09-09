@@ -63,9 +63,9 @@ public:
 
   /**
    * @brief Computes feature-reference c-axis misorientations.
-   * @pre Positive cell feature and phase IDs are within their selected arrays.
-   * @return An error if no hexagonal phase exists, or a warning for skipped
-   *         non-hexagonal phases.
+   * @pre Positive cell feature IDs are within the selected feature arrays.
+   * @return An error for missing hexagonal phases or an invalid positive cell
+   *         Phase index. Returns a warning for skipped non-hexagonal phases.
    *
    * Cancellation returns success with completed slices and feature outputs
    * preserved.

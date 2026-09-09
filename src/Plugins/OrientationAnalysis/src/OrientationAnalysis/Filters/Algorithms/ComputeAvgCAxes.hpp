@@ -60,8 +60,8 @@ public:
 
   /**
    * @brief Computes feature-average c axes.
-   * @return An error if no hexagonal phase exists, or a warning for skipped
-   *         non-hexagonal phases.
+   * @return An error for missing hexagonal phases or an invalid phase index.
+   *         Returns a warning when the algorithm skips non-hexagonal phases.
    *
    * Cancellation returns the current result without writing the local output
    * cache. Current bulk-I/O Result values are not inspected.

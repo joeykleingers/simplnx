@@ -385,6 +385,31 @@ Result<> ComputeTwinBoundaries::operator()()
     return MergeResults(std::move(result), std::move(ioResult));
   }
 
+  for(usize faceIdx = 0; faceIdx < numFaces; faceIdx++)
+  {
+    const int32 firstFeatureIdx = faceLabels[faceIdx * 2];
+    const int32 secondFeatureIdx = faceLabels[faceIdx * 2 + 1];
+    if(firstFeatureIdx <= 0 || secondFeatureIdx <= 0)
+    {
+      continue;
+    }
+    const int32 currentPhaseIdx = featurePhases[firstFeatureIdx];
+    const int32 neighborFeaturePhaseIdx = featurePhases[secondFeatureIdx];
+    if(currentPhaseIdx != neighborFeaturePhaseIdx)
+    {
+      continue;
+    }
+    if(currentPhaseIdx < 0 || static_cast<usize>(currentPhaseIdx) >= numCrystalStructures)
+    {
+      Result<> phaseError = MakeErrorResult(
+          -93215,
+          fmt::format("Feature Phases array '{}' has value {} at Feature index {}, referenced by face {}, but Crystal Structures array '{}' contains {} tuples. Valid Phase indices are in [0, {}).",
+                      m_InputValues->FeaturePhasesArrayPath.toString(), currentPhaseIdx, firstFeatureIdx, faceIdx, m_InputValues->CrystalStructuresArrayPath.toString(), numCrystalStructures,
+                      numCrystalStructures));
+      return MergeResults(std::move(result), std::move(phaseError));
+    }
+  }
+
   std::vector<float64> faceNormals;
   if(m_InputValues->FindCoherence)
   {

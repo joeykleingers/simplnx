@@ -94,6 +94,62 @@ TEST_CASE("OrientationAnalysis::ComputeGBCD", "[OrientationAnalysis][ComputeGBCD
   UnitTest::CheckArraysInheritTupleDims(dataStructure);
 }
 
+TEST_CASE("OrientationAnalysis::ComputeGBCDFilter: Phase and Laue Index Bounds", "[OrientationAnalysis][ComputeGBCDFilter]")
+{
+  UnitTest::LoadPlugins();
+  const UnitTest::PreferencesSentinel preferencesSentinel(DataStorageMode::ForceOutOfCore, 1);
+  const UnitTest::TestFileSentinel testDataSentinel(unit_test::k_TestFilesDir, "6_6_Small_IN100_GBCD.tar.gz", "6_6_Small_IN100_GBCD");
+  const fs::path inputFile = fs::path(unit_test::k_TestFilesDir.view()) / "6_6_Small_IN100_GBCD" / "6_6_Small_IN100_GBCD.dream3d";
+  DataStructure dataStructure = UnitTest::LoadDataStructure(inputFile);
+
+  const DataPath featureDataPath = DataPath({Constants::k_SmallIN100}).createChildPath(Constants::k_Grain_Data);
+  const DataPath avgEulerAnglesPath = featureDataPath.createChildPath(Constants::k_AvgEulerAngles);
+  const DataPath featurePhasesPath = featureDataPath.createChildPath(Constants::k_Phases);
+  const DataPath crystalStructuresPath = DataPath({Constants::k_SmallIN100}).createChildPath(Constants::k_Phase_Data).createChildPath(Constants::k_CrystalStructures);
+  const DataPath triangleGeometryPath({Constants::k_TriangleDataContainerName});
+  const DataPath faceDataPath = triangleGeometryPath.createChildPath(Constants::k_FaceData);
+
+  REQUIRE_NOTHROW(dataStructure.getDataRefAs<Int32Array>(featurePhasesPath));
+  auto& featurePhasesArrayRef = dataStructure.getDataRefAs<Int32Array>(featurePhasesPath);
+  REQUIRE_NOTHROW(dataStructure.getDataRefAs<UInt32Array>(crystalStructuresPath));
+  auto& crystalStructuresArrayRef = dataStructure.getDataRefAs<UInt32Array>(crystalStructuresPath);
+
+  ComputeGBCDFilter filter;
+  Arguments args = filter.getDefaultArguments();
+  args.insertOrAssign(ComputeGBCDFilter::k_GBCDRes_Key, std::make_any<Float32Parameter::ValueType>(9.0F));
+  args.insertOrAssign(ComputeGBCDFilter::k_SelectedTriangleGeometryPath_Key, std::make_any<DataPath>(triangleGeometryPath));
+  args.insertOrAssign(ComputeGBCDFilter::k_SurfaceMeshFaceLabelsArrayPath_Key, std::make_any<DataPath>(faceDataPath.createChildPath(Constants::k_FaceLabels)));
+  args.insertOrAssign(ComputeGBCDFilter::k_SurfaceMeshFaceNormalsArrayPath_Key, std::make_any<DataPath>(faceDataPath.createChildPath(Constants::k_FaceNormals)));
+  args.insertOrAssign(ComputeGBCDFilter::k_SurfaceMeshFaceAreasArrayPath_Key, std::make_any<DataPath>(faceDataPath.createChildPath(Constants::k_FaceAreas)));
+  args.insertOrAssign(ComputeGBCDFilter::k_FeatureEulerAnglesArrayPath_Key, std::make_any<DataPath>(avgEulerAnglesPath));
+  args.insertOrAssign(ComputeGBCDFilter::k_FeaturePhasesArrayPath_Key, std::make_any<DataPath>(featurePhasesPath));
+  args.insertOrAssign(ComputeGBCDFilter::k_CrystalStructuresArrayPath_Key, std::make_any<DataPath>(crystalStructuresPath));
+  args.insertOrAssign(ComputeGBCDFilter::k_FaceEnsembleAttributeMatrixName_Key, std::make_any<std::string>("Bounds Face Ensemble Data"));
+  args.insertOrAssign(ComputeGBCDFilter::k_GBCDArrayName_Key, std::make_any<std::string>("Bounds GBCD"));
+
+  SECTION("Participating Phase returns an error")
+  {
+    auto& featurePhasesStoreRef = featurePhasesArrayRef.getDataStoreRef();
+    for(usize featureIdx = 1; featureIdx < featurePhasesStoreRef.getNumberOfTuples(); featureIdx++)
+    {
+      featurePhasesStoreRef[featureIdx] = static_cast<int32>(crystalStructuresArrayRef.getNumberOfTuples());
+    }
+    auto executeResult = filter.execute(dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -75000);
+  }
+
+  SECTION("Participating Laue index returns an error")
+  {
+    crystalStructuresArrayRef.getDataStoreRef()[1] = 999U;
+    auto executeResult = filter.execute(dataStructure, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -75001);
+  }
+
+  UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}
+
 TEST_CASE("OrientationAnalysis::ComputeGBCDFilter: SIMPL Backwards Compatibility", "[OrientationAnalysis][ComputeGBCDFilter][BackwardsCompatibility]")
 {
   auto app = Application::GetOrCreateInstance();

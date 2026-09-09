@@ -81,7 +81,7 @@ public:
 
   /**
    * @brief Executes EBSD connected-component labeling.
-   * @return Success, or a mask or bulk-I/O error.
+   * @return Success, or an error for an invalid Phase index, mask, or bulk I/O.
    */
   Result<> operator()();
 

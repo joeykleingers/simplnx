@@ -60,8 +60,7 @@ public:
 
   /**
    * @brief Executes the storage-appropriate implementation.
-   * @pre Cell phase IDs are nonnegative.
-   * @return Success, or an out-of-range phase or bulk-I/O error.
+   * @return Success, or an error for an enabled Phase outside the valid range or bulk I/O.
    *
    * Cancellation returns success with completed tuple ranges preserved.
    */

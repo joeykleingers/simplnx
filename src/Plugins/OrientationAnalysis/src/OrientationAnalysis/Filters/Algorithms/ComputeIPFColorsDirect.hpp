@@ -52,9 +52,7 @@ public:
 
   /**
    * @brief Computes IPF colors through direct parallel access.
-   * @pre Cell phase IDs are nonnegative.
-   * @return Success, or error -48000 if a positive phase ID exceeds the crystal-
-   *         structure array.
+   * @return Success, error -48000 for a high Phase ID, or error -48001 for an enabled negative Phase ID.
    *
    * Cancellation stops each worker range before its next tuple. The method
    * normally returns success with partial colors. It returns -48000 if completed

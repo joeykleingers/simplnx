@@ -1672,3 +1672,63 @@ TEST_CASE("OrientationAnalysis::BadDataNeighborOrientationCheckFilter: 2D Image 
     REQUIRE(maskStore.getValue(i) == expectedMask[i]);
   }
 }
+
+TEST_CASE("OrientationAnalysis::BadDataNeighborOrientationCheckFilter: Phase Index Bounds", "[OrientationAnalysis][BadDataNeighborOrientationCheckFilter]")
+{
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  const bool invalidBadVoxel = GENERATE(false, true);
+  CAPTURE(scenario, invalidBadVoxel);
+  UnitTest::AlgorithmTestScope scope(scenario);
+
+  DataStructure dataStructure;
+  auto* imageGeomPtr = ImageGeom::Create(dataStructure, VerificationConstants::k_ImageName);
+  imageGeomPtr->setSpacing({1.0F, 1.0F, 1.0F});
+  imageGeomPtr->setOrigin({0.0F, 0.0F, 0.0F});
+  imageGeomPtr->setDimensions({3, 3, 1});
+
+  auto* cellDataPtr = AttributeMatrix::Create(dataStructure, Constants::k_Cell_Data, ShapeType{1, 3, 3}, imageGeomPtr->getId());
+  imageGeomPtr->setCellData(*cellDataPtr);
+  auto* cellEnsemblePtr = AttributeMatrix::Create(dataStructure, Constants::k_Cell_Ensemble_Data, ShapeType{2}, imageGeomPtr->getId());
+
+  auto* maskArrayPtr = UnitTest::CreateTestDataArray<uint8>(dataStructure, VerificationConstants::k_MaskName, {1, 3, 3}, {1}, cellDataPtr->getId());
+  maskArrayPtr->fill(1);
+  (*maskArrayPtr)[4] = 0;
+
+  auto* cellPhasesArrayPtr = UnitTest::CreateTestDataArray<int32>(dataStructure, VerificationConstants::k_PhasesName, {1, 3, 3}, {1}, cellDataPtr->getId());
+  cellPhasesArrayPtr->fill(1);
+  (*cellPhasesArrayPtr)[invalidBadVoxel ? 4 : 0] = 2;
+
+  auto* quatsArrayPtr = UnitTest::CreateTestDataArray<float32>(dataStructure, VerificationConstants::k_QuatsName, {1, 3, 3}, {4}, cellDataPtr->getId());
+  quatsArrayPtr->fill(0.0F);
+  for(usize voxelIdx = 0; voxelIdx < 9; ++voxelIdx)
+  {
+    (*quatsArrayPtr)[voxelIdx * 4 + 3] = 1.0F;
+  }
+
+  auto* crystalStructuresArrayPtr = UnitTest::CreateTestDataArray<uint32>(dataStructure, VerificationConstants::k_CStuctsName, {2}, {1}, cellEnsemblePtr->getId());
+  (*crystalStructuresArrayPtr)[0] = 999U;
+  (*crystalStructuresArrayPtr)[1] = 1U;
+
+  BadDataNeighborOrientationCheckFilter filter;
+  Arguments args = filter.getDefaultArguments();
+  args.insertOrAssign(BadDataNeighborOrientationCheckFilter::k_MisorientationTolerance_Key, std::make_any<float32>(5.0F));
+  args.insertOrAssign(BadDataNeighborOrientationCheckFilter::k_NumberOfNeighbors_Key, std::make_any<int32>(4));
+  args.insertOrAssign(BadDataNeighborOrientationCheckFilter::k_ImageGeometryPath_Key, std::make_any<DataPath>(VerificationConstants::k_ImagePath));
+  args.insertOrAssign(BadDataNeighborOrientationCheckFilter::k_QuatsArrayPath_Key, std::make_any<DataPath>(VerificationConstants::k_QuatsArrayPath));
+  args.insertOrAssign(BadDataNeighborOrientationCheckFilter::k_MaskArrayPath_Key, std::make_any<DataPath>(VerificationConstants::k_MaskArrayPath));
+  args.insertOrAssign(BadDataNeighborOrientationCheckFilter::k_CellPhasesArrayPath_Key, std::make_any<DataPath>(VerificationConstants::k_PhasesArrayPath));
+  args.insertOrAssign(BadDataNeighborOrientationCheckFilter::k_CrystalStructuresArrayPath_Key, std::make_any<DataPath>(VerificationConstants::k_CStuctsArrayPath));
+
+  auto executeResult = scope.executeFilter(filter, dataStructure, args);
+  if(invalidBadVoxel)
+  {
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -54902);
+  }
+  else
+  {
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
+  }
+
+  UnitTest::CheckArraysInheritTupleDims(dataStructure);
+}

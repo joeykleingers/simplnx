@@ -640,6 +640,44 @@ TEST_CASE("OrientationAnalysis::ComputeKernelAvgMisorientationsFilter: Class 1 -
   UnitTest::CheckArraysInheritTupleDims(td.ds);
 }
 
+TEST_CASE("OrientationAnalysis::ComputeKernelAvgMisorientationsFilter: Phase and Laue Index Bounds", "[OrientationAnalysis][ComputeKernelAvgMisorientationsFilter]")
+{
+  const auto scenario = GENERATE(from_range(UnitTest::SelectAlgorithmTestScenariosForInMemoryStores()));
+  CAPTURE(scenario);
+  UnitTest::AlgorithmTestScope scope(scenario);
+  UnitTest::LoadPlugins();
+
+  AnalyticalFixtures::FixtureData fixture = AnalyticalFixtures::CreateScaffold(3, 1, 1);
+  ComputeKernelAvgMisorientationsFilter filter;
+  Arguments args = AnalyticalFixtures::BuildArgs({1, 0, 0});
+
+  SECTION("Participating Phase returns an error")
+  {
+    (*fixture.cellPhases)[1] = static_cast<int32>(fixture.crystalStructures->getNumberOfTuples());
+    auto executeResult = scope.executeFilter(filter, fixture.ds, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -67203);
+  }
+
+  SECTION("Participating Laue index returns an error")
+  {
+    (*fixture.crystalStructures)[1] = 999U;
+    auto executeResult = scope.executeFilter(filter, fixture.ds, args);
+    SIMPLNX_RESULT_REQUIRE_INVALID(executeResult.result);
+    REQUIRE(executeResult.result.errors()[0].code == -67204);
+  }
+
+  SECTION("Phase on a background Feature is ignored")
+  {
+    (*fixture.featureIds)[1] = 0;
+    (*fixture.cellPhases)[1] = static_cast<int32>(fixture.crystalStructures->getNumberOfTuples());
+    auto executeResult = scope.executeFilter(filter, fixture.ds, args);
+    SIMPLNX_RESULT_REQUIRE_VALID(executeResult.result);
+  }
+
+  UnitTest::CheckArraysInheritTupleDims(fixture.ds);
+}
+
 TEST_CASE("OrientationAnalysis::ComputeKernelAvgMisorientationsFilter: Class 1 - 1D x-axis Gradient", "[OrientationAnalysis][ComputeKernelAvgMisorientationsFilter]")
 {
   UnitTest::LoadPlugins();

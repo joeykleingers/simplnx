@@ -51,9 +51,7 @@ public:
 
   /**
    * @brief Computes IPF colors with bounded pages.
-   * @pre Cell phase IDs are nonnegative.
-   * @return Success, or error -48000 if a positive phase ID exceeds the crystal-
-   *         structure array.
+   * @return Success, error -48000 for a high Phase ID, error -48001 for an enabled negative Phase ID, or a bulk-I/O error.
    */
   Result<> operator()();
 
