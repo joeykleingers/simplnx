@@ -27,6 +27,7 @@
 #include <memory>
 #include <nonstd/span.hpp>
 #include <optional>
+#include <system_error>
 #include <vector>
 
 using namespace nx::core;
@@ -573,7 +574,10 @@ TEST_CASE("SimplnxCore::ComputeArrayStatisticsFilter: a damaged out-of-core back
 
   ioCollection.finalizeStores(dataStructure);
   ioCollection.shutdownManagers();
-  fs::resize_file(backingPath, 1024);
+  std::error_code resizeError;
+  fs::resize_file(backingPath, 1024, resizeError);
+  INFO("Could not truncate the out-of-core backing file '" << backingPath.string() << "': " << resizeError.message());
+  REQUIRE_FALSE(resizeError);
 
   ComputeArrayStatisticsFilter filter;
   Arguments args = filter.getDefaultArguments();
@@ -584,9 +588,10 @@ TEST_CASE("SimplnxCore::ComputeArrayStatisticsFilter: a damaged out-of-core back
   const auto executeResult = filter.execute(dataStructure, args);
   REQUIRE(executeResult.result.invalid());
   REQUIRE_FALSE(executeResult.result.errors().empty());
-  const bool identifiesInput = std::any_of(executeResult.result.errors().cbegin(), executeResult.result.errors().cend(),
-                                           [&inputPath](const Error& error) { return error.message.find(inputPath.toString()) != std::string::npos; });
-  REQUIRE(identifiesInput);
+  const std::string expectedMessage = "bulk read failed for array '" + inputPath.toString() + "'";
+  const bool identifiesBulkReadFailure = std::any_of(executeResult.result.errors().cbegin(), executeResult.result.errors().cend(),
+                                                     [&expectedMessage](const Error& error) { return error.code == -6032 && error.message.find(expectedMessage) != std::string::npos; });
+  REQUIRE(identifiesBulkReadFailure);
 }
 
 TEST_CASE("SimplnxCore::ComputeArrayStatisticsFilter: entry and mid-pass cancellation preserve unwritten outputs", "[SimplnxCore][ComputeArrayStatisticsFilter]")
