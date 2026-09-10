@@ -215,14 +215,17 @@ IFilter::PreflightResult IFilter::preflight(const DataStructure& data, const Arg
   }
 
   PreflightResult implResult = preflightImpl(data, resolvedArgs, messageHandler, shouldCancel, executionContext);
-  if(shouldCancel)
-  {
-    return {MakeErrorResult<OutputActions>(-1, "Filter cancelled")};
-  }
-
   for(auto&& warning : warnings)
   {
     implResult.outputActions.warnings().push_back(std::move(warning));
+  }
+
+  // Preserve a preflight failure when cancellation is observed after preflight returns.
+  if(shouldCancel && implResult.outputActions.valid())
+  {
+    Result<OutputActions> cancellationResult = MakeErrorResult<OutputActions>(-1, "Filter cancelled");
+    cancellationResult.warnings() = std::move(implResult.outputActions.warnings());
+    return {std::move(cancellationResult), std::move(implResult.outputValues)};
   }
 
   return implResult;
@@ -278,10 +281,10 @@ IFilter::ExecuteResult IFilter::execute(DataStructure& dataStructure, const Argu
     return ExecuteResult{MergeResults(std::move(preflightActionsResult), MakeErrorResult(-272, std::move(message))), std::move(preflightResult.outputValues)};
   } catch(const std::exception& e)
   {
-    // Backstop for any other exception that escapes executeImpl. Every storage failure has to
-    // reach the user, so an escaped exception becomes an execution error instead of terminating
-    // the process or being reported as success. Formatting the detailed message allocates and
-    // calls back into the filter, so a nested fallback protects this handler.
+    // Backstop any other exception that escapes executeImpl. The backstop converts an escaped
+    // exception to an error, which keeps the process alive and prevents a false success.
+    // Formatting the detailed message allocates and calls back into the filter.
+    // A nested fallback protects this handler.
     std::string message;
     try
     {
@@ -322,11 +325,17 @@ IFilter::ExecuteResult IFilter::execute(DataStructure& dataStructure, const Argu
     return ExecuteResult{std::move(preflightActionsExecuteResult), std::move(preflightResult.outputValues)};
   }
   Result<> deferredActionsResult = outputActions.applyDeferred(dataStructure, IDataAction::Mode::Execute);
+  Result<> postDeferredResult = MergeResults(std::move(preflightActionsExecuteResult), std::move(deferredActionsResult));
+  if(postDeferredResult.invalid())
+  {
+    return ExecuteResult{std::move(postDeferredResult), std::move(preflightResult.outputValues)};
+  }
 
-  Result<> validGeometryAndAttributeMatrices = MergeResults(dataStructure.validateGeometries(), dataStructure.validateAttributeMatrices());
-  validGeometryAndAttributeMatrices = MergeResults(validGeometryAndAttributeMatrices, deferredActionsResult);
+  Result<> geometryValidationResult = dataStructure.validateGeometries();
+  Result<> attributeMatrixValidationResult = dataStructure.validateAttributeMatrices();
+  Result<> validationResult = MergeResults(std::move(geometryValidationResult), std::move(attributeMatrixValidationResult));
 
-  Result<> finalResult = MergeResults(std::move(preflightActionsExecuteResult), std::move(validGeometryAndAttributeMatrices));
+  Result<> finalResult = MergeResults(std::move(postDeferredResult), std::move(validationResult));
 
   return ExecuteResult{std::move(finalResult), std::move(preflightResult.outputValues)};
 }
