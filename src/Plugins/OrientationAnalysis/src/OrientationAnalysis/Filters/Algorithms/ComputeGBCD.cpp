@@ -30,7 +30,6 @@ const usize k_NumMisoReps = 576 * 4;
  */
 class CalculateGBCDImpl
 {
-  usize m_TriangleChunkStartIndex;
   usize m_NumBinPerTriangle;
   const int32* m_Labels;
   const float64* m_Normals;
@@ -45,10 +44,8 @@ public:
   CalculateGBCDImpl() = delete;
   CalculateGBCDImpl(const CalculateGBCDImpl&) = default;
 
-  CalculateGBCDImpl(usize i, usize numMisoReps, const int32* labels, const float64* normals, const float32* eulersCache, const int32* phasesCache, const uint32* crystalStructuresCache,
-                    SizeGBCD& sizeGBCD)
-  : m_TriangleChunkStartIndex(i)
-  , m_NumBinPerTriangle(numMisoReps)
+  CalculateGBCDImpl(usize numMisoReps, const int32* labels, const float64* normals, const float32* eulersCache, const int32* phasesCache, const uint32* crystalStructuresCache, SizeGBCD& sizeGBCD)
+  : m_NumBinPerTriangle(numMisoReps)
   , m_Labels(labels)
   , m_Normals(normals)
   , m_PhasesCache(phasesCache)
@@ -84,7 +81,7 @@ public:
 
     for(usize triangleIndex = start; triangleIndex < end; triangleIndex++)
     {
-      usize minGbcdBinIndex = (triangleIndex - m_TriangleChunkStartIndex) * m_NumBinPerTriangle;
+      usize minGbcdBinIndex = triangleIndex * m_NumBinPerTriangle;
 
       int32 symCounter = 0;
       feature1 = m_Labels[2 * triangleIndex];
@@ -427,8 +424,7 @@ Result<> ComputeGBCD::operator()()
     sizeGbcd.m_GbcdHemiCheck.assign(sizeGbcd.m_GbcdHemiCheck.size(), false);
 
     // Bulk-read this chunk of triangle data (labels, normals, areas).
-    // The parallel worker receives offset-adjusted raw pointers into these
-    // buffers so it can index using absolute triangle indices.
+    // The parallel worker indexes these local buffers from zero.
     if(Result<> ioResult = labelsStore.copyIntoBuffer(i * 2, nonstd::span<int32>(labelsBuf.data(), triangleChunkSize * 2)); ioResult.invalid())
     {
       return ConvertResult(std::move(ioResult));
@@ -473,9 +469,8 @@ Result<> ComputeGBCD::operator()()
     }
 
     ParallelDataAlgorithm parallelTask;
-    parallelTask.setRange(i, i + triangleChunkSize);
-    parallelTask.execute(CalculateGBCDImpl(i, k_NumMisoReps, labelsBuf.data() - static_cast<std::ptrdiff_t>(i * 2), normalsBuf.data() - static_cast<std::ptrdiff_t>(i * 3), eulersCache.data(),
-                                           phasesCache.data(), crystalStructuresCache.data(), sizeGbcd));
+    parallelTask.setRange(0, triangleChunkSize);
+    parallelTask.execute(CalculateGBCDImpl(k_NumMisoReps, labelsBuf.data(), normalsBuf.data(), eulersCache.data(), phasesCache.data(), crystalStructuresCache.data(), sizeGbcd));
 
     if(getCancel())
     {

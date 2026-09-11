@@ -12,7 +12,96 @@
 #include "simplnx/Utilities/NeighborUtilities.hpp"
 #include "simplnx/Utilities/SliceBufferedTransfer.hpp"
 
+#include <algorithm>
+#include <array>
+#include <vector>
+
 using namespace nx::core;
+
+namespace
+{
+/**
+ * @struct OrderedCoordinationSliceTransfer
+ * @brief Replays one slice's tuple replacements in voxel order.
+ *
+ * Same-slice copies read the mutable destination buffer so later copies see earlier replacements.
+ * Adjacent source slices load only when a mark needs them.
+ */
+struct OrderedCoordinationSliceTransfer
+{
+  /**
+   * @brief Transfers one selected store through bounded, contiguous buffers.
+   * @tparam T Store element type, including bool.
+   * @param dataArray Represents the selected store.
+   * @param marks Maps current-slice destinations to global source tuples, or -1.
+   * @param sliceSize Number of tuples per XY slice.
+   * @param destZ Current destination slice.
+   * @param dimZ Number of image slices.
+   * @pre Each marked source is a valid face neighbor of its destination.
+   * @pre Previous slices are committed, and future slices are unchanged in this pass.
+   * @pre Tuple/component products fit usize and agree with the store shape.
+   * @return First invalid bulk Result, or success after the selected slice write.
+   */
+  template <typename T>
+  Result<> operator()(IDataArray& dataArray, const std::vector<int64>& marks, usize sliceSize, usize destZ, usize dimZ) const
+  {
+    using BufferType = SliceBufferedTransferFunctor::BufferType<T>;
+    auto& storeRef = dynamic_cast<DataArray<T>&>(dataArray).getDataStoreRef();
+    const usize componentCount = storeRef.getNumberOfComponents();
+    const usize sliceValueCount = sliceSize * componentCount;
+    auto destinationBuffer = SliceBufferedTransferFunctor::makeBuf<T>(sliceValueCount);
+    auto* destinationPtr = SliceBufferedTransferFunctor::bufPtr(destinationBuffer);
+    auto readResult = storeRef.copyIntoBuffer(destZ * sliceValueCount, nonstd::span<T>(destinationPtr, sliceValueCount));
+    if(readResult.invalid())
+    {
+      return readResult;
+    }
+
+    std::array<BufferType, 2> adjacentBuffers;
+    std::array<bool, 2> isAdjacentLoaded = {false, false};
+    bool isModified = false;
+    for(usize inSlice = 0; inSlice < sliceSize; inSlice++)
+    {
+      const int64 sourceIndex = marks[inSlice];
+      if(sourceIndex < 0)
+      {
+        continue;
+      }
+
+      const usize sourceZ = static_cast<usize>(sourceIndex) / sliceSize;
+      const usize sourceInSlice = static_cast<usize>(sourceIndex) % sliceSize;
+      const T* sourcePtr = destinationPtr;
+      if(sourceZ != destZ)
+      {
+        const usize sourceSlot = sourceZ < destZ ? 0 : 1;
+        if(!isAdjacentLoaded[sourceSlot] && sourceZ < dimZ)
+        {
+          adjacentBuffers[sourceSlot] = SliceBufferedTransferFunctor::makeBuf<T>(sliceValueCount);
+          readResult = storeRef.copyIntoBuffer(sourceZ * sliceValueCount, nonstd::span<T>(SliceBufferedTransferFunctor::bufPtr(adjacentBuffers[sourceSlot]), sliceValueCount));
+          if(readResult.invalid())
+          {
+            return readResult;
+          }
+          isAdjacentLoaded[sourceSlot] = true;
+        }
+        sourcePtr = SliceBufferedTransferFunctor::bufPtr(adjacentBuffers[sourceSlot]);
+      }
+
+      for(usize componentIdx = 0; componentIdx < componentCount; componentIdx++)
+      {
+        destinationPtr[inSlice * componentCount + componentIdx] = sourcePtr[sourceInSlice * componentCount + componentIdx];
+      }
+      isModified = true;
+    }
+
+    if(isModified)
+    {
+      return storeRef.copyFromBuffer(destZ * sliceValueCount, nonstd::span<const T>(destinationPtr, sliceValueCount));
+    }
+    return {};
+  }
+};
+} // namespace
 
 // -----------------------------------------------------------------------------
 ErodeDilateCoordinationNumber::ErodeDilateCoordinationNumber(DataStructure& dataStructure, const IFilter::MessageHandler& mesgHandler, const std::atomic_bool& shouldCancel,
@@ -42,18 +131,40 @@ Result<> ErodeDilateCoordinationNumber::operator()()
   SizeVec3 udims = selectedImageGeom.getDimensions();
   std::array<int64, 3> dims = {static_cast<int64>(udims[0]), static_cast<int64>(udims[1]), static_cast<int64>(udims[2])};
 
-  // Precompute face-neighbor index offsets and iteration order
+  // Face order determines which source wins when neighbor tallies compete.
   constexpr FaceNeighborType k_NumFaceNeighbors = VoxelNeighbors<Image3D>::k_FaceNeighborCount;
   const std::array<int64, k_NumFaceNeighbors> neighborVoxelIndexOffsets = initializeFaceNeighborOffsets(dims);
   constexpr std::array<FaceNeighborType, k_NumFaceNeighbors> faceNeighborInternalIdx = initializeFaceNeighborInternalIdx();
 
-  // Collect all sibling arrays that should be updated during the transfer phase
-  const std::vector<std::shared_ptr<IDataArray>> voxelArrays = nx::core::GenerateDataArrayList(m_DataStructure, m_InputValues->FeatureIdsArrayPath, m_InputValues->IgnoredDataArrayPaths);
+  std::vector<std::shared_ptr<IDataArray>> voxelArrays = nx::core::GenerateDataArrayList(m_DataStructure, m_InputValues->FeatureIdsArrayPath, m_InputValues->IgnoredDataArrayPaths);
+
+  // Aliases repeat an idempotent tuple copy within one voxel, but must not replay a complete slice twice.
+  usize uniqueStoreCount = 0;
+  for(usize arrayIdx = 0; arrayIdx < voxelArrays.size(); arrayIdx++)
+  {
+    const IDataStore* storePtr = voxelArrays[arrayIdx]->getIDataStore();
+    bool isAlreadySelected = false;
+    for(usize selectedIdx = 0; selectedIdx < uniqueStoreCount; selectedIdx++)
+    {
+      if(voxelArrays[selectedIdx]->getIDataStore() == storePtr)
+      {
+        isAlreadySelected = true;
+        break;
+      }
+    }
+    if(!isAlreadySelected)
+    {
+      voxelArrays[uniqueStoreCount++] = voxelArrays[arrayIdx];
+    }
+  }
+  voxelArrays.resize(uniqueStoreCount);
+
+  // An ignored FeatureIds path can still change through a selected store alias.
+  const bool transfersFeatureIds = std::any_of(voxelArrays.cbegin(), voxelArrays.cend(), [&featureIds](const auto& array) { return array->getIDataStore() == featureIds.getIDataStore(); });
 
   const usize sliceSize = static_cast<usize>(dims[0]) * static_cast<usize>(dims[1]);
   const usize dimZ = static_cast<usize>(dims[2]);
 
-  // ---- Determine max FeatureId using sequential Z-slice reads ----
   // Sequential bulk reads avoid OOC chunk thrashing.
   const auto& featureIdsStore = featureIds.getDataStoreRef();
   usize numFeatures = 0;
@@ -76,14 +187,12 @@ Result<> ErodeDilateCoordinationNumber::operator()()
     }
   }
 
-  // Per-voxel neighbor feature tally, sized so featureCount[featureId] is
-  // directly addressable. Reset after each voxel to avoid a full memset.
+  // Positive neighbor tallies reset per voxel. The zero tally accumulates across voxels and affects source selection.
   std::vector<int32> featureCount(numFeatures + 1, 0);
   bool keepGoing = true;
   int32 counter = 1;
 
-  // ---- FeatureIds rolling window (3 Z-slices) ----
-  // Slot 0 = z-1 (previous), slot 1 = z (current), slot 2 = z+1 (next).
+  // Slots hold the completed previous slice, the mutable current slice, and the untouched next slice.
   std::array<std::vector<int32>, 3> featureIdSlices;
   for(auto& fis : featureIdSlices)
   {
@@ -92,57 +201,13 @@ Result<> ErodeDilateCoordinationNumber::operator()()
 
   auto readFeatureIdSlice = [&](int64 z, usize slot) { return featureIdsStore.copyIntoBuffer(static_cast<usize>(z) * sliceSize, nonstd::span<int32>(featureIdSlices[slot].data(), sliceSize)); };
 
-  // Maps face-neighbor index to rolling-window slot:
-  // -Z -> slot 0, -Y/-X/+X/+Y -> slot 1 (same Z), +Z -> slot 2
+  // The -Z and +Z neighbors use adjacent slots; the four XY neighbors use the current slot.
   constexpr std::array<usize, 6> k_NeighborSlot = {0, 1, 1, 1, 1, 2};
 
-  // ---- Per-slice neighbor marks: 3 x O(sliceSize) ----
-  // Each entry is -1 (no transfer) or the global flat index of the source voxel.
-  // Replaces the O(totalPoints) full-volume neighbors array.
-  std::array<std::vector<int64>, 3> sliceNeighbors;
-  for(auto& sn : sliceNeighbors)
-  {
-    sn.resize(sliceSize, -1);
-  }
+  // One slice of ordered source marks lets each sibling replay the same immediate tuple copies.
+  std::vector<int64> sliceNeighbors(sliceSize, -1);
 
-  // ---- Per-slice coordination numbers: 3 x O(sliceSize) ----
-  // Tracks the coordination number for each voxel in the rolling window.
-  // Only voxels whose coordination number meets the threshold will be
-  // transferred during the commit phase.
-  std::array<std::vector<int32>, 3> sliceCoordination;
-  for(auto& sc : sliceCoordination)
-  {
-    sc.resize(sliceSize, 0);
-  }
-
-  // Commits one Z-slice worth of marks, but only for voxels whose coordination
-  // number meets or exceeds the user's threshold. This filtering step is what
-  // distinguishes this algorithm from simple erosion/dilation: low-coordination
-  // boundary voxels are left alone.
-  auto transferSlice = [&](usize z, const std::vector<int64>& marks, const std::vector<int32>& coord) -> Result<> {
-    std::vector<int64> filteredMarks(sliceSize, -1);
-    for(usize i = 0; i < sliceSize; i++)
-    {
-      if(coord[i] >= m_InputValues->CoordinationNumber && coord[i] > 0)
-      {
-        filteredMarks[i] = marks[i];
-        counter++;
-      }
-    }
-    for(const auto& voxelArray : voxelArrays)
-    {
-      Result<> transferResult = SliceBufferedTransferOneZ(*voxelArray, filteredMarks, sliceSize, z, dimZ);
-      if(transferResult.invalid())
-      {
-        return transferResult;
-      }
-    }
-    return {};
-  };
-
-  // ---- Main pass loop ----
-  // Repeats until either (a) no voxels were modified this pass, or
-  // (b) Loop is false and a single pass has completed.
+  // A qualifying voxel contributes to the counter even when its Feature ID store is ignored.
   while(counter > 0 && keepGoing)
   {
     counter = 0;
@@ -151,17 +216,7 @@ Result<> ErodeDilateCoordinationNumber::operator()()
       keepGoing = false;
     }
 
-    // Clear per-slice tracking arrays for this pass
-    for(auto& sn : sliceNeighbors)
-    {
-      std::fill(sn.begin(), sn.end(), -1);
-    }
-    for(auto& sc : sliceCoordination)
-    {
-      std::fill(sc.begin(), sc.end(), 0);
-    }
-
-    // Re-initialize rolling window from the (potentially modified) store
+    // Each new pass starts from the previous pass's committed stores.
     Result<> ioResult = readFeatureIdSlice(0, 1);
     if(ioResult.invalid())
     {
@@ -176,10 +231,9 @@ Result<> ErodeDilateCoordinationNumber::operator()()
       }
     }
 
-    // ---- Z-slice scan loop ----
     for(int64 zIdx = 0; zIdx < dims[2]; zIdx++)
     {
-      // Advance the FeatureId rolling window
+      // The completed current slice becomes the previous slice after all sibling stores commit.
       if(zIdx > 0)
       {
         std::swap(featureIdSlices[0], featureIdSlices[1]);
@@ -194,7 +248,7 @@ Result<> ErodeDilateCoordinationNumber::operator()()
         }
       }
 
-      // ---- Inner XY scan ----
+      std::fill(sliceNeighbors.begin(), sliceNeighbors.end(), -1);
       for(int64 yIdx = 0; yIdx < dims[1]; yIdx++)
       {
         for(int64 xIdx = 0; xIdx < dims[0]; xIdx++)
@@ -204,10 +258,12 @@ Result<> ErodeDilateCoordinationNumber::operator()()
           const int32 featureName = featureIdSlices[1][inSlice];
           int32 coordination = 0;
           int32 most = 0;
+          int64 selectedNeighbor = -1;
+          int32 selectedFeature = featureName;
 
           const std::array<bool, k_NumFaceNeighbors> isValidFaceNeighbor = computeValidFaceNeighbors(xIdx, yIdx, zIdx, dims);
 
-          // Map each face neighbor to its position within its rolling-window slice
+          // The validity mask prevents access to out-of-image neighbor positions.
           const std::array<usize, 6> neighborInSlice = {
               inSlice,                                         // -Z
               static_cast<usize>((yIdx - 1) * dims[0] + xIdx), // -Y
@@ -237,15 +293,23 @@ Result<> ErodeDilateCoordinationNumber::operator()()
               if(current > most)
               {
                 most = current;
-                // Record this neighbor as the best replacement source
-                sliceNeighbors[1][inSlice] = neighborPoint;
+                selectedNeighbor = neighborPoint;
+                selectedFeature = feature;
               }
             }
           }
-          // Store the computed coordination number for the transfer-filter step
-          sliceCoordination[1][inSlice] = coordination;
+          if(coordination >= m_InputValues->CoordinationNumber && coordination > 0)
+          {
+            sliceNeighbors[inSlice] = selectedNeighbor;
+            counter++;
+            if(transfersFeatureIds)
+            {
+              // Later decisions see this replacement before sibling stores replay the completed slice.
+              featureIdSlices[1][inSlice] = selectedFeature;
+            }
+          }
 
-          // Reset featureCount entries touched by this voxel's neighbors
+          // The center update does not change any face-neighbor value used by this reset.
           for(const auto& faceIndex : faceNeighborInternalIdx)
           {
             if(!isValidFaceNeighbor[faceIndex])
@@ -261,34 +325,14 @@ Result<> ErodeDilateCoordinationNumber::operator()()
         }
       }
 
-      // ---- Deferred transfer for slice z-1 ----
-      // After processing slice z, all marks for z-1 are complete.
-      if(zIdx > 0)
+      // Replay from the uncommitted store slice. Prewriting resident Feature IDs would apply the marks twice.
+      for(const auto& voxelArray : voxelArrays)
       {
-        ioResult = transferSlice(static_cast<usize>(zIdx - 1), sliceNeighbors[0], sliceCoordination[0]);
+        ioResult = ExecuteDataFunction(OrderedCoordinationSliceTransfer{}, voxelArray->getDataType(), *voxelArray, sliceNeighbors, sliceSize, static_cast<usize>(zIdx), dimZ);
         if(ioResult.invalid())
         {
           return ioResult;
         }
-      }
-
-      // ---- Rotate per-slice arrays forward ----
-      std::swap(sliceNeighbors[0], sliceNeighbors[1]);
-      std::swap(sliceNeighbors[1], sliceNeighbors[2]);
-      std::fill(sliceNeighbors[2].begin(), sliceNeighbors[2].end(), -1);
-
-      std::swap(sliceCoordination[0], sliceCoordination[1]);
-      std::swap(sliceCoordination[1], sliceCoordination[2]);
-      std::fill(sliceCoordination[2].begin(), sliceCoordination[2].end(), 0);
-    }
-
-    // ---- Flush final Z-slice ----
-    if(dims[2] > 0)
-    {
-      ioResult = transferSlice(static_cast<usize>(dims[2] - 1), sliceNeighbors[0], sliceCoordination[0]);
-      if(ioResult.invalid())
-      {
-        return ioResult;
       }
     }
   }
