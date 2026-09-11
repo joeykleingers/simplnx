@@ -1,5 +1,6 @@
 #include "simplnx/DataStructure/DataArray.hpp"
 #include "simplnx/Common/Array.hpp"
+#include "simplnx/Common/TypesUtility.hpp"
 #include "simplnx/Core/Application.hpp"
 #include "simplnx/DataStructure/AttributeMatrix.hpp"
 #include "simplnx/DataStructure/DataStore.hpp"
@@ -15,6 +16,9 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
+#include <memory>
+#include <utility>
 #include <vector>
 
 using namespace nx::core;
@@ -231,6 +235,205 @@ TEST_CASE("DataStore Test")
   dataStore.setComponent(2, 2, 99);
   REQUIRE(dataStore[8] == 99);
   REQUIRE(dataStore.getComponentValue(2, 2) == 99);
+}
+
+TEST_CASE("DataStore allocation contract", "[simplnx][DataStore]")
+{
+  SECTION("initialized growth preserves the prefix and initializes the tail")
+  {
+    DataStore<int32> dataStore(ShapeType{2}, ShapeType{2}, 7);
+    const std::array<int32, 4> initialValues = {7, 7, 7, 7};
+    for(usize valueIndex = 0; valueIndex < initialValues.size(); ++valueIndex)
+    {
+      REQUIRE(dataStore[valueIndex] == initialValues[valueIndex]);
+    }
+
+    const std::array<int32, 4> prefixValues = {10, 11, 20, 21};
+    for(usize valueIndex = 0; valueIndex < prefixValues.size(); ++valueIndex)
+    {
+      dataStore[valueIndex] = prefixValues[valueIndex];
+    }
+
+    const Result<> resizeResult = dataStore.resizeTuples(ShapeType{4});
+    REQUIRE(resizeResult.valid());
+    REQUIRE(dataStore.getTupleShape() == ShapeType{4});
+    REQUIRE(dataStore.getComponentShape() == ShapeType{2});
+    REQUIRE(dataStore.getNumberOfTuples() == 4);
+    REQUIRE(dataStore.getNumberOfComponents() == 2);
+    REQUIRE(dataStore.getSize() == 8);
+
+    const std::array<int32, 8> expectedValues = {10, 11, 20, 21, 7, 7, 7, 7};
+    for(usize valueIndex = 0; valueIndex < expectedValues.size(); ++valueIndex)
+    {
+      REQUIRE(dataStore[valueIndex] == expectedValues[valueIndex]);
+    }
+  }
+
+  SECTION("zero-sized initialized storage grows to initialized values")
+  {
+    DataStore<int32> dataStore(ShapeType{0}, ShapeType{2}, 7);
+    REQUIRE(dataStore.getTupleShape() == ShapeType{0});
+    REQUIRE(dataStore.getComponentShape() == ShapeType{2});
+    REQUIRE(dataStore.getNumberOfTuples() == 0);
+    REQUIRE(dataStore.getNumberOfComponents() == 2);
+    REQUIRE(dataStore.getSize() == 0);
+
+    const Result<> resizeResult = dataStore.resizeTuples(ShapeType{2});
+    REQUIRE(resizeResult.valid());
+    REQUIRE(dataStore.getTupleShape() == ShapeType{2});
+    REQUIRE(dataStore.getComponentShape() == ShapeType{2});
+    REQUIRE(dataStore.getNumberOfTuples() == 2);
+    REQUIRE(dataStore.getNumberOfComponents() == 2);
+    REQUIRE(dataStore.getSize() == 4);
+
+    const std::array<int32, 4> expectedValues = {7, 7, 7, 7};
+    for(usize valueIndex = 0; valueIndex < expectedValues.size(); ++valueIndex)
+    {
+      REQUIRE(dataStore[valueIndex] == expectedValues[valueIndex]);
+    }
+  }
+
+  SECTION("copy construction preserves values and remembered initialization")
+  {
+    DataStore<int32> sourceDataStore(ShapeType{2}, ShapeType{2}, 7);
+    const std::array<int32, 4> originalValues = {10, 11, 20, 21};
+    for(usize valueIndex = 0; valueIndex < originalValues.size(); ++valueIndex)
+    {
+      sourceDataStore[valueIndex] = originalValues[valueIndex];
+    }
+
+    DataStore<int32> copiedDataStore(sourceDataStore);
+    REQUIRE(copiedDataStore.getTupleShape() == ShapeType{2});
+    REQUIRE(copiedDataStore.getComponentShape() == ShapeType{2});
+    REQUIRE(copiedDataStore.getNumberOfTuples() == 2);
+    REQUIRE(copiedDataStore.getNumberOfComponents() == 2);
+    REQUIRE(copiedDataStore.getSize() == 4);
+    REQUIRE(copiedDataStore.data() != sourceDataStore.data());
+    for(usize valueIndex = 0; valueIndex < originalValues.size(); ++valueIndex)
+    {
+      REQUIRE(copiedDataStore[valueIndex] == originalValues[valueIndex]);
+    }
+
+    sourceDataStore[0] = 99;
+    const std::array<int32, 4> changedSourceValues = {99, 11, 20, 21};
+    for(usize valueIndex = 0; valueIndex < originalValues.size(); ++valueIndex)
+    {
+      REQUIRE(sourceDataStore[valueIndex] == changedSourceValues[valueIndex]);
+      REQUIRE(copiedDataStore[valueIndex] == originalValues[valueIndex]);
+    }
+
+    const Result<> resizeResult = copiedDataStore.resizeTuples(ShapeType{3});
+    REQUIRE(resizeResult.valid());
+    REQUIRE(copiedDataStore.getTupleShape() == ShapeType{3});
+    REQUIRE(copiedDataStore.getComponentShape() == ShapeType{2});
+    REQUIRE(copiedDataStore.getNumberOfTuples() == 3);
+    REQUIRE(copiedDataStore.getNumberOfComponents() == 2);
+    REQUIRE(copiedDataStore.getSize() == 6);
+    const std::array<int32, 6> expectedCopiedValues = {10, 11, 20, 21, 7, 7};
+    for(usize valueIndex = 0; valueIndex < expectedCopiedValues.size(); ++valueIndex)
+    {
+      REQUIRE(copiedDataStore[valueIndex] == expectedCopiedValues[valueIndex]);
+    }
+
+    REQUIRE(sourceDataStore.getTupleShape() == ShapeType{2});
+    REQUIRE(sourceDataStore.getComponentShape() == ShapeType{2});
+    REQUIRE(sourceDataStore.getNumberOfTuples() == 2);
+    REQUIRE(sourceDataStore.getNumberOfComponents() == 2);
+    REQUIRE(sourceDataStore.getSize() == 4);
+    for(usize valueIndex = 0; valueIndex < changedSourceValues.size(); ++valueIndex)
+    {
+      REQUIRE(sourceDataStore[valueIndex] == changedSourceValues[valueIndex]);
+    }
+  }
+
+  SECTION("caller-owned storage grows with the integer mudflap value")
+  {
+    auto buffer = std::make_unique<int32[]>(4);
+    const std::array<int32, 4> initialValues = {31, 32, 33, 34};
+    for(usize valueIndex = 0; valueIndex < initialValues.size(); ++valueIndex)
+    {
+      buffer[valueIndex] = initialValues[valueIndex];
+    }
+    const int32* const bufferPtr = buffer.get();
+
+    DataStore<int32> dataStore(std::move(buffer), ShapeType{2}, ShapeType{2});
+    REQUIRE(buffer == nullptr);
+    REQUIRE(dataStore.data() == bufferPtr);
+    for(usize valueIndex = 0; valueIndex < initialValues.size(); ++valueIndex)
+    {
+      REQUIRE(dataStore[valueIndex] == initialValues[valueIndex]);
+    }
+
+    const Result<> resizeResult = dataStore.resizeTuples(ShapeType{3});
+    REQUIRE(resizeResult.valid());
+    REQUIRE(dataStore.getTupleShape() == ShapeType{3});
+    REQUIRE(dataStore.getComponentShape() == ShapeType{2});
+    REQUIRE(dataStore.getNumberOfTuples() == 3);
+    REQUIRE(dataStore.getNumberOfComponents() == 2);
+    REQUIRE(dataStore.getSize() == 6);
+    const std::array<int32, 6> expectedValues = {31, 32, 33, 34, GetMudflap<int32>(), GetMudflap<int32>()};
+    for(usize valueIndex = 0; valueIndex < expectedValues.size(); ++valueIndex)
+    {
+      REQUIRE(dataStore[valueIndex] == expectedValues[valueIndex]);
+    }
+  }
+
+  SECTION("same-size reshape preserves the buffer and values")
+  {
+    DataStore<int32> dataStore(ShapeType{4}, ShapeType{1}, 7);
+    const std::array<int32, 4> expectedValues = {10, 20, 30, 40};
+    for(usize valueIndex = 0; valueIndex < expectedValues.size(); ++valueIndex)
+    {
+      dataStore[valueIndex] = expectedValues[valueIndex];
+    }
+    const int32* const originalDataPtr = dataStore.data();
+
+    const Result<> resizeResult = dataStore.resizeTuples(ShapeType{2, 2});
+    REQUIRE(resizeResult.valid());
+    REQUIRE(dataStore.getTupleShape() == ShapeType{2, 2});
+    REQUIRE(dataStore.getComponentShape() == ShapeType{1});
+    REQUIRE(dataStore.getNumberOfTuples() == 4);
+    REQUIRE(dataStore.getNumberOfComponents() == 1);
+    REQUIRE(dataStore.getSize() == 4);
+    REQUIRE(dataStore.data() == originalDataPtr);
+    for(usize valueIndex = 0; valueIndex < expectedValues.size(); ++valueIndex)
+    {
+      REQUIRE(dataStore[valueIndex] == expectedValues[valueIndex]);
+    }
+  }
+
+  SECTION("impossible array length preserves the original state")
+  {
+    DataStore<int32> dataStore(ShapeType{4}, ShapeType{1}, 7);
+    const std::array<int32, 4> expectedValues = {10, 20, 30, 40};
+    for(usize valueIndex = 0; valueIndex < expectedValues.size(); ++valueIndex)
+    {
+      dataStore[valueIndex] = expectedValues[valueIndex];
+    }
+    const int32* const originalDataPtr = dataStore.data();
+    const ShapeType originalTupleShape = dataStore.getTupleShape();
+    const ShapeType originalComponentShape = dataStore.getComponentShape();
+    const usize originalTupleCount = dataStore.getNumberOfTuples();
+    const usize originalComponentCount = dataStore.getNumberOfComponents();
+    const usize originalSize = dataStore.getSize();
+    // The element count fits usize, but its int32 byte count does not. Array new rejects the invalid length before it requests memory.
+    const usize impossibleTuples = (std::numeric_limits<usize>::max)() / sizeof(int32) + 1;
+
+    const Result<> resizeResult = dataStore.resizeTuples(ShapeType{impossibleTuples});
+    REQUIRE(resizeResult.invalid());
+    REQUIRE_FALSE(resizeResult.errors().empty());
+    REQUIRE(resizeResult.errors()[0].code == -6035);
+    REQUIRE(dataStore.data() == originalDataPtr);
+    REQUIRE(dataStore.getTupleShape() == originalTupleShape);
+    REQUIRE(dataStore.getComponentShape() == originalComponentShape);
+    REQUIRE(dataStore.getNumberOfTuples() == originalTupleCount);
+    REQUIRE(dataStore.getNumberOfComponents() == originalComponentCount);
+    REQUIRE(dataStore.getSize() == originalSize);
+    for(usize valueIndex = 0; valueIndex < expectedValues.size(); ++valueIndex)
+    {
+      REQUIRE(dataStore[valueIndex] == expectedValues[valueIndex]);
+    }
+  }
 }
 
 TEST_CASE("DataStore caller-owned extent buffers preserve values and validate before writing", "[simplnx][DataStore]")
