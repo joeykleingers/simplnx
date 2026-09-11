@@ -2,6 +2,8 @@
 #include "simplnx/Common/ScopeGuard.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/ChunkIndex.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/ChunkShapePolicy.hpp"
+#include "simplnx/Utilities/Parsing/HDF5/DeflateEligibility.hpp"
+#include "simplnx/Utilities/Parsing/HDF5/H5Support.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/IO/DatasetIO.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/IO/FileIO.hpp"
 #include "simplnx/Utilities/Parsing/HDF5/ParallelChunkLoop.hpp"
@@ -17,16 +19,20 @@
 #include <tbb/global_control.h>
 #endif
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <random>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -36,6 +42,18 @@ using namespace nx::core::HDF5;
 namespace
 {
 const std::string k_DatasetName = "data";
+
+/**
+ * @brief Resolves a borrowed native memory type before a self-locking codec constructor.
+ * @tparam T Specifies the actual resident buffer scalar type.
+ * @return Predefined native type, which must not be closed.
+ */
+template <typename T>
+hid_t codecMemoryType()
+{
+  std::lock_guard lock(Support::ApiLock());
+  return Support::HdfTypeForPrimitive<T>();
+}
 
 /**
  * @brief Multiplies all dimensions in a shape.
@@ -298,7 +316,7 @@ TEST_CASE("ParallelChunkCodec inflate matches serial H5Dread", "[ParallelChunkCo
 
     const hid_t fileId = H5Fopen(filePath.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
     const hid_t dataset = H5Dopen(fileId, k_DatasetName.c_str(), H5P_DEFAULT);
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
     REQUIRE(codec.isEligible());
 
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -334,7 +352,7 @@ TEST_CASE("ParallelChunkCodec inflate matches serial H5Dread", "[ParallelChunkCo
 
     const hid_t fileId = H5Fopen(filePath.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
     const hid_t dataset = H5Dopen(fileId, k_DatasetName.c_str(), H5P_DEFAULT);
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint8>());
     REQUIRE(codec.isEligible());
 
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -372,7 +390,7 @@ TEST_CASE("ParallelChunkCodec inflate matches serial H5Dread", "[ParallelChunkCo
 
     const hid_t fileId = H5Fopen(filePath.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
     const hid_t dataset = H5Dopen(fileId, k_DatasetName.c_str(), H5P_DEFAULT);
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<float32>());
     REQUIRE(codec.isEligible());
 
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -409,7 +427,7 @@ TEST_CASE("ParallelChunkCodec inflate matches serial H5Dread", "[ParallelChunkCo
 
     const hid_t fileId = H5Fopen(filePath.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
     const hid_t dataset = H5Dopen(fileId, k_DatasetName.c_str(), H5P_DEFAULT);
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
 
     // Last chunk is the bottom-right edge chunk: rows 8-9 (clamped from 8-11), cols 4-6 (clamped from 4-7).
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -439,7 +457,7 @@ TEST_CASE("ParallelChunkCodec inflate matches serial H5Dread", "[ParallelChunkCo
       createChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_UINT16, bytes);
       const hid_t fileId = H5Fopen(filePath.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
       const hid_t dataset = H5Dopen(fileId, k_DatasetName.c_str(), H5P_DEFAULT);
-      ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+      ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
       REQUIRE(codec.isEligible());
       H5Dclose(dataset);
       H5Fclose(fileId);
@@ -465,7 +483,7 @@ TEST_CASE("ParallelChunkCodec inflate matches serial H5Dread", "[ParallelChunkCo
 
       const hid_t rFileId = H5Fopen(filePath.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
       const hid_t rDataset = H5Dopen(rFileId, k_DatasetName.c_str(), H5P_DEFAULT);
-      ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, rDataset);
+      ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, rDataset, codecMemoryType<uint16>());
       REQUIRE_FALSE(codec.isEligible());
       H5Dclose(rDataset);
       H5Fclose(rFileId);
@@ -556,7 +574,7 @@ TEST_CASE("ParallelChunkCodec inflate matches serial H5Dread", "[ParallelChunkCo
       REQUIRE(allocatedChunks < getNumberOfChunks(tupleShape, chunkShape));
     }
 
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, rDataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, rDataset, codecMemoryType<uint16>());
     REQUIRE(codec.isEligible());
 
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -597,7 +615,7 @@ TEST_CASE("ParallelChunkCodec batch-locates chunks for parallel inflate", "[Para
   REQUIRE(fileId >= 0);
   const hid_t dataset = H5Dopen(fileId, k_DatasetName.c_str(), H5P_DEFAULT);
   REQUIRE(dataset >= 0);
-  ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, sizeof(uint8), dataset);
+  ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, sizeof(uint8), dataset, codecMemoryType<uint8>());
   REQUIRE(codec.isEligible());
 
   const std::vector<uint64> chunkIndices = {0, 1, 2, 3};
@@ -641,7 +659,7 @@ TEST_CASE("ParallelChunkCodec deflate round-trips byte-identically", "[ParallelC
     hid_t dataset = H5I_INVALID_HID;
     createEmptyChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_UINT16, fileId, dataset);
 
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
     REQUIRE(codec.isEligible());
 
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -690,7 +708,7 @@ TEST_CASE("ParallelChunkCodec deflate round-trips byte-identically", "[ParallelC
       hid_t dataset = H5I_INVALID_HID;
       createEmptyChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_UINT16, fileId, dataset);
 
-      ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+      ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
       REQUIRE(codec.isEligible());
 
       std::string errorOut;
@@ -728,7 +746,7 @@ TEST_CASE("ParallelChunkCodec deflate round-trips byte-identically", "[ParallelC
     hid_t dataset = H5I_INVALID_HID;
     createEmptyChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_FLOAT, fileId, dataset);
 
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<float32>());
     REQUIRE(codec.isEligible());
 
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -768,7 +786,7 @@ TEST_CASE("ParallelChunkCodec deflate round-trips byte-identically", "[ParallelC
     hid_t dataset = H5I_INVALID_HID;
     createEmptyChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_UINT16, fileId, dataset);
 
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
     REQUIRE(codec.isEligible());
 
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -800,7 +818,7 @@ TEST_CASE("ParallelChunkCodec deflate round-trips byte-identically", "[ParallelC
     hid_t dataset = H5I_INVALID_HID;
     createEmptyChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_UINT16, fileId, dataset);
 
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
     REQUIRE(codec.isEligible());
 
     const uint64 numChunks = getNumberOfChunks(tupleShape, chunkShape);
@@ -849,7 +867,7 @@ TEST_CASE("ParallelChunkCodec skips deflate only for incompressible chunks", "[P
   hid_t dataset = H5I_INVALID_HID;
   createEmptyChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_UINT8, fileId, dataset, /*deflateLevel=*/1);
 
-  ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, sizeof(uint8), dataset);
+  ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, sizeof(uint8), dataset, codecMemoryType<uint8>());
   REQUIRE(codec.isEligible());
 
   const std::vector<uint64> allChunks = {0, 1};
@@ -906,7 +924,7 @@ TEST_CASE("ParallelChunkCodec preserves rewritten skipped-deflate metadata for l
   auto datasetGuard = MakeScopeGuard([&dataset]() noexcept { H5Dclose(dataset); });
 
   {
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, sizeof(uint8), dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, sizeof(uint8), dataset, codecMemoryType<uint8>());
     REQUIRE(codec.isEligible());
     const std::vector<uint64> chunkIndices = {0};
     const std::vector<std::byte> initial(k_ChunkBytes, std::byte{0});
@@ -964,7 +982,7 @@ TEST_CASE("ParallelChunkCodec per-chunk compress + write primitives", "[Parallel
     hid_t dataset = H5I_INVALID_HID;
     createEmptyChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_UINT16, fileId, dataset);
 
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
     REQUIRE(codec.isEligible());
 
     // Chunk 1 is interior, so its nominal and clamped layouts are identical.
@@ -1001,7 +1019,7 @@ TEST_CASE("ParallelChunkCodec per-chunk compress + write primitives", "[Parallel
     hid_t dataset = H5I_INVALID_HID;
     createEmptyChunkedDeflateDataset(filePath, tupleShape, componentShape, chunkShape, H5T_NATIVE_UINT16, fileId, dataset);
 
-    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset);
+    ParallelChunkCodec codec(filePath, k_DatasetName, tupleShape, chunkShape, componentShape, elementSize, dataset, codecMemoryType<uint16>());
     REQUIRE(codec.isEligible());
 
     std::string compressError;
@@ -1703,4 +1721,350 @@ TEST_CASE("ParallelChunkCodec: ParallelLoadChunks rethrows a non-skip error", "[
                         },
                         [&results](usize localIndex, uint64&& value) { results[localIndex] = std::move(value); }),
                     std::runtime_error);
+}
+
+namespace
+{
+/**
+ * @struct H8NativeHandle
+ * @brief Closes owned fixture identifiers under the shared native API lock.
+ *
+ * Declare owners before native guards so exception cleanup never locks recursively.
+ */
+struct H8NativeHandle
+{
+  hid_t id = H5I_INVALID_HID;
+  herr_t (*close)(hid_t);
+
+  /** @brief Closes a valid owned ID after all enclosing native guards have ended. */
+  ~H8NativeHandle()
+  {
+    if(id >= 0)
+    {
+      std::lock_guard lock(Support::ApiLock());
+      close(id);
+    }
+  }
+};
+
+/**
+ * @brief Supplies exact finite values whose integer and float representations differ.
+ * @tparam T Numeric memory type.
+ * @return A 7-by-5 row-major image with several nonzero values.
+ */
+template <typename T>
+std::vector<T> H8Values()
+{
+  const std::array<int32, 6> pattern = {-3, -1, 0, 1, 2, 17};
+  std::vector<T> values(35);
+  for(usize valueIdx = 0; valueIdx < values.size(); ++valueIdx)
+  {
+    values[valueIdx] = static_cast<T>(pattern[valueIdx % pattern.size()]);
+  }
+  return values;
+}
+
+/**
+ * @brief Creates an independently encoded dataset with multiple clamped edge chunks.
+ * @tparam FileT File scalar type before optional byte-order conversion.
+ * @param path Receives the fixture.
+ * @param oppositeOrder Requests the opposite of the native byte order.
+ */
+template <typename FileT>
+void H8CreateDataset(const fs::path& path, bool oppositeOrder)
+{
+  const auto values = H8Values<FileT>();
+  H8NativeHandle file{H5I_INVALID_HID, H5Fclose};
+  H8NativeHandle type{H5I_INVALID_HID, H5Tclose};
+  H8NativeHandle space{H5I_INVALID_HID, H5Sclose};
+  H8NativeHandle property{H5I_INVALID_HID, H5Pclose};
+  H8NativeHandle dataset{H5I_INVALID_HID, H5Dclose};
+  std::lock_guard lock(Support::ApiLock());
+  const hid_t nativeType = Support::HdfTypeForPrimitive<FileT>();
+  type.id = H5Tcopy(nativeType);
+  REQUIRE(type.id >= 0);
+  if(oppositeOrder)
+  {
+    const auto order = H5Tget_order(nativeType);
+    REQUIRE((order == H5T_ORDER_LE || order == H5T_ORDER_BE));
+    REQUIRE(H5Tset_order(type.id, order == H5T_ORDER_LE ? H5T_ORDER_BE : H5T_ORDER_LE) >= 0);
+  }
+  file.id = H5Fcreate(path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+  REQUIRE(file.id >= 0);
+  const std::array<hsize_t, 2> dimensions = {7, 5};
+  const std::array<hsize_t, 2> chunks = {3, 2};
+  space.id = H5Screate_simple(2, dimensions.data(), nullptr);
+  property.id = H5Pcreate(H5P_DATASET_CREATE);
+  REQUIRE(space.id >= 0);
+  REQUIRE(property.id >= 0);
+  REQUIRE(H5Pset_chunk(property.id, 2, chunks.data()) >= 0);
+  REQUIRE(H5Pset_deflate(property.id, 5) >= 0);
+  dataset.id = H5Dcreate2(file.id, "data", type.id, space.id, H5P_DEFAULT, property.id, H5P_DEFAULT);
+  REQUIRE(dataset.id >= 0);
+  REQUIRE(H5Dwrite(dataset.id, nativeType, H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+  REQUIRE(H5Fflush(file.id, H5F_SCOPE_LOCAL) >= 0);
+}
+
+/**
+ * @brief Reads through native typed HDF5 and checks the unchanged file representation.
+ * @tparam MemoryT Output value type.
+ * @tparam FileT Expected file scalar type.
+ * @param path Identifies the fixture.
+ * @param oppositeOrder Identifies the expected nonnative byte order.
+ * @return Independently converted values.
+ */
+template <typename MemoryT, typename FileT>
+std::vector<MemoryT> H8ReadNative(const fs::path& path, bool oppositeOrder)
+{
+  H8NativeHandle file{H5I_INVALID_HID, H5Fclose};
+  H8NativeHandle dataset{H5I_INVALID_HID, H5Dclose};
+  H8NativeHandle type{H5I_INVALID_HID, H5Tclose};
+  H8NativeHandle expectedType{H5I_INVALID_HID, H5Tclose};
+  H8NativeHandle space{H5I_INVALID_HID, H5Sclose};
+  std::lock_guard lock(Support::ApiLock());
+  file.id = H5Fopen(path.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+  REQUIRE(file.id >= 0);
+  dataset.id = H5Dopen2(file.id, "data", H5P_DEFAULT);
+  REQUIRE(dataset.id >= 0);
+  type.id = H5Dget_type(dataset.id);
+  expectedType.id = H5Tcopy(Support::HdfTypeForPrimitive<FileT>());
+  space.id = H5Dget_space(dataset.id);
+  REQUIRE(type.id >= 0);
+  REQUIRE(expectedType.id >= 0);
+  REQUIRE(space.id >= 0);
+  if(oppositeOrder)
+  {
+    const auto order = H5Tget_order(expectedType.id);
+    REQUIRE(H5Tset_order(expectedType.id, order == H5T_ORDER_LE ? H5T_ORDER_BE : H5T_ORDER_LE) >= 0);
+  }
+  CHECK(H5Tequal(type.id, expectedType.id) > 0);
+  REQUIRE(H5Sget_simple_extent_ndims(space.id) == 2);
+  REQUIRE(H5Sget_simple_extent_npoints(space.id) == 35);
+  std::vector<MemoryT> values(35);
+  REQUIRE(H5Dread(dataset.id, Support::HdfTypeForPrimitive<MemoryT>(), H5S_ALL, H5S_ALL, H5P_DEFAULT, values.data()) >= 0);
+  return values;
+}
+} // namespace
+
+TEMPLATE_TEST_CASE("H8 DatasetIO full-span reads convert scalar values", "[H8][DatasetIO][ParallelChunkCodec]", int32, float32)
+{
+  using FileT = TestType;
+  using MemoryT = std::conditional_t<std::is_same_v<FileT, int32>, float32, int32>;
+  const auto path = testFilePath("H8_full_span_read.h5");
+  H8CreateDataset<FileT>(path, false);
+  const auto expected = H8Values<MemoryT>();
+  CHECK((H8ReadNative<MemoryT, FileT>(path, false) == expected));
+  auto file = FileIO::ReadFile(path);
+  REQUIRE(file.isValid());
+  auto dataset = file.openDataset("data");
+  REQUIRE(dataset.getChunkDimensions() == std::vector<usize>{3, 2});
+  std::vector<MemoryT> hyperslab(35, MemoryT{-99});
+  REQUIRE(dataset.readIntoSpan<MemoryT>(nonstd::span<MemoryT>(hyperslab.data(), hyperslab.size()), std::vector<uint64>{0, 0}, std::vector<uint64>{7, 5}).valid());
+  CHECK(hyperslab == expected);
+  std::vector<MemoryT> full(35, MemoryT{-99});
+  REQUIRE(dataset.readIntoSpan<MemoryT>(nonstd::span<MemoryT>(full.data(), full.size())).valid());
+  CHECK(full == expected);
+  CHECK(full == hyperslab);
+}
+
+TEMPLATE_TEST_CASE("H8 DatasetIO full-span writes convert into the existing file type", "[H8][DatasetIO][ParallelChunkCodec]", int32, float32)
+{
+  using FileT = TestType;
+  using MemoryT = std::conditional_t<std::is_same_v<FileT, int32>, float32, int32>;
+  const auto path = testFilePath("H8_full_span_write.h5");
+  H8CreateDataset<FileT>(path, false);
+  auto values = H8Values<MemoryT>();
+  for(auto& value : values)
+  {
+    value += MemoryT{2};
+  }
+  {
+    auto file = FileIO::AppendFile(path);
+    REQUIRE(file.isValid());
+    auto dataset = file.openDataset("data");
+    REQUIRE(dataset.getChunkDimensions() == std::vector<usize>{3, 2});
+    REQUIRE(dataset.writeSpan<MemoryT>({7, 5}, nonstd::span<const MemoryT>(values.data(), values.size())).valid());
+  }
+  CHECK((H8ReadNative<MemoryT, FileT>(path, false) == values));
+}
+
+TEMPLATE_TEST_CASE("H8 DatasetIO opposite-endian full spans preserve numeric values", "[H8][DatasetIO][ParallelChunkCodec]", int32, float32)
+{
+  const auto path = testFilePath("H8_opposite_endian.h5");
+  H8CreateDataset<TestType>(path, true);
+  auto expected = H8Values<TestType>();
+  {
+    auto file = FileIO::AppendFile(path);
+    REQUIRE(file.isValid());
+    auto dataset = file.openDataset("data");
+    const hid_t id = dataset.getId();
+    ParallelChunkCodec codec(path, "/data", {7, 5}, {3, 2}, {}, sizeof(TestType), id, codecMemoryType<TestType>());
+    REQUIRE_FALSE(codec.isEligible());
+    std::vector<TestType> values(35, TestType{-99});
+    REQUIRE(dataset.readIntoSpan<TestType>(nonstd::span<TestType>(values.data(), values.size())).valid());
+    CHECK(values == expected);
+    for(auto& value : expected)
+    {
+      value += TestType{2};
+    }
+    REQUIRE(dataset.writeSpan<TestType>({7, 5}, nonstd::span<const TestType>(expected.data(), expected.size())).valid());
+  }
+  CHECK((H8ReadNative<TestType, TestType>(path, true) == expected));
+}
+
+TEMPLATE_TEST_CASE("H8 exact native codecs preserve raw scalar bytes", "[H8][ParallelChunkCodec]", int32, float32)
+{
+  const auto path = testFilePath("H8_exact_raw.h5");
+  H8CreateDataset<TestType>(path, false);
+  auto expected = H8Values<TestType>();
+  {
+    auto file = FileIO::AppendFile(path);
+    REQUIRE(file.isValid());
+    auto dataset = file.openDataset("data");
+    const hid_t id = dataset.getId();
+    ParallelChunkCodec codec(path, "/data", {7, 5}, {3, 2}, {}, sizeof(TestType), id, codecMemoryType<TestType>());
+    REQUIRE(codec.isEligible());
+    std::vector<uint64> chunks(9);
+    std::iota(chunks.begin(), chunks.end(), uint64{0});
+    std::vector<std::byte> bytes(expected.size() * sizeof(TestType));
+    codec.inflateChunksIntoSpan(bytes, chunks);
+    CHECK(std::memcmp(bytes.data(), expected.data(), bytes.size()) == 0);
+    for(auto& value : expected)
+    {
+      value += TestType{2};
+    }
+    REQUIRE(codec.deflateSpanIntoChunks(nonstd::span<const std::byte>(reinterpret_cast<const std::byte*>(expected.data()), bytes.size()), chunks));
+    std::fill(bytes.begin(), bytes.end(), std::byte{0});
+    codec.inflateChunksIntoSpan(bytes, chunks);
+    CHECK(std::memcmp(bytes.data(), expected.data(), bytes.size()) == 0);
+  }
+  CHECK((H8ReadNative<TestType, TestType>(path, false) == expected));
+}
+
+namespace
+{
+/**
+ * @brief Requires rejection of a native file whose representation differs from the buffer type.
+ * @tparam FileT Specifies the independent fixture's scalar type.
+ * @tparam MemoryT Specifies the actual resident buffer representation.
+ */
+template <typename FileT, typename MemoryT>
+void H8RequireRejectedRepresentation()
+{
+  const auto path = testFilePath("H8_rejected_representation.h5");
+  H8CreateDataset<FileT>(path, false);
+  auto file = FileIO::ReadFile(path);
+  REQUIRE(file.isValid());
+  auto dataset = file.openDataset("data");
+  const hid_t datasetId = dataset.getId();
+  const hid_t memoryType = codecMemoryType<MemoryT>();
+  int32 level = -1;
+  CHECK_FALSE(probeSingleDeflateEligibility(datasetId, sizeof(MemoryT), memoryType, &level));
+  CHECK(level == 5);
+  ParallelChunkCodec codec(path, "/data", {7, 5}, {3, 2}, {}, sizeof(MemoryT), datasetId, memoryType);
+  CHECK_FALSE(codec.isEligible());
+}
+} // namespace
+
+TEST_CASE("H8 codecs reject scalar class signedness and width mismatches", "[H8][ParallelChunkCodec]")
+{
+  SECTION("int32 file to float32 buffer")
+  {
+    H8RequireRejectedRepresentation<int32, float32>();
+  }
+  SECTION("float32 file to int32 buffer")
+  {
+    H8RequireRejectedRepresentation<float32, int32>();
+  }
+  SECTION("int8 file to uint8 buffer")
+  {
+    H8RequireRejectedRepresentation<int8, uint8>();
+  }
+  SECTION("uint8 file to int8 buffer")
+  {
+    H8RequireRejectedRepresentation<uint8, int8>();
+  }
+  SECTION("int32 file to uint32 buffer")
+  {
+    H8RequireRejectedRepresentation<int32, uint32>();
+  }
+  SECTION("uint32 file to int32 buffer")
+  {
+    H8RequireRejectedRepresentation<uint32, int32>();
+  }
+  SECTION("int32 file to int64 buffer")
+  {
+    H8RequireRejectedRepresentation<int32, int64>();
+  }
+  SECTION("int64 file to int32 buffer")
+  {
+    H8RequireRejectedRepresentation<int64, int32>();
+  }
+}
+
+TEST_CASE("H8 codecs reject inconsistent memory size and invalid memory IDs", "[H8][ParallelChunkCodec]")
+{
+  const usize elementSize = GENERATE(usize{1}, usize{2}, usize{8});
+  const auto path = testFilePath("H8_memory_size.h5");
+  H8CreateDataset<int32>(path, false);
+  auto file = FileIO::ReadFile(path);
+  REQUIRE(file.isValid());
+  auto dataset = file.openDataset("data");
+  const hid_t datasetId = dataset.getId();
+  ParallelChunkCodec wrongSize(path, "/data", {7, 5}, {3, 2}, {}, elementSize, datasetId, codecMemoryType<int32>());
+  CHECK_FALSE(wrongSize.isEligible());
+  ParallelChunkCodec invalidType(path, "/data", {7, 5}, {3, 2}, {}, sizeof(int32), datasetId, H5I_INVALID_HID);
+  CHECK_FALSE(invalidType.isEligible());
+}
+
+TEST_CASE("H8 codecs reject reduced precision and same-size structured file types", "[H8][ParallelChunkCodec]")
+{
+  const int kind = GENERATE(0, 1, 2);
+  INFO("file representation kind=" << kind);
+  const auto path = testFilePath("H8_structured_type.h5");
+  H8NativeHandle file{H5I_INVALID_HID, H5Fclose};
+  H8NativeHandle fileType{H5I_INVALID_HID, H5Tclose};
+  H8NativeHandle space{H5I_INVALID_HID, H5Sclose};
+  H8NativeHandle property{H5I_INVALID_HID, H5Pclose};
+  H8NativeHandle dataset{H5I_INVALID_HID, H5Dclose};
+  hid_t memoryType = H5I_INVALID_HID;
+  {
+    std::lock_guard lock(Support::ApiLock());
+    memoryType = Support::HdfTypeForPrimitive<int32>();
+    if(kind == 0)
+    {
+      fileType.id = H5Tcopy(memoryType);
+      REQUIRE(fileType.id >= 0);
+      REQUIRE(H5Tset_precision(fileType.id, 24) >= 0);
+    }
+    else if(kind == 1)
+    {
+      const hsize_t one = 1;
+      fileType.id = H5Tarray_create2(memoryType, 1, &one);
+    }
+    else
+    {
+      fileType.id = H5Tcreate(H5T_COMPOUND, sizeof(int32));
+      REQUIRE(fileType.id >= 0);
+      REQUIRE(H5Tinsert(fileType.id, "value", 0, memoryType) >= 0);
+    }
+    REQUIRE(fileType.id >= 0);
+    REQUIRE(H5Tget_size(fileType.id) == sizeof(int32));
+    REQUIRE(H5Tequal(fileType.id, memoryType) == 0);
+    file.id = H5Fcreate(path.string().c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    REQUIRE(file.id >= 0);
+    const hsize_t count = 8;
+    const hsize_t chunk = 4;
+    space.id = H5Screate_simple(1, &count, nullptr);
+    property.id = H5Pcreate(H5P_DATASET_CREATE);
+    REQUIRE(space.id >= 0);
+    REQUIRE(property.id >= 0);
+    REQUIRE(H5Pset_chunk(property.id, 1, &chunk) >= 0);
+    REQUIRE(H5Pset_deflate(property.id, 5) >= 0);
+    dataset.id = H5Dcreate2(file.id, "data", fileType.id, space.id, H5P_DEFAULT, property.id, H5P_DEFAULT);
+    REQUIRE(dataset.id >= 0);
+  }
+  ParallelChunkCodec codec(path, "/data", {8}, {4}, {}, sizeof(int32), dataset.id, memoryType);
+  CHECK_FALSE(codec.isEligible());
+  // These cases test raw identity only. No scalar conversion from structured values is attempted.
 }

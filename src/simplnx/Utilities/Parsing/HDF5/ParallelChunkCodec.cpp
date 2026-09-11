@@ -152,7 +152,7 @@ bool isLikelyIncompressible(nonstd::span<const std::byte> nominalBytes, int32 de
 } // namespace
 
 ParallelChunkCodec::ParallelChunkCodec(std::filesystem::path filePath, std::string datasetPath, std::vector<uint64> tupleShape, std::vector<uint64> chunkShape, std::vector<uint64> componentShape,
-                                       usize elementSize, hid_t datasetId)
+                                       usize elementSize, hid_t datasetId, hid_t memoryTypeId)
 : m_FilePath(std::move(filePath))
 , m_DatasetPath(std::move(datasetPath))
 , m_TupleShape(std::move(tupleShape))
@@ -165,7 +165,7 @@ ParallelChunkCodec::ParallelChunkCodec(std::filesystem::path filePath, std::stri
   m_NominalChunkElements = product(m_ChunkShape) * m_NumComponents;
   m_NumChunks = getNumberOfChunks(m_TupleShape, m_ChunkShape);
   // Probe once for single-deflate eligibility and capture the write deflate level.
-  m_Eligible = probeSingleDeflateEligibility(m_DatasetId, m_ElementSize, &m_DeflateLevel);
+  m_Eligible = probeSingleDeflateEligibility(m_DatasetId, m_ElementSize, memoryTypeId, &m_DeflateLevel);
 }
 
 ParallelChunkCodec::~ParallelChunkCodec()

@@ -17,13 +17,15 @@ SIMPLNX_EXPORT bool hostIsLittleEndian();
 /**
  * @brief Tests whether raw deflate chunk I/O can bypass the HDF5 filter pipeline.
  * @param datasetId Identifies an open HDF5 dataset.
- * @param elementSize Specifies bytes in one dataset element.
+ * @param elementSize Specifies bytes in one caller buffer element.
+ * @param memoryTypeId Borrows the exact HDF5 datatype represented by the caller's bytes during this probe.
  * @param deflateLevelOut Receives the dataset deflate level when available, or is null.
  * @return True when the raw parallel deflate paths are eligible.
  * @pre datasetId is valid and elementSize is nonzero.
  * @pre The caller does not hold Support::ApiLock().
  *
- * Eligibility requires exactly one deflate filter. It also requires matching file
+ * Eligibility requires positive file/memory datatype equality and a matching memory element size.
+ * It requires exactly one deflate filter and matching file
  * and host byte order unless elements have one byte. Other filter pipelines use
  * HDF5 so it can apply filters and byte conversion correctly. This includes
  * shuffle, SZIP, Fletcher32, multiple-filter, and unknown pipelines.
@@ -34,6 +36,6 @@ SIMPLNX_EXPORT bool hostIsLittleEndian();
  * Eligible reads use positional raw I/O and inflate. Eligible writes use compression
  * followed by H5Dwrite_chunk.
  */
-SIMPLNX_EXPORT bool probeSingleDeflateEligibility(hid_t datasetId, usize elementSize, int32* deflateLevelOut);
+SIMPLNX_EXPORT bool probeSingleDeflateEligibility(hid_t datasetId, usize elementSize, hid_t memoryTypeId, int32* deflateLevelOut);
 
 } // namespace nx::core::HDF5

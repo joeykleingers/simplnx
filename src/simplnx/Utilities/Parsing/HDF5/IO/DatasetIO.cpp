@@ -725,7 +725,11 @@ nx::core::Result<> DatasetIO::readIntoSpan(nonstd::span<T> data) const
     return MakeErrorResult(-505, fmt::format("Cannot open HDF5 data at {} called {}", getFilePath().string(), getNamePath()));
   }
 
-  hid_t dataType = HdfTypeForPrimitive<T>();
+  hid_t dataType = H5I_INVALID_HID;
+  {
+    std::lock_guard<std::mutex> hdf5Lock(Support::ApiLock());
+    dataType = HdfTypeForPrimitive<T>();
+  }
   if(dataType == -1)
   {
     return MakeErrorResult(-1001, fmt::format("DatasetReader error: Unsupported span data type for dataset '{}' in file '{}'", getNamePath(), getFilePath().string()));
@@ -768,7 +772,7 @@ nx::core::Result<> DatasetIO::readIntoSpan(nonstd::span<T> data) const
         }
       }
     }
-    HDF5::ParallelChunkCodec codec(codecFilePath, getNamePath(), tupleShape, chunkShape, /*componentShape=*/{}, sizeof(T), datasetId);
+    HDF5::ParallelChunkCodec codec(codecFilePath, getNamePath(), tupleShape, chunkShape, /*componentShape=*/{}, sizeof(T), datasetId, dataType);
     if(codec.isEligible())
     {
       // An exception falls back to serial H5Dread. Successful codec output matches
@@ -851,7 +855,11 @@ Result<> DatasetIO::readIntoSpan(nonstd::span<T> data, const std::optional<std::
     return MakeErrorResult(-505, fmt::format("Cannot open HDF5 data at {} / {}", getFilePath().string(), getNamePath()));
   }
 
-  hid_t dataType = HdfTypeForPrimitive<T>();
+  hid_t dataType = H5I_INVALID_HID;
+  {
+    std::lock_guard<std::mutex> hdf5Lock(Support::ApiLock());
+    dataType = HdfTypeForPrimitive<T>();
+  }
   if(dataType == -1)
   {
     return MakeErrorResult(-1001, "DatasetReader error: Unsupported span data type.");
@@ -1177,7 +1185,11 @@ Result<> DatasetIO::writeSpan(const DimsType& dims, nonstd::span<const T> values
 {
   Result<> returnError = {};
   int32_t rank = static_cast<int32_t>(dims.size());
-  hid_t dataType = HdfTypeForPrimitive<T>();
+  hid_t dataType = H5I_INVALID_HID;
+  {
+    std::lock_guard<std::mutex> hdf5Lock(Support::ApiLock());
+    dataType = HdfTypeForPrimitive<T>();
+  }
   if(dataType == -1)
   {
     return MakeErrorResult(-1, fmt::format("DataType was unknown when writing dataset '{}' in file '{}'", getNamePath(), getFilePath().string()));
@@ -1205,7 +1217,7 @@ Result<> DatasetIO::writeSpan(const DimsType& dims, nonstd::span<const T> values
     else
     {
       const hid_t dcpl = dcplResult.value();
-      auto datasetId = createOrOpenDataset<T>(dataspaceId, dcpl);
+      auto datasetId = createOrOpenDataset(dataType, dataspaceId, dcpl);
       ErrorType error = 0;
       if(datasetId >= 0)
       {
@@ -1219,7 +1231,7 @@ Result<> DatasetIO::writeSpan(const DimsType& dims, nonstd::span<const T> values
           // Model the complete flat array as one-component tuple space.
           std::vector<uint64> tupleShape(dims.begin(), dims.end());
           std::vector<uint64> chunkShape(usizeChunkDims.begin(), usizeChunkDims.end());
-          HDF5::ParallelChunkCodec codec(getFilePath(), getNamePath(), tupleShape, chunkShape, /*componentShape=*/{}, sizeof(T), datasetId);
+          HDF5::ParallelChunkCodec codec(getFilePath(), getNamePath(), tupleShape, chunkShape, /*componentShape=*/{}, sizeof(T), datasetId, dataType);
           if(codec.isEligible())
           {
             const uint64 numChunks = HDF5::getNumberOfChunks(tupleShape, chunkShape);

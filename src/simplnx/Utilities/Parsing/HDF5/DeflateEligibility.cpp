@@ -19,7 +19,7 @@ bool hostIsLittleEndian()
   return *reinterpret_cast<const uint8_t*>(&probe) == 0x01;
 }
 
-bool probeSingleDeflateEligibility(hid_t datasetId, usize elementSize, int32* deflateLevelOut)
+bool probeSingleDeflateEligibility(hid_t datasetId, usize elementSize, hid_t memoryTypeId, int32* deflateLevelOut)
 {
   std::lock_guard<std::mutex> hdf5Lock(Support::ApiLock());
 
@@ -52,17 +52,17 @@ bool probeSingleDeflateEligibility(hid_t datasetId, usize elementSize, int32* de
     return false;
   }
 
-  // Raw chunk paths bypass HDF5 byte conversion. Multi-byte elements must use the
-  // host byte order. Byte order does not affect single-byte elements.
-  if(elementSize == 1)
+  // Raw bytes require the complete memory representation, including width, signedness, and precision.
+  const hid_t dtype = H5Dget_type(datasetId);
+  if(dtype < 0)
   {
-    return true;
+    return false;
   }
-  hid_t dtype = H5Dget_type(datasetId);
-  const H5T_order_t order = H5Tget_order(dtype);
+  const bool identical = elementSize > 0 && memoryTypeId >= 0 && H5Tget_size(memoryTypeId) == elementSize && H5Tequal(dtype, memoryTypeId) > 0;
+  const H5T_order_t order = identical && elementSize > 1 ? H5Tget_order(dtype) : H5T_ORDER_ERROR;
   H5Tclose(dtype);
   const H5T_order_t hostOrder = hostIsLittleEndian() ? H5T_ORDER_LE : H5T_ORDER_BE;
-  return order == hostOrder;
+  return identical && (elementSize == 1 || order == hostOrder);
 }
 
 } // namespace nx::core::HDF5

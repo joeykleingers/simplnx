@@ -86,8 +86,9 @@ public:
    * @param tupleShape Row-major tuple dimensions.
    * @param chunkShape Tuple-space chunk dimensions.
    * @param componentShape Trailing component dimensions that chunks do not split.
-   * @param elementSize Bytes in one dataset element.
+   * @param elementSize Bytes in one caller-buffer scalar element.
    * @param datasetId Open HDF5 dataset identifier that must outlive this codec.
+   * @param memoryTypeId Exact caller-buffer datatype, borrowed only while the constructor probes eligibility.
    * @pre tupleShape and chunkShape have equal nonzero rank. All tuple and chunk
    * dimensions are nonzero.
    * @pre Each component dimension and elementSize are nonzero. An empty
@@ -96,10 +97,11 @@ public:
    * @pre Component, nominal-chunk, and byte-count products fit usize. Each
    * tupleShape[d] + chunkShape[d] - 1 and the total chunk count fit uint64.
    *
-   * The constructor probes eligibility once and captures the deflate level.
+   * The constructor probes exact raw datatype identity once and captures the deflate level. It does not retain memoryTypeId.
+   * The caller must not hold Support::ApiLock() during construction.
    */
   ParallelChunkCodec(std::filesystem::path filePath, std::string datasetPath, std::vector<uint64> tupleShape, std::vector<uint64> chunkShape, std::vector<uint64> componentShape, usize elementSize,
-                     hid_t datasetId);
+                     hid_t datasetId, hid_t memoryTypeId);
 
   /**
    * @brief Releases the positional read handle.
@@ -115,7 +117,7 @@ public:
 
   /**
    * @brief Reports whether this dataset qualifies for raw parallel processing.
-   * @return True for one deflate filter and compatible byte order.
+   * @return True for one deflate filter, exact file/memory representation, and compatible byte order.
    */
   bool isEligible() const;
 
