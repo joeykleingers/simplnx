@@ -31,7 +31,7 @@ const DataPath k_ExemplarSubVolumePath({"Exemplar Sub Volume"});
 
 } // namespace
 
-TEST_CASE("SimplnxReview::ReadZeissTxmFileFilter:Read_Full_Volume", "[SimplnxReview][ReadZeissTxmFileFilter]")
+TEST_CASE("SimplnxCore::ReadZeissTxmFileFilter:Read_Full_Volume", "[SimplnxCore][ReadZeissTxmFileFilter]")
 {
 
   const nx::core::UnitTest::TestFileSentinel testDataSentinel(nx::core::unit_test::k_TestFilesDir, "ReadZeissTxmFileTest_v2.tar.gz", "ReadZeissTxmFileTest");
@@ -75,7 +75,7 @@ TEST_CASE("SimplnxReview::ReadZeissTxmFileFilter:Read_Full_Volume", "[SimplnxRev
   UnitTest::CheckArraysInheritTupleDims(dataStructure);
 }
 
-TEST_CASE("SimplnxReview::ReadZeissTxmFileFilter:Read_Sub_Volume", "[SimplnxReview][ReadZeissTxmFileFilter]")
+TEST_CASE("SimplnxCore::ReadZeissTxmFileFilter:Read_Sub_Volume", "[SimplnxCore][ReadZeissTxmFileFilter]")
 {
   // ************************************************************************************************
   // This section creates all the possible cropping options and then uses GENERATE_COPY to execute the full test case for each cropping option

@@ -1631,7 +1631,7 @@ TEST_CASE("CompareDataStructures")
   UnitTest::CompareDataStructures(dataStructure0, dataStructure1);
 }
 
-TEST_CASE("CompareDataStructures-fail", "[SimplnxReview][!mayfail]")
+TEST_CASE("CompareDataStructures-fail", "[!mayfail]")
 {
   UnitTest::LoadPlugins();
 
